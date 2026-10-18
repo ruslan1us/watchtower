@@ -1,0 +1,147 @@
+# 0002. Tech stack, config and state files
+
+- Status: Accepted · 2026-10-18
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md)
+
+## Context
+
+Tower is a single-user terminal program that runs on a remote Linux host,
+usually over SSH. It must start fast, ship as one file
+([0012](0012-build-and-distribution.md)), render a terminal stream in a panel
+([0009](0009-stop-remove-and-logs.md)), and keep a little state the CLI does not
+expose.
+
+## Decision
+
+**Stack**
+
+- Rust. Crate `watchtower`, binary `tower`.
+- `ratatui` with the `crossterm` backend for the UI.
+- `serde` and `serde_json` for the CLI's JSON and the sidecar file, `toml` for
+  the config.
+- `vt100` to replay `claude logs` output, rendered with `tui-term`.
+- `std::process::Command` for every CLI call. Worker threads and
+  `std::sync::mpsc` channels, no async runtime.
+- Further dependencies only where they replace real code (e.g. path or XDG
+  helpers), not for convenience.
+
+**Subcommands.** `tower` starts the TUI. `tower status --json` prints the merged
+session list with account and tracked times for the orchestrator
+([0010](0010-orchestrator.md)).
+
+**Config:** `$XDG_CONFIG_HOME/watchtower/config.toml`, default
+`~/.config/watchtower/config.toml`. Tower only reads it. A missing file means
+built-in defaults with a single account `main` using `claude`. `~` is expanded
+in all paths.
+
+```toml
+# Account used for new sessions and the orchestrator.
+default_account = "main"
+
+poll_interval_secs = 2
+
+# Folders scanned for git clones in the new-session dialog (see 0008).
+project_roots = ["~/workspace"]
+# Folders listed even though they are not under a root or not git clones.
+extra_projects = ["~/notes"]
+
+# Dialog defaults. "default" means the flag is not passed.
+default_model = "default"            # default | fable | opus | sonnet | haiku | full model name
+default_effort = "default"           # default | low | medium | high | xhigh | max
+default_permission_mode = "auto"
+
+# Prompt used when a session continues under another account (see 0004).
+handoff_prompt = "continue"
+
+[[accounts]]
+name = "main"
+command = "claude"
+config_dir = "~/.claude"
+
+[[accounts]]
+name = "alt"
+command = "claude-alt"               # wrapper that sets CLAUDE_CONFIG_DIR=~/.claude-alt
+config_dir = "~/.claude-alt"
+```
+
+`command` is run as-is; tower does not set `CLAUDE_CONFIG_DIR` itself.
+`config_dir` is used to recognise which account hosts a running session
+([0003](0003-accounts-and-session-ownership.md)). It defaults to `~/.claude`.
+
+**Sidecar state:** `state.json` next to `config.toml`. It holds only what the
+CLI does not expose:
+
+- per session, keyed by `sessionId`:
+  - `account`, the account currently hosting it, and `account_source`, how tower
+    learned it: `proc` (read from `/proc`), `list` (seen in only one account's
+    list), `started` (dispatched by tower), `handoff`, or `asked` (the user's
+    answer for a session whose account was unknown)
+    ([0003](0003-accounts-and-session-ownership.md));
+  - `last_state`, the last observed (`state`, `status`, `waitingFor`) tuple, and
+    `last_change_ms`, when tower first observed it
+    ([0006](0006-session-states-and-grouping.md));
+  - `acknowledged`, the tuple the user last acknowledged (by attaching or with
+    `m`), or absent
+    ([0007](0007-visual-only-attention.md));
+- `recent_projects`, most-recently-used projects for the new-session dialog
+  ([0008](0008-new-session-dialog.md)).
+
+```json
+{
+  "version": 1,
+  "sessions": {
+    "1a2b3c4d-0000-4000-8000-000000000000": {
+      "account": "alt",
+      "account_source": "handoff",
+      "last_state": { "state": "blocked", "status": "waiting", "waitingFor": "permission prompt" },
+      "last_change_ms": 1790000000000,
+      "acknowledged": { "state": "blocked", "status": "waiting", "waitingFor": "permission prompt" }
+    }
+  },
+  "recent_projects": [
+    { "path": "~/workspace/demo-app", "last_used_ms": 1790000000000 }
+  ]
+}
+```
+
+- Writes are atomic: write `state.json.tmp` in the same directory, fsync,
+  rename over `state.json`.
+- Writes happen only when something changed, not on every poll.
+- On a missing file tower starts empty. On an unreadable or corrupt one it
+  moves it aside as `state.json.corrupt`, starts fresh and shows a warning. It
+  never refuses to start.
+- Unknown fields are kept where practical. The `version` field allows
+  migration.
+- Entries for sessions that are no longer listed, even with `--all` (for
+  example after `claude rm`), are pruned
+  ([0006](0006-session-states-and-grouping.md)).
+
+**Orchestrator working directory:** under the config dir, e.g.
+`~/.config/watchtower/orchestrator/`, holding its instruction file. Details are
+in [0010](0010-orchestrator.md).
+
+## Consequences
+
+- One static binary, no runtime dependencies on the host.
+- Synchronous threads keep the code simple; there are only a few concurrent
+  calls (one poll per account, plus the selected session's logs).
+- Losing `state.json` loses only conveniences: the accounts of stopped
+  sessions (tower asks again), activity times (fall back to `startedAt`) and
+  recent projects. No session is harmed.
+
+## Alternatives considered
+
+- **Go, or Python with Textual.** Workable, but Rust with ratatui has
+  maintained `vt100`/`tui-term` crates for the logs panel and builds a fully
+  static binary easily.
+- **tokio.** Not needed for a few child processes and a 2 s tick.
+- **State under `$XDG_STATE_HOME`.** Arguably more correct, but keeping it next
+  to the config gives the user one directory to inspect or back up. This can
+  move later without changing the format.
+- **Tower writing its own config.** Rejected; the user edits `config.toml`, and
+  tower writes only `state.json`.
+
+## Open items
+
+- How long a session must be missing from the listing before its entry is
+  pruned, so that a failed or partial poll never drops records.
