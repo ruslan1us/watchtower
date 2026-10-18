@@ -1,7 +1,7 @@
 # 0014. Scope of v1 and non-goals
 
 - Status: Accepted · 2026-10-18
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0004](0004-account-hand-off.md), [0007](0007-visual-only-attention.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0004](0004-account-hand-off.md), [0007](0007-visual-only-attention.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
 
@@ -57,12 +57,27 @@ completed by the list controls: `/`, `p`, `Tab` and `i`
   Code as usual.
 - Tower-only tags or custom groups.
 - Usage and limit display per account.
-- Automatic hand-off, or detecting that an account hit its limit.
+- Automatic hand-off, and hand-off suggestions based on usage or limit data.
+  This is a firm non-goal, not a deferral: a hand-off continues a session
+  under another of the user's own accounts only when the user asks, and usage
+  limits are handled with Anthropic's official options
+  ([0018](0018-account-groups-and-handoff-guard.md)).
 - A default account per project; there is one global default.
 - Pinning sessions (Claude Code has no CLI for it).
 - Deleting transcripts. `claude rm` keeps them, and tower adds nothing that
   removes them.
 - Platforms other than Linux x86_64. Account detection depends on `/proc`.
+
+**Hard rules** (permanent non-goals, not only for v1;
+[0001](0001-thin-wrapper-over-claude-cli.md),
+[0018](0018-account-groups-and-handoff-guard.md)):
+
+- Reading, storing or intermediating credentials or session tokens.
+- Running `claude setup-token`.
+- A hosted, shared or multi-user mode.
+- Proxying or routing requests.
+- Anything but a single-user local tool around the unmodified official
+  `claude` binary.
 
 ## Consequences
 

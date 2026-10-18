@@ -16,7 +16,7 @@ use common::{
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use watchtower::app::{App, Confirm, Effect, HandoffJob, Overlay, Severity};
 use watchtower::config::Config;
 use watchtower::handoff::{HandoffError, Outcome, Resumed, Step};
@@ -117,6 +117,19 @@ fn handoff_of(effects: &[Effect]) -> Option<HandoffJob> {
     })
 }
 
+/// Presses `k`, which must open the hand-off confirmation without running
+/// anything (every hand-off asks, doc/0004), then confirms with `y`.
+fn confirmed(app: &mut App, k: KeyEvent) -> Option<HandoffJob> {
+    let effects = app.handle_key(k);
+    assert!(handoff_of(&effects).is_none(), "asks first: {effects:?}");
+    assert!(
+        matches!(app.overlay(), Overlay::Confirm(Confirm::Handoff { .. })),
+        "{:?}",
+        app.overlay()
+    );
+    handoff_of(&app.handle_key(ch('y')))
+}
+
 fn owner_of(app: &App, sid: &str) -> Ownership {
     app.sessions()
         .iter()
@@ -205,10 +218,9 @@ fn interactive_rows_and_rows_without_session_id_are_refused() {
 #[test]
 fn two_accounts_target_the_other_one() {
     let mut app = app_two_owned();
-    // A stopped row: no confirmation, no stop.
+    // A stopped row: asks too (every hand-off does), but no stop.
     select(&mut app, "say-ok");
-    let effects = app.handle_key(ch('a'));
-    let job = handoff_of(&effects).expect("starts right away");
+    let job = confirmed(&mut app, ch('a')).expect("y starts it");
     let r = &job.request;
     assert_eq!(r.target.name, "alt");
     assert_eq!(r.owner.as_ref().map(|a| a.name.as_str()), Some("main"));
@@ -227,10 +239,26 @@ fn two_accounts_target_the_other_one() {
 }
 
 #[test]
-fn a_live_done_row_is_stopped_without_asking() {
+fn a_live_done_row_asks_without_the_interrupt_note() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).expect("no confirmation for done");
+    assert!(app.handle_key(ch('a')).is_empty(), "asks first");
+    let Overlay::Confirm(Confirm::Handoff {
+        detail, interrupts, ..
+    }) = app.overlay().clone()
+    else {
+        panic!("{:?}", app.overlay());
+    };
+    assert_eq!(detail, "done");
+    assert!(!interrupts, "a done row has no turn to interrupt");
+    let screen = render(&mut app, 120, 30);
+    assert!(screen.contains("From: main   To: alt"), "{screen}");
+    assert!(
+        screen.contains("full conversation and project context will continue under alt"),
+        "{screen}"
+    );
+    assert!(!screen.contains("interrupts the current turn"), "{screen}");
+    let job = handoff_of(&app.handle_key(ch('y'))).expect("y starts it");
     assert!(job.request.live);
     assert_eq!(
         job.request.stop_account().map(|a| a.name.as_str()),
@@ -258,7 +286,7 @@ config_dir = "~/.claude-alt"
     let mut app = App::new(config, home.into(), owned_by_main(), Box::new(NoEnviron));
     poll_both(&mut app, "after-stop-all.json");
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     assert_eq!(job.request.prompt, "pick up where you stopped");
 }
 
@@ -267,12 +295,23 @@ fn working_or_blocked_rows_confirm_with_the_plan() {
     let mut app = app_two_owned();
     select(&mut app, "touch-config");
     assert!(app.handle_key(ch('a')).is_empty(), "asks first");
-    let Overlay::Confirm(Confirm::Handoff { job, detail }) = app.overlay().clone() else {
+    let Overlay::Confirm(Confirm::Handoff {
+        job,
+        detail,
+        interrupts,
+    }) = app.overlay().clone()
+    else {
         panic!("{:?}", app.overlay());
     };
     assert_eq!(detail, "permission prompt");
+    assert!(interrupts);
     assert_eq!(job.request.plan(), "stop under main, continue under alt");
     let screen = render(&mut app, 120, 30);
+    assert!(screen.contains("interrupts the current turn"), "{screen}");
+    assert!(
+        screen.contains("full conversation and project context will continue under alt"),
+        "{screen}"
+    );
     assert!(
         screen.contains("Continue under another account?"),
         "{screen}"
@@ -328,7 +367,7 @@ fn three_accounts_pick_a_target_other_than_the_owner() {
     app.handle_key(ch('a'));
     app.handle_key(ch('j'));
     app.handle_key(ch('j')); // clamps at the last entry
-    let job = handoff_of(&app.handle_key(key(KeyCode::Enter))).unwrap();
+    let job = confirmed(&mut app, key(KeyCode::Enter)).unwrap();
     assert_eq!(job.request.target.name, "spare");
     assert_eq!(app.overlay(), &Overlay::None);
 }
@@ -366,7 +405,7 @@ fn unknown_owner_picks_any_account_and_stops_with_the_target() {
     let screen = render(&mut app, 120, 30);
     assert!(screen.contains("Owner unknown"), "{screen}");
     app.handle_key(key(KeyCode::Down));
-    let job = handoff_of(&app.handle_key(key(KeyCode::Enter))).unwrap();
+    let job = confirmed(&mut app, key(KeyCode::Enter)).unwrap();
     assert_eq!(job.request.owner, None);
     assert_eq!(job.request.target.name, "alt");
     assert_eq!(
@@ -391,13 +430,264 @@ fn picker_closes_when_the_session_vanishes() {
     assert!(status_text(&app).contains("no longer listed"));
 }
 
+// ---- account groups (doc/0004) ----------------------------------------------
+
+/// An app over `config` where every account lists `after-stop-all.json`
+/// and owners come from `sidecar` (unreadable environ).
+fn app_config(config: &str, sidecar: Sidecar) -> App {
+    let home = Path::new(HOME);
+    let config = Config::parse(config, home).unwrap();
+    let names: Vec<String> = config.accounts.iter().map(|a| a.name.clone()).collect();
+    let mut app = App::new(config, home.into(), sidecar, Box::new(NoEnviron));
+    for a in &names {
+        app.apply_poll(poll(a, "after-stop-all.json"));
+    }
+    app
+}
+
+/// `main` and `alt` in groups `main_group` / `alt_group` (`None`: no
+/// `group` key), plus `extra` lines at the top level.
+fn two_grouped(main_group: Option<&str>, alt_group: Option<&str>, extra: &str) -> String {
+    let group = |g: Option<&str>| g.map(|g| format!("group = \"{g}\"\n")).unwrap_or_default();
+    format!(
+        "{extra}\n[[accounts]]\nname = \"main\"\ncommand = \"claude\"\n{}\
+         [[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\n\
+         config_dir = \"~/.claude-alt\"\n{}",
+        group(main_group),
+        group(alt_group)
+    )
+}
+
+fn assert_starts(text: &str, prefix: &str) {
+    assert!(text.starts_with(prefix), "{text}");
+}
+
+const CROSS_REFUSAL: &str = "hand-off from main (work) to alt (personal) is disabled: different \
+     account groups; set allow_cross_group_handoff = true to allow";
+
+#[test]
+fn same_group_is_allowed_with_confirmation() {
+    let mut app = app_config(
+        &two_grouped(Some("work"), Some("work"), ""),
+        owned_by_main(),
+    );
+    select(&mut app, "say-ok");
+    assert!(app.handle_key(ch('a')).is_empty(), "asks first");
+    let screen = render(&mut app, 120, 30);
+    assert!(
+        screen.contains("From: main (work)   To: alt (work)"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("project context will continue under alt (work)"),
+        "{screen}"
+    );
+    assert!(screen.contains("its terms"), "{screen}");
+    let job = handoff_of(&app.handle_key(ch('y'))).expect("y starts it");
+    assert_eq!(job.request.target.name, "alt");
+    assert_eq!(job.request.target.group, "work");
+}
+
+#[test]
+fn different_groups_are_refused_without_any_effect() {
+    let mut app = app_config(
+        &two_grouped(Some("work"), Some("personal"), ""),
+        owned_by_main(),
+    );
+    for row in ["say-ok", "print-date", "touch-config"] {
+        select(&mut app, row);
+        let effects = app.handle_key(ch('a'));
+        assert!(effects.is_empty(), "{row}: no stop, no resume: {effects:?}");
+        assert_eq!(app.overlay(), &Overlay::None, "{row}: nothing to confirm");
+        assert!(
+            status_text(&app).starts_with(CROSS_REFUSAL),
+            "{row}: {}",
+            status_text(&app)
+        );
+        assert!(app.handoff_progress().is_none());
+        // A stray `y` does not start anything either.
+        assert!(handoff_of(&app.handle_key(ch('y'))).is_none());
+    }
+}
+
+#[test]
+fn the_flag_allows_a_cross_group_handoff() {
+    let mut app = app_config(
+        &two_grouped(
+            Some("work"),
+            Some("personal"),
+            "allow_cross_group_handoff = true",
+        ),
+        owned_by_main(),
+    );
+    select(&mut app, "print-date");
+    assert!(app.handle_key(ch('a')).is_empty(), "asks first");
+    let screen = render(&mut app, 120, 30);
+    assert!(
+        screen.contains("From: main (work)   To: alt (personal)"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("project context will continue under alt"),
+        "{screen}"
+    );
+    assert!(screen.contains("(personal) and its terms"), "{screen}");
+    let job = handoff_of(&app.handle_key(ch('y'))).expect("y starts it");
+    assert_eq!(job.request.target.name, "alt");
+    assert_eq!(
+        job.request.stop_account().map(|a| a.name.as_str()),
+        Some("main")
+    );
+}
+
+const THREE_GROUPED: &str = r#"
+[[accounts]]
+name = "main"
+command = "claude"
+group = "work"
+
+[[accounts]]
+name = "alt"
+command = "claude-alt"
+config_dir = "~/.claude-alt"
+group = "personal"
+
+[[accounts]]
+name = "spare"
+command = "claude-spare"
+config_dir = "~/.claude-spare"
+group = "work"
+"#;
+
+#[test]
+fn three_accounts_in_two_groups_offer_only_the_same_group() {
+    // main (work): the only same-group target is spare, so no picker and
+    // never alt.
+    let mut app = app_config(THREE_GROUPED, owned_by_main());
+    select(&mut app, "say-ok");
+    let job = confirmed(&mut app, ch('a')).unwrap();
+    assert_eq!(job.request.target.name, "spare");
+
+    // alt (personal) has no account in its group.
+    let mut sc = Sidecar::default();
+    sc.record_owner(SAY_OK, "alt", AccountSource::Started);
+    let mut app = app_config(THREE_GROUPED, sc);
+    select(&mut app, "say-ok");
+    assert!(app.handle_key(ch('a')).is_empty());
+    assert_eq!(app.overlay(), &Overlay::None);
+    assert_starts(
+        &status_text(&app),
+        "hand-off from alt (personal) to main (work) or spare (work) is disabled: different \
+         account groups; set allow_cross_group_handoff = true to allow",
+    );
+
+    // A fourth work account: the picker lists main's group only.
+    let four = format!(
+        "{THREE_GROUPED}\n[[accounts]]\nname = \"extra\"\ncommand = \"claude-extra\"\n\
+         config_dir = \"~/.claude-extra\"\ngroup = \"work\"\n"
+    );
+    let mut app = app_config(&four, owned_by_main());
+    select(&mut app, "say-ok");
+    assert!(app.handle_key(ch('a')).is_empty());
+    let Overlay::Target(picker) = app.overlay().clone() else {
+        panic!("{:?}", app.overlay());
+    };
+    assert_eq!(picker.targets, ["spare", "extra"]);
+    let screen = render(&mut app, 120, 30);
+    assert!(
+        screen.contains("▶ spare  (claude-spare)  group work"),
+        "{screen}"
+    );
+    assert!(!screen.contains("claude-alt"), "{screen}");
+    app.handle_key(ch('j'));
+    let job = confirmed(&mut app, key(KeyCode::Enter)).unwrap();
+    assert_eq!(job.request.target.name, "extra");
+
+    // With the flag every other account is offered.
+    let cross = format!("allow_cross_group_handoff = true\n{THREE_GROUPED}");
+    let mut app = app_config(&cross, owned_by_main());
+    select(&mut app, "say-ok");
+    app.handle_key(ch('a'));
+    let Overlay::Target(picker) = app.overlay().clone() else {
+        panic!("{:?}", app.overlay());
+    };
+    assert_eq!(picker.targets, ["alt", "spare"]);
+}
+
+#[test]
+fn unknown_owner_across_groups_is_refused() {
+    let mut app = app_config(
+        &two_grouped(Some("work"), Some("personal"), ""),
+        Sidecar::default(),
+    );
+    select(&mut app, "print-date");
+    assert_eq!(
+        owner_of(&app, PRINT_DATE),
+        Ownership::Unknown { config_dir: None }
+    );
+    let effects = app.handle_key(ch('a'));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(app.overlay(), &Overlay::None, "no picker");
+    let status = status_text(&app);
+    assert!(status.contains("account is unknown"), "{status}");
+    assert!(status.contains("attach first"), "{status}");
+    assert!(status.contains("allow_cross_group_handoff"), "{status}");
+
+    // With the flag the picker offers every account, as without groups.
+    let mut app = app_config(
+        &two_grouped(
+            Some("work"),
+            Some("personal"),
+            "allow_cross_group_handoff = true",
+        ),
+        Sidecar::default(),
+    );
+    select(&mut app, "print-date");
+    app.handle_key(ch('a'));
+    let Overlay::Target(picker) = app.overlay().clone() else {
+        panic!("{:?}", app.overlay());
+    };
+    assert_eq!(picker.targets, ["main", "alt"]);
+
+    // One group for everyone: the unknown owner is no obstacle.
+    let mut app = app_config(
+        &two_grouped(Some("work"), Some("work"), ""),
+        Sidecar::default(),
+    );
+    select(&mut app, "print-date");
+    app.handle_key(ch('a'));
+    assert!(matches!(app.overlay(), Overlay::Target(_)));
+}
+
+#[test]
+fn ungrouped_accounts_behave_as_one_group() {
+    // No group anywhere: allowed (also covered by the tests above).
+    let mut app = app_config(&two_grouped(None, None, ""), owned_by_main());
+    select(&mut app, "say-ok");
+    assert!(app.handle_key(ch('a')).is_empty());
+    let screen = render(&mut app, 120, 30);
+    assert!(screen.contains("From: main   To: alt"), "{screen}");
+    assert!(handoff_of(&app.handle_key(ch('y'))).is_some());
+
+    // An ungrouped account is not in a named group.
+    let mut app = app_config(&two_grouped(None, Some("work"), ""), owned_by_main());
+    select(&mut app, "say-ok");
+    assert!(app.handle_key(ch('a')).is_empty());
+    assert_eq!(app.overlay(), &Overlay::None);
+    assert_starts(
+        &status_text(&app),
+        "hand-off from main (no group) to alt (work) is disabled: different account groups; \
+         set allow_cross_group_handoff = true to allow",
+    );
+}
+
 // ---- running, success, copies -----------------------------------------------
 
 #[test]
 fn progress_then_success_records_the_target() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
 
     app.handoff_step(Step::Stopping {
         account: "main".into(),
@@ -450,7 +740,7 @@ fn progress_then_success_records_the_target() {
 fn an_idle_wake_is_a_warning() {
     let mut app = app_two_owned();
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     let mut idle = continued("b2f8d064");
     idle.idle = true;
     app.handoff_finished(job, Ok(idle));
@@ -464,7 +754,7 @@ fn a_copy_warns_and_is_recorded_under_its_own_session_id_on_the_next_poll() {
     // The copy runs under alt (pid 5001); every other pid is unreadable.
     let mut app = app_two_environ(&[(5001, "/home/user/.claude-alt", 900_000)]);
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     let copy = Resumed {
         id: "0a1b2c3d".into(),
         name: Some("say-ok".into()),
@@ -524,7 +814,7 @@ fn a_copy_warns_and_is_recorded_under_its_own_session_id_on_the_next_poll() {
 fn failures_report_and_poll_without_touching_the_sidecar() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     let before = app.sidecar.clone();
     let effects = app.handoff_finished(
         job.clone(),
@@ -566,7 +856,7 @@ fn quit_question(app: &App) -> Option<String> {
 fn quitting_during_a_handoff_asks_and_defaults_to_no() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     app.handoff_step(Step::WaitingForStop);
 
     // q asks; Enter, n and Esc keep tower running.
@@ -639,7 +929,7 @@ fn attach_account(effects: &[Effect]) -> Option<String> {
 fn row_actions_on_the_session_being_handed_off_are_refused() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     app.handoff_step(Step::WaitingForStop);
 
     // Enter would wake it under main, the old owner; s and d would race it.
@@ -684,7 +974,7 @@ fn an_unknown_owner_row_being_handed_off_opens_no_picker() {
     poll_both(&mut app, "after-stop-all.json");
     select(&mut app, "print-date");
     app.handle_key(ch('a'));
-    assert!(handoff_of(&app.handle_key(key(KeyCode::Enter))).is_some());
+    assert!(confirmed(&mut app, key(KeyCode::Enter)).is_some());
     for k in [key(KeyCode::Enter), ch('s'), ch('d')] {
         assert!(app.handle_key(k).is_empty());
         assert_eq!(app.overlay(), &Overlay::None, "no account picker");
@@ -714,9 +1004,9 @@ fn termination_waits_for_the_handoff_and_records_it() {
 
     // The step, then the result: applied and due for a save.
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     let mut results = vec![
-        JobResult::Handoff(job.clone(), Ok(continued("7b4d9f02"))),
+        JobResult::Handoff(Box::new(job.clone()), Ok(continued("7b4d9f02"))),
         JobResult::HandoffStep(Step::Resuming {
             account: "alt".into(),
         }),
@@ -738,7 +1028,7 @@ fn termination_waits_for_the_handoff_and_records_it() {
     // No result in time: gives up, nothing to save.
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    handoff_of(&app.handle_key(ch('a'))).unwrap();
+    confirmed(&mut app, ch('a')).unwrap();
     let before = app.sidecar.clone();
     assert!(!finish_handoff_for_exit(
         &mut app,
@@ -759,7 +1049,7 @@ fn termination_waits_for_the_handoff_and_records_it() {
         recorded: None,
     };
     let mut once = Some(JobResult::Handoff(
-        job,
+        Box::new(job),
         Err(HandoffError::StillRunning {
             waited: Duration::from_secs(10),
             last_error: None,
@@ -779,7 +1069,7 @@ fn termination_waits_for_the_handoff_and_records_it() {
 fn untrusted_offers_ctrl_t_and_retries_once_without_stopping_again() {
     let mut app = app_two_owned();
     select(&mut app, "print-date");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     assert!(job.request.live);
     let untrusted = || HandoffError::Untrusted {
         dir: PathBuf::from("/home/user/workspace/demo-app"),
@@ -838,7 +1128,7 @@ fn untrusted_offers_ctrl_t_and_retries_once_without_stopping_again() {
 fn a_trust_flow_that_cannot_run_shows_why() {
     let mut app = app_two_owned();
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     let effects = app.handoff_trust_finished(job, Err("cannot run `claude-alt`: not found".into()));
     assert!(effects.is_empty());
     let Overlay::Untrusted(u) = app.overlay().clone() else {
@@ -894,7 +1184,7 @@ fn proc_detection_after_the_wake_agrees_with_the_handoff() {
     let mut app = app_two_environ(&[(5000, "/home/user/.claude-alt", 815_195)]);
     select(&mut app, "print-date");
     assert_eq!(owner_of(&app, PRINT_DATE).account(), Some("main"));
-    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let job = confirmed(&mut app, ch('a')).unwrap();
     app.handoff_finished(job, Ok(continued("7b4d9f02")));
 
     // A late poll from before the stop (old pid 4290) does not move it back.

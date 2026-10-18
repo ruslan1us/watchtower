@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
 - Status: Accepted · 2026-10-18
-- Related: [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md)
+- Related: [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
 
@@ -26,7 +26,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `Tab` | Collapse/expand the group of the selected row or header ([0006](0006-session-states-and-grouping.md)) |
 | `Space` | Toggle the logs panel for the selected row ([0009](0009-stop-remove-and-logs.md)) |
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
-| `a` | Continue under another account ([0004](0004-account-hand-off.md)) |
+| `a` | Continue under another of the user's accounts ([0004](0004-account-hand-off.md)); always confirm, same group only unless `allow_cross_group_handoff = true` ([0018](0018-account-groups-and-handoff-guard.md)) |
 | `o` | Attach to the orchestrator as `Enter` on its row would, starting it if missing ([0010](0010-orchestrator.md)); after a `Workspace not trusted` start a window offers `Ctrl+T` (run the account's command in its folder, then retry once) and `Esc` |
 | `s` | Stop the session (confirm when working or blocked) |
 | `d` | Remove the session (confirm) |
@@ -49,8 +49,25 @@ list, `Ctrl+Z` stays a no-op, and `←` is not bound.
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
 `Enter` cancels too.
 
-**Hand-off** ([0004](0004-account-hand-off.md)): with more than one candidate account, `a`
-opens a target picker (`↑` / `↓`, `Enter` continues, `Esc` cancels). After a `Workspace not
+**Hand-off** ([0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)):
+`a` offers only the accounts the session may go to: the other accounts of the owner's
+`group`, or every other account when `allow_cross_group_handoff = true`. With more than one
+candidate it opens a target picker (`↑` / `↓`, `Enter` continues, `Esc` cancels). Every
+hand-off then asks for confirmation, naming both accounts with their groups and saying what
+moves, e.g. with `allow_cross_group_handoff = true`:
+
+```text
+Continue fix-flaky-test (1a2b3c4d) under alt? It is idle.
+From main (work) to alt (personal): tower will stop under main, continue under alt.
+The full conversation and project context will continue under alt (personal) and its terms.
+```
+
+When no account is allowed, `a` opens nothing and the status line gives the reason, e.g.
+`hand-off from main (work) to alt (personal) is disabled: different account groups; set
+allow_cross_group_handoff = true to allow`. With an unknown owner (`?`) while the accounts
+span several groups it says that the session's account is unknown and the accounts are in
+different groups, and to attach first (`Enter`) so tower learns the owner. An account
+without `group` is shown as `(no group)` in these messages. After a `Workspace not
 trusted` failure a window offers `Ctrl+T` (run the target account's command in the folder,
 then retry once, as in the dialog) and `Esc` (leave the session stopped). While a hand-off
 runs, `q` and `Ctrl+C` (from any window, including the new-session dialog) ask "a hand-off
@@ -113,7 +130,7 @@ variant that works.
 
 ## Consequences
 
-- Every action is one keystroke; destructive ones (`d`, and `s` on a working or blocked session) need a second.
+- Every action is one keystroke; destructive or account-changing ones (`d`, `a`, and `s` on a working or blocked session) need a second.
 - No conflict with Claude Code's own keys, because tower and the attached
   session never receive keys at the same time and tower leaves `←` and `Ctrl+Z` alone.
 - `Ctrl+Enter` may not work in a given terminal; the `Alt+Enter` fallback and

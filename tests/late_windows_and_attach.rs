@@ -66,6 +66,13 @@ fn handoff_of(effects: &[Effect]) -> HandoffJob {
         .expect("a hand-off starts")
 }
 
+/// `a` on the selected row, confirmed with `y` (every hand-off asks,
+/// doc/0004).
+fn start_handoff(app: &mut App) -> HandoffJob {
+    assert!(app.handle_key(ch('a')).is_empty(), "asks first");
+    handoff_of(&app.handle_key(ch('y')))
+}
+
 fn remove_of(effects: &[Effect]) -> SessionAction {
     effects
         .iter()
@@ -103,7 +110,7 @@ fn untrusted() -> Result<watchtower::handoff::Resumed, HandoffError> {
 fn a_late_trust_window_waits_for_the_open_confirmation() {
     let mut app = app_owned();
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a')));
+    let job = start_handoff(&mut app);
     select(&mut app, "print-date");
     app.handle_key(ch('d'));
     assert!(matches!(
@@ -138,7 +145,7 @@ fn a_late_trust_window_waits_for_the_open_confirmation() {
 fn late_windows_wait_for_help_and_pickers_in_order() {
     let mut app = app_owned();
     select(&mut app, "say-ok");
-    let job = handoff_of(&app.handle_key(ch('a')));
+    let job = start_handoff(&mut app);
     select(&mut app, "print-date");
     let action = SessionAction {
         account: app.config().account("main").unwrap().clone(),
@@ -194,7 +201,7 @@ fn an_rm_refusal_waits_for_the_dialog_whose_ctrl_c_asks_first() {
 fn ctrl_c_in_a_popup_asks_while_a_handoff_runs() {
     let mut app = app_owned();
     select(&mut app, "say-ok");
-    let _job = handoff_of(&app.handle_key(ch('a')));
+    let _job = start_handoff(&mut app);
     let action = SessionAction {
         account: app.config().account("main").unwrap().clone(),
         id: "7b4d9f02".into(),

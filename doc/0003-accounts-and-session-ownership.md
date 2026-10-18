@@ -1,7 +1,7 @@
 # 0003. Multiple accounts and session ownership
 
-- Status: Accepted · 2026-10-18 · ownership rules refined by [0017](0017-ownership-evidence-rules.md)
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
+- Status: Accepted · 2026-10-18 · ownership rules refined by [0017](0017-ownership-evidence-rules.md) · account groups added by [0018](0018-account-groups-and-handoff-guard.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -24,11 +24,11 @@ Running a command with account B's binary against a session hosted by account A'
 | `rm <id>` | Succeeds |
 | `--resume <sessionId> --bg "…"` (stopped, run from its `cwd`) | Wakes it **under account B**, same short id |
 
-So waking or attaching with the wrong binary silently moves the session to another account, with its limits and login. The listing JSON does not say which account hosts a session (see the [CLI reference](reference/claude-code-cli.md)).
+So waking or attaching with the wrong binary silently moves the session to another account, with its login and terms. The listing JSON does not say which account hosts a session (see the [CLI reference](reference/claude-code-cli.md)).
 
 ## Decision
 
-**Configuration.** The config lists N accounts, each with `name`, `command` and optional `config_dir` (defaults to `~/.claude` when unset), plus one global `default_account`. There is no per-project account: the user switches accounts only when one hits its limits, using the hand-off ([0004](0004-account-hand-off.md)). The new-session dialog preselects `default_account` and lets the user pick another account for that session ([0008](0008-new-session-dialog.md)).
+**Configuration.** The config lists N accounts, each with `name`, `command`, optional `config_dir` (defaults to `~/.claude` when unset) and optional `group` ([0018](0018-account-groups-and-handoff-guard.md)), plus one global `default_account`. There is no per-project account: a session moves to another of the user's own accounts only through the hand-off ([0004](0004-account-hand-off.md)), within its account group unless `allow_cross_group_handoff = true`. The new-session dialog preselects `default_account` and lets the user pick another account for that session ([0008](0008-new-session-dialog.md)).
 
 ```toml
 default_account = "main"
@@ -71,7 +71,7 @@ A config dir found in `environ` that matches no configured account also yields `
 - **Parse `claude daemon status` text** to match sessions to supervisors: rejected; human-readable output, unstable across releases.
 - **Read the supervisor's internal files** (roster, `jobs/`, `daemon/`): rejected; internal state, against [0001](0001-thin-wrapper-over-claude-cli.md).
 - **Sidecar only**: fails for sessions started outside tower and goes stale when the user wakes a session by hand.
-- **Account per project in config**: does not match how accounts are used (switch on limits, not by project).
+- **Account per project in config**: does not match how accounts are used (chosen per session, not by project).
 
 ## Open items
 

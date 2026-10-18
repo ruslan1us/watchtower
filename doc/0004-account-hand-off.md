@@ -1,11 +1,11 @@
 # 0004. Continue a session under another account
 
-- Status: Accepted · 2026-10-18
-- Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [CLI reference](reference/claude-code-cli.md)
+- Status: Accepted · 2026-10-18 · refined by [0018](0018-account-groups-and-handoff-guard.md)
+- Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0018](0018-account-groups-and-handoff-guard.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
 
-When an account hits its usage limits, the user wants the session to continue under another account with the same history and context. A stopped background session can be woken by any account's binary with `--resume <sessionId> --bg`, and it then runs under that binary's account ([0003](0003-accounts-and-session-ownership.md); [sessions docs](https://code.claude.com/docs/en/sessions)). Usage and limits are not in the listing JSON.
+The user sometimes wants a session to continue under another of their own accounts with the same history and context. A stopped background session can be woken by any account's binary with `--resume <sessionId> --bg`, and it then runs under that binary's account ([0003](0003-accounts-and-session-ownership.md); [sessions docs](https://code.claude.com/docs/en/sessions)).
 
 Verified flow, accounts sharing their session lists:
 
@@ -19,10 +19,12 @@ The saved options are the flags given at the original dispatch: a session dispat
 
 ## Decision
 
-Key `a` on a row hands the session off. v1 only has the manual trigger.
+Key `a` on a row hands the session off. It is only ever a manual action.
 
-- **Target account**: with two accounts, the other one; with more, a picker of every account except the owner.
-- **Confirmation**: required when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn. Tower asks for every row with a live process in the Working or Needs me group, as `s` does ([0009](0009-stop-remove-and-logs.md)): stopping a blocked session also drops its pending prompt. The prompt says what will happen, e.g. "stop under main, continue under alt".
+[0018](0018-account-groups-and-handoff-guard.md) refines this decision: targets are limited to the owner's account group unless `allow_cross_group_handoff = true`, every hand-off asks for confirmation, and there is no automatic or limit-based hand-off. Where a bullet below differs, 0018 applies.
+
+- **Target account**: of the allowed accounts other than the owner ([0018](0018-account-groups-and-handoff-guard.md)), the only one directly, or a picker when there are several.
+- **Confirmation**: always required ([0018](0018-account-groups-and-handoff-guard.md)). It also warns when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn. The warning is shown for every row with a live process in the Working or Needs me group, where `s` asks too ([0009](0009-stop-remove-and-logs.md)): stopping a blocked session also drops its pending prompt. The prompt says what will happen, e.g. "stop under main, continue under alt", and names both accounts' groups.
 - **Steps**:
   1. If the session has a process (`pid` present), run `<owner> stop <id>`, then poll the listing until the process is gone (short timeout; abort with an error if it stays). Tower lists with the same command every 0.5 s for up to 10 s. The process counts as gone when the row is listed with neither `pid` nor `status`, or when two successful, non-empty listings in a row, neither of them partial (skipped rows), do not list it. An empty, partial or failed listing is no evidence and breaks such a run: a supervisor can answer with an empty list while the process still lives, and resuming then would start a copy.
   2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`. The prompt is always passed: without one the woken session stays idle.
@@ -33,7 +35,7 @@ Key `a` on a row hands the session off. v1 only has the manual trigger.
   - `q` and `Ctrl+C`, from the list or any window, including the new-session dialog, ask "a hand-off of X is running; quitting may leave it stopped — quit?". The default is no; `y` quits ([0011](0011-keybindings.md)). The question closes by itself when the hand-off reports back.
   - On SIGTERM or SIGHUP tower waits up to 15 s for the hand-off's result before it exits ([0005](0005-attach-and-detach.md)). It applies the result as usual, saves the sidecar when the result changed it, then exits with 128 + signal. After SIGTERM the status line says that tower is waiting; after SIGHUP, or a terminal that hung up, tower writes nothing to the terminal. If no result comes in time, tower exits anyway, and the session may be left stopped.
 - **Copy detection**: if `--resume <sessionId> --bg` starts a copy instead of continuing (Claude Code prints a `note:` line and a different id, e.g. because the session was still running), tower shows a warning. On the next poll it finds the copy by the short id printed in `backgrounded · <id> · <name>` and reads its `sessionId`. It records the copy under that `sessionId` in the sidecar with the target account and `account_source: handoff`, and leaves the original session's entry as it was. Until then the record is keyed by the copy's short id, the same mechanism as a dispatch ([0008](0008-new-session-dialog.md)).
-- **Unknown owner** (`?`): `stop` works from any account, so tower stops with the target's command and asks only for the target.
+- **Unknown owner** (`?`): `stop` works from any account, so tower stops with the target's command and asks only for the target. When the accounts span several groups, the hand-off is refused until the owner is known ([0018](0018-account-groups-and-handoff-guard.md)).
 - **Preconditions**, checked before step 1:
   - Background session with an `id` and `sessionId`. Interactive rows cannot be handed off, and the action is not offered for them.
   - The `cwd` still exists.
@@ -42,11 +44,11 @@ Key `a` on a row hands the session off. v1 only has the manual trigger.
 
 ### Why manual
 
-Limits are not in the JSON. A later version could take per-account 5 h / 7 d usage from a status-line script and suggest a hand-off. That suggestion must tell spent quota apart from a short rate limit, where waiting is cheaper than switching. Usage display is future work ([0014](0014-v1-scope.md)).
+Moving a session to another account is the user's decision, made per session. Tower never triggers a hand-off by itself and never suggests one from usage or limit data; this is a firm non-goal ([0014](0014-v1-scope.md), [0018](0018-account-groups-and-handoff-guard.md)).
 
 ## Consequences
 
-- The same short id, history and worktree continue under the target's limits; rows, logs and attach follow the new owner from the next poll.
+- The same short id, history and worktree continue under the target account and its terms; rows, logs and attach follow the new owner from the next poll.
 - The interrupted turn is lost; the hand-off prompt asks the agent to pick up where it stopped. A permission prompt that was pending is not shown again.
 - The permission mode carries over only when it was passed at dispatch. Tower always passes `--permission-mode` on dispatch ([0008](0008-new-session-dialog.md)), so its sessions keep their mode.
 - The hand-off depends on the target account seeing the session's transcript, so the config dirs must share their history (as in the verified setup).
@@ -57,7 +59,7 @@ Limits are not in the JSON. A later version could take per-account 5 h / 7 d usa
 
 - **Attach with the target binary** (wakes it under the target too): needs a terminal round trip; the background wake does the same without one.
 - **Start a fresh session under the target with a summary**: loses context and the worktree link.
-- **Automatic hand-off on limit hit**: no reliable limit signal in v1.
+- **Automatic or limit-based hand-off**: rejected. Moving a session is the user's decision; usage limits are handled with Anthropic's official options ([0018](0018-account-groups-and-handoff-guard.md)).
 
 ## Open items
 

@@ -47,6 +47,10 @@ Concrete things tower does not do:
 - Change or work around the idle stop after about an hour; it can't be
   configured anyway.
 - Log in, refresh tokens or touch credentials.
+- Run `claude setup-token`, proxy or route a session's requests, or offer a
+  hosted, shared or multi-user mode. Each session is the unmodified official
+  binary under the user's own login (hard rules in
+  [0001](0001-thin-wrapper-over-claude-cli.md)).
 - Accept workspace trust on the user's behalf. Tower can open interactive
   Claude Code in the folder so the user accepts trust in Claude Code's own
   dialog ([0008](0008-new-session-dialog.md)).

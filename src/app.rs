@@ -334,11 +334,14 @@ pub enum Confirm {
     },
     /// Remove a session from the list.
     Remove { action: SessionAction },
-    /// Hand off a working or blocked session: stopping it interrupts the
-    /// turn (doc/0004); `detail` is its state label.
+    /// Hand off a session; every hand-off asks, since it moves the
+    /// conversation and project context under the target account and its
+    /// terms (doc/0004). `detail` is its state label; `interrupts` is set for
+    /// a working or blocked session, whose stop interrupts the turn.
     Handoff {
         job: Box<HandoffJob>,
         detail: String,
+        interrupts: bool,
     },
 }
 
@@ -383,7 +386,9 @@ pub struct TargetPicker {
     pub name: String,
     /// The owning account, `None` when unknown (`?`).
     pub owner: Option<String>,
-    /// Candidate target accounts, in config order; never the owner.
+    /// Candidate target accounts, in config order; never the owner, and
+    /// only the owner's group unless `allow_cross_group_handoff` is set
+    /// ([`handoff::targets`]).
     pub targets: Vec<String>,
     /// Index into `targets`.
     pub selected: usize,
@@ -2966,13 +2971,14 @@ impl App {
             return Vec::new();
         }
         let owner = m.owner.account().map(str::to_owned);
-        let targets: Vec<String> = self
-            .config
-            .accounts
-            .iter()
-            .filter(|a| owner.as_deref() != Some(a.name.as_str()))
-            .map(|a| a.name.clone())
-            .collect();
+        let owner_account = owner.as_deref().and_then(|a| self.config.account(a));
+        let targets = match handoff::targets(&self.config, owner_account, &name) {
+            Ok(targets) => targets,
+            Err(refusal) => {
+                self.set_message(refusal, Severity::Warning);
+                return Vec::new();
+            }
+        };
         match targets.as_slice() {
             [] => Vec::new(),
             [only] => {
@@ -2993,8 +2999,8 @@ impl App {
     }
 
     /// The hand-off of the session with `sessionId` `key` to `target`, from
-    /// the current row: confirmed first when the session is working or
-    /// blocked (`stop` interrupts the turn), otherwise started.
+    /// the current row: checked against the account groups again, then
+    /// always confirmed first (doc/0004).
     fn plan_handoff(&mut self, key: &str, target: &str) -> Vec<Effect> {
         let Some(m) = self
             .sessions
@@ -3012,35 +3018,40 @@ impl App {
             return Vec::new();
         };
         let s = &m.session;
+        let owner = m
+            .owner
+            .account()
+            .and_then(|a| self.config.account(a))
+            .cloned();
+        if let Err(refusal) =
+            handoff::check_target(&self.config, owner.as_ref(), &target, &s.display_name())
+        {
+            self.set_message(refusal, Severity::Warning);
+            return Vec::new();
+        }
         let request = HandoffRequest {
             id: s.id.clone().unwrap_or_default(),
             session_id: key.to_owned(),
             name: s.display_name(),
             cwd: paths::expand_tilde(&s.cwd, &self.home),
-            owner: m
-                .owner
-                .account()
-                .and_then(|a| self.config.account(a))
-                .cloned(),
+            owner,
             target,
             live: s.has_live_process(),
             prompt: self.config.handoff_prompt.clone(),
         };
-        let confirm = request.live && stop_needs_confirmation(s);
+        let interrupts = request.live && stop_needs_confirmation(s);
         let detail = groups::detail(s);
         let job = HandoffJob {
             request,
             after_trust: false,
             recorded: self.sidecar.base_owner(key),
         };
-        if confirm {
-            self.overlay = Overlay::Confirm(Confirm::Handoff {
-                job: Box::new(job),
-                detail,
-            });
-            return Vec::new();
-        }
-        self.start_handoff(job)
+        self.overlay = Overlay::Confirm(Confirm::Handoff {
+            job: Box::new(job),
+            detail,
+            interrupts,
+        });
+        Vec::new()
     }
 
     fn start_handoff(&mut self, job: HandoffJob) -> Vec<Effect> {

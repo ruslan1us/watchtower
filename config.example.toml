@@ -45,6 +45,16 @@ default_permission_mode = "auto"
 # Default: "continue"
 handoff_prompt = "continue"
 
+# Whether `a` may hand a session off to an account of another group (see
+# `group` under [[accounts]]). A hand-off moves the whole conversation and
+# project context under the target account and its terms (training, data
+# retention, admin controls), so by default it only goes to accounts of the
+# owner's group. Switching accounts to get around usage limits may also
+# conflict with Anthropic's Usage Policy. Set to true only if moving sessions
+# between these accounts is fine for you.
+# Default: false
+allow_cross_group_handoff = false
+
 # Accounts (doc/0003). Each one is a Claude Code config dir with its own
 # login and background-session supervisor.
 #
@@ -59,6 +69,14 @@ handoff_prompt = "continue"
 #   config_dir  The account's CLAUDE_CONFIG_DIR. Used only to recognise which
 #               account hosts a running session. Every account needs its own.
 #               Default: "~/.claude"
+#   group       Accounts under the same organisation and terms, e.g. "work" or
+#               "personal": letters, digits, `-` and `_`. Put accounts from
+#               different organisations or terms (e.g. an employer-provided
+#               account and a personal one) in different groups. A hand-off
+#               (key `a`) moves the conversation and project context under the
+#               target account's terms, so it only goes to an account of the
+#               same group unless allow_cross_group_handoff = true.
+#               Default: no group; all accounts without one share a group.
 #
 # Default: one account, name = "main", command = "claude".
 
@@ -66,8 +84,19 @@ handoff_prompt = "continue"
 name = "main"
 command = "claude"
 config_dir = "~/.claude"
+group = "personal"
 
 [[accounts]]
 name = "alt"
 command = "claude-alt"               # wrapper that sets CLAUDE_CONFIG_DIR=~/.claude-alt
 config_dir = "~/.claude-alt"
+group = "personal"
+
+# An employer-provided account belongs in a group of its own: sessions are
+# not handed off between it and the personal accounts above.
+#
+# [[accounts]]
+# name = "work"
+# command = "claude-work"
+# config_dir = "~/.claude-work"
+# group = "work"

@@ -11,8 +11,9 @@ What it adds on top:
 - **Several accounts in one view.** Every configured Claude Code account (each its own
   `CLAUDE_CONFIG_DIR`) is polled and merged into one list, grouped by state (Needs me,
   Failed, Ready for review, Working, Stopped & finished, Interactive) or by project.
-- **Hand-off between accounts.** When one account hits its limits, `a` stops a session and
-  continues it under another account with the same history.
+- **Hand-off between your own accounts.** `a` stops a session and continues it under another
+  of your own accounts with the same history and project context, after asking. By default
+  it stays inside the owner's account group ([Accounts and terms](#accounts-and-terms)).
 - **An orchestrator session.** `o` opens an ordinary background session named
   `orchestrator` that you can ask what your sessions are doing.
 - **Visual-only attention.** A session that starts waiting for you or fails gets a `●`
@@ -23,12 +24,42 @@ What it adds on top:
 ## What it does not do
 
 Tower never runs, supervises or reconfigures agents. It has no PTY handling, no tmux, no
-Agent SDK and no direct API calls, and it does not read Claude Code's internal files or
-credentials ([0001](doc/0001-thin-wrapper-over-claude-cli.md)). It never changes Claude
+Agent SDK and no direct API calls, and it does not read Claude Code's internal files
+([0001](doc/0001-thin-wrapper-over-claude-cli.md)). It never changes Claude
 Code's settings, keybindings or defaults ([0016](doc/0016-do-not-change-claude-code-defaults.md)).
-There is no quick reply without attaching, no usage or limit display, no automatic
-hand-off, no pinning and no chat or diff views. The full list of non-goals is in
-[0014](doc/0014-v1-scope.md).
+It never reads, stores or passes on credentials or session tokens, never runs
+`claude setup-token`, never proxies or routes requests, and has no hosted, shared or
+multi-user mode: it is a single-user local tool around the unmodified official `claude`
+binary. There is no quick reply without attaching, no usage or limit display, no automatic
+or limit-based hand-off, no pinning and no chat or diff views. The full list of non-goals
+is in [0014](doc/0014-v1-scope.md).
+
+## Accounts and terms
+
+Tower only switches between accounts you already use with Claude Code. This is a short
+summary of what that means, not legal advice.
+
+- **Your own accounts, official login.** Every configured account must be your own and
+  logged in through the official `claude` CLI
+  ([Authentication](https://code.claude.com/docs/en/authentication)). Tower never handles
+  credentials.
+- **A hand-off moves the whole conversation.** After `a`, the full conversation and project
+  context continue under the target account, under that account's terms. Training,
+  retention and admin controls differ between consumer (Free, Pro, Max) and commercial
+  (Team, Enterprise, API) accounts; see
+  [Data usage](https://code.claude.com/docs/en/data-usage).
+- **Keep employer and personal accounts apart.** Don't move sessions between an
+  employer-provided account and a personal one without your organisation's permission.
+  Give each account a `group` (e.g. `work`, `personal`): `a` then offers only accounts in
+  the session owner's group, because `allow_cross_group_handoff` is off by default
+  ([Configuration](#configuration)).
+- **Usage limits.** When an account hits its usage limits, use Anthropic's official
+  options: usage credits, upgrading your plan, API usage, or waiting for the reset.
+- **Shared history mixes accounts.** Config dirs that share history through symlinks mix
+  those accounts' transcripts and memory.
+- Claude Code is governed by the terms listed under
+  [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) and by the
+  [Usage Policy](https://www.anthropic.com/legal/aup).
 
 ## Requirements
 
@@ -91,6 +122,29 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 - **Shared lists.** Accounts whose config dirs share session storage through symlinks list
   the same sessions. Tower merges them by session id and tracks the owner itself
   ([0003](doc/0003-accounts-and-session-ownership.md)).
+- **Groups.** An account may set `group`; accounts without one share one implicit group.
+  A hand-off offers only accounts in the same group as the session's owner. The top-level
+  `allow_cross_group_handoff` (default `false`) allows hand-offs across groups. While the
+  owner is unknown and the accounts span several groups, tower refuses the hand-off until
+  the owner is known ([0018](doc/0018-account-groups-and-handoff-guard.md)). With the
+  example accounts:
+
+  ```toml
+  allow_cross_group_handoff = false
+
+  [[accounts]]
+  name = "main"
+  command = "claude"
+  group = "work"
+
+  [[accounts]]
+  name = "alt"
+  command = "claude-alt"
+  config_dir = "~/.claude-alt"
+  group = "personal"
+  ```
+
+  Here `a` refuses to move a session from `main` to `alt` and says which groups differ.
 
 ## Keys
 
@@ -104,7 +158,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `Tab` | Collapse / expand the group of the selected line |
 | `Space` | Toggle the logs panel for the selected session |
 | `n` | New-session dialog |
-| `a` | Continue under another account (hand-off) |
+| `a` | Continue under another of your accounts (hand-off; always asks, same group only by default) |
 | `o` | Attach to the orchestrator, starting it if missing |
 | `s` | Stop the session (asks first when it is working or blocked) |
 | `d` | Remove the session (asks first) |
@@ -117,7 +171,9 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |
 
-Confirmations take `y`; `n`, `Esc` and `Enter` cancel. Tower never binds `←` and treats
+Confirmations take `y`; `n`, `Esc` and `Enter` cancel. The hand-off confirmation names
+both accounts and their groups and says that the full conversation and project context
+continue under the target account and its terms. Tower never binds `←` and treats
 `Ctrl+Z` as a no-op, because inside an attached session those are Claude Code's keys
 (`←` on an empty prompt opens agent view, `Ctrl+Z` returns to tower).
 
@@ -172,7 +228,7 @@ Next to the config, in `~/.config/watchtower/`:
 ## Safety notes
 
 - **Wrong-account wakes.** Attaching to or resuming a stopped session with another
-  account's `claude` silently moves it to that account, with its limits and login, and the
+  account's `claude` silently moves it to that account, with its login and terms, and the
   listing does not say which account hosts a session. So tower tracks ownership (from
   `/proc`, the per-account lists, its own dispatches and hand-offs) and runs every command
   with the owning account's command. When the owner is unknown the row shows `?`, and tower
@@ -216,3 +272,6 @@ committed may contain personal details ([0013](doc/0013-privacy-and-repository-h
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+Watchtower is an independent project, not affiliated with or endorsed by Anthropic. Claude
+and Claude Code are trademarks of Anthropic.

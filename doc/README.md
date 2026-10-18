@@ -7,7 +7,7 @@ with `claude agents --json`, and entered, inspected, stopped and removed with
 `claude attach`, `claude logs`, `claude stop` and `claude rm`. Tower adds a
 layout, keys and a workflow on top of that: one screen for every session across
 several Claude Code accounts, a highlighted row when a session needs you, a
-new-session dialog, a way to continue a session under another account, and an
+new-session dialog, a way to continue a session under another of your own accounts, and an
 orchestrator session you can ask about the others. It never runs, supervises or
 reconfigures agents itself.
 
@@ -35,6 +35,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0015 | [Testing strategy](0015-testing-strategy.md) | Accepted |
 | 0016 | [Never change Claude Code's own behaviour](0016-do-not-change-claude-code-defaults.md) | Accepted |
 | 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted |
+| 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

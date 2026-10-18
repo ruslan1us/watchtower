@@ -61,8 +61,9 @@ pub enum JobResult {
     Logs(LogsTarget, Result<LogScreen, LogsError>),
     /// A step of a running hand-off has started.
     HandoffStep(Step),
-    /// A finished hand-off (doc/0004).
-    Handoff(HandoffJob, Result<Resumed, HandoffError>),
+    /// A finished hand-off (doc/0004). The job is boxed to keep the enum
+    /// small.
+    Handoff(Box<HandoffJob>, Result<Resumed, HandoffError>),
     /// A finished sidecar save, with its job number (doc/0002).
     Saved(u64, SaveJob, io::Result<Saved>),
     /// A finished look for other towers' sidecar changes (doc/0017).
@@ -84,7 +85,7 @@ impl JobResult {
                 app.handoff_step(step);
                 Vec::new()
             }
-            JobResult::Handoff(job, result) => app.handoff_finished(job, result),
+            JobResult::Handoff(job, result) => app.handoff_finished(*job, result),
             JobResult::Saved(seq, job, result) => app.sidecar_saved(seq, &job, result),
             JobResult::Checked(seq, result) => app.sidecar_checked(seq, result),
             JobResult::Projects(id, list) => {
@@ -219,7 +220,7 @@ impl Jobs {
     pub fn handoff(&self, job: HandoffJob) {
         let timing = self.handoff_timing;
         let state_file = self.state_file.clone();
-        let fail = |job, err| JobResult::Handoff(job, Err(HandoffError::ResumeCli(err)));
+        let fail = |job, err| JobResult::Handoff(Box::new(job), Err(HandoffError::ResumeCli(err)));
         self.launch("handoff", job, fail, move |runner, tx, job| {
             let mut progress = |step: Step| {
                 let _ = tx.send(JobResult::HandoffStep(step));
@@ -230,7 +231,7 @@ impl Jobs {
             };
             let result =
                 handoff::run_checked(runner, &job.request, &timing, &mut progress, &mut check);
-            JobResult::Handoff(job, result)
+            JobResult::Handoff(Box::new(job), result)
         });
     }
 

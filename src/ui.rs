@@ -585,22 +585,41 @@ fn draw_confirm(frame: &mut Frame, app: &App, confirm: &Confirm, area: Rect) {
                     .to_owned(),
             ],
         ),
-        Confirm::Handoff { job, detail } => {
+        Confirm::Handoff {
+            job,
+            detail,
+            interrupts,
+        } => {
             let r = &job.request;
+            let from = r
+                .owner
+                .as_ref()
+                .map_or_else(|| "? (account unknown)".to_owned(), |a| a.label());
+            let to = r.target.label();
             let mut text = vec![
                 format!(
                     "Continue {} ({}) under {}? It is {detail}.",
                     r.name, r.id, r.target.name
                 ),
-                format!("Tower will {}.", r.plan()),
-                "Stopping interrupts the current turn; the session then gets the hand-off \
-                 prompt and picks up from there."
-                    .to_owned(),
+                format!("From: {from}   To: {to}"),
+                format!("Plan: {}.", r.plan()),
+                format!(
+                    "The full conversation and project context will continue under {to} and \
+                     its terms."
+                ),
             ];
-            if detail == "permission prompt" {
+            if *interrupts {
                 text.push(
-                    "The pending permission prompt is not shown again after the wake.".to_owned(),
+                    "Stopping interrupts the current turn; the session then gets the hand-off \
+                     prompt and picks up from there."
+                        .to_owned(),
                 );
+                if detail == "permission prompt" {
+                    text.push(
+                        "The pending permission prompt is not shown again after the wake."
+                            .to_owned(),
+                    );
+                }
             }
             (" Continue under another account? ", text)
         }
@@ -674,7 +693,9 @@ fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
     );
 }
 
-/// The hand-off target picker (doc/0004): every account except the owner.
+/// The hand-off target picker (doc/0004): the accounts of the owner's
+/// group except the owner, or every other account with
+/// `allow_cross_group_handoff` ([`crate::handoff::targets`]).
 fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect) {
     let mut lines = vec![match &picker.owner {
         Some(owner) => Line::from(format!(
@@ -686,13 +707,14 @@ fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect) 
     }];
     lines.push(Line::raw(""));
     for (i, name) in picker.targets.iter().enumerate() {
-        let command = app
-            .config()
-            .account(name)
-            .map(|a| a.command.as_str())
-            .unwrap_or("?");
+        let account = app.config().account(name);
+        let command = account.map(|a| a.command.as_str()).unwrap_or("?");
+        let group = match account.map(|a| a.group.as_str()) {
+            Some(g) if !g.is_empty() => format!("  group {g}"),
+            _ => String::new(),
+        };
         let text = format!(
-            " {} {name}  ({command})",
+            " {} {name}  ({command}){group}",
             if i == picker.selected { "▶" } else { " " }
         );
         let style = if i == picker.selected {

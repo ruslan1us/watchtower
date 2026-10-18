@@ -1,7 +1,7 @@
 # 0002. Tech stack, config and state files
 
 - Status: Accepted · 2026-10-18
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
 
@@ -54,16 +54,20 @@ default_permission_mode = "auto"
 
 # Prompt used when a session continues under another account (see 0004).
 handoff_prompt = "continue"
+# Allow hand-offs between accounts of different groups (see 0018).
+allow_cross_group_handoff = false
 
 [[accounts]]
 name = "main"
 command = "claude"
 config_dir = "~/.claude"
+group = "work"                       # optional
 
 [[accounts]]
 name = "alt"
 command = "claude-alt"               # wrapper that sets CLAUDE_CONFIG_DIR=~/.claude-alt
 config_dir = "~/.claude-alt"
+group = "personal"
 ```
 
 `command` is run as-is; tower does not set `CLAUDE_CONFIG_DIR` itself, and
@@ -73,6 +77,10 @@ in tower's own shell never reaches an account's command (a wrapper such as
 ([0017](0017-ownership-evidence-rules.md), environment hygiene).
 `config_dir` is used to recognise which account hosts a running session
 ([0003](0003-accounts-and-session-ownership.md)). It defaults to `~/.claude`.
+`group` is an optional string per account; accounts without it share one
+implicit group. A hand-off offers only accounts in the owner's group unless
+the top-level `allow_cross_group_handoff` (default `false`) is `true`
+([0018](0018-account-groups-and-handoff-guard.md)).
 
 **Sidecar state:** `state.json` next to `config.toml`. It holds only what the
 CLI does not expose:

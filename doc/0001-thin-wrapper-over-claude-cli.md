@@ -1,7 +1,7 @@
 # 0001. Thin wrapper over the Claude Code CLI
 
 - Status: Accepted · 2026-10-18
-- Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md)
+- Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
 
@@ -86,6 +86,19 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
 
 Tower has no PTY handling, no process supervision, no tmux, no Agent SDK and no
 direct API calls. It does not read, write or refresh credentials.
+
+**Hard rules (non-goals that do not move).** These keep tower an ordinary local
+front end for one person's own accounts
+([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
+[0018](0018-account-groups-and-handoff-guard.md)):
+
+- Tower never reads, stores or intermediates credentials or session tokens. Every
+  account logs in through the official `claude` CLI, on its own.
+- Tower never runs `claude setup-token` or any other login or token command.
+- Tower never offers a hosted, shared or multi-user mode.
+- Tower never proxies or routes requests; each session talks to Anthropic through
+  its own unmodified `claude` process.
+- Tower stays a single-user local tool around the unmodified official binary.
 
 ## Consequences
 

@@ -27,6 +27,11 @@ pub struct Account {
     /// The account's config dir with `~` expanded (symlinks not resolved).
     /// Used only to recognise which account hosts a running session.
     pub config_dir: PathBuf,
+    /// The account's group (`group` in the config), e.g. `work` or
+    /// `personal`; `""` when unset. Ungrouped accounts share the implicit
+    /// group `""`. A hand-off only goes to an account of the owner's group
+    /// unless `allow_cross_group_handoff` is set (doc/0004).
+    pub group: String,
     argv: Vec<String>,
 }
 
@@ -59,8 +64,39 @@ impl Account {
             name,
             command,
             config_dir,
+            group: String::new(),
             argv,
         })
+    }
+
+    /// The same account in group `group`. A group must be non-empty and
+    /// made of ASCII letters, digits, `-` and `_`.
+    pub fn with_group(mut self, group: &str) -> Result<Account, ConfigError> {
+        let name = &self.name;
+        if group.trim().is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "account `{name}`: group is empty; leave `group` out for no group"
+            )));
+        }
+        if !group
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(ConfigError::Invalid(format!(
+                "account `{name}`: group `{group}` may only contain letters, digits, `-` and `_`"
+            )));
+        }
+        self.group = group.to_owned();
+        Ok(self)
+    }
+
+    /// The name with the group when one is set, e.g. `main (work)`.
+    pub fn label(&self) -> String {
+        if self.group.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} ({})", self.name, self.group)
+        }
     }
 
     /// The command split into program and leading arguments, e.g.
@@ -93,6 +129,9 @@ pub struct Config {
     pub default_permission_mode: String,
     /// Prompt used when a session continues under another account (doc/0004).
     pub handoff_prompt: String,
+    /// Whether a hand-off may go to an account of another group (doc/0004).
+    /// Default `false`: only accounts of the owner's group are targets.
+    pub allow_cross_group_handoff: bool,
 }
 
 /// Errors from loading or validating the config.
@@ -127,6 +166,7 @@ struct RawConfig {
     default_effort: Option<String>,
     default_permission_mode: Option<String>,
     handoff_prompt: Option<String>,
+    allow_cross_group_handoff: Option<bool>,
     #[serde(default)]
     accounts: Vec<RawAccount>,
 }
@@ -136,6 +176,7 @@ struct RawAccount {
     name: String,
     command: String,
     config_dir: Option<String>,
+    group: Option<String>,
 }
 
 impl Config {
@@ -181,7 +222,10 @@ impl Config {
     fn from_raw(raw: RawConfig, home: &Path) -> Result<Config, ConfigError> {
         let mut accounts = Vec::with_capacity(raw.accounts.len().max(1));
         for a in raw.accounts {
-            let account = Account::new(a.name, a.command, a.config_dir.as_deref(), home)?;
+            let mut account = Account::new(a.name, a.command, a.config_dir.as_deref(), home)?;
+            if let Some(group) = a.group.as_deref() {
+                account = account.with_group(group)?;
+            }
             if accounts.iter().any(|x: &Account| x.name == account.name) {
                 return Err(ConfigError::Invalid(format!(
                     "duplicate account name `{}`",
@@ -223,6 +267,7 @@ impl Config {
             default_effort: raw.default_effort.unwrap_or_else(|| "default".into()),
             default_permission_mode: raw.default_permission_mode.unwrap_or_else(|| "auto".into()),
             handoff_prompt: raw.handoff_prompt.unwrap_or_else(|| "continue".into()),
+            allow_cross_group_handoff: raw.allow_cross_group_handoff.unwrap_or(false),
         })
     }
 
@@ -293,6 +338,7 @@ mod tests {
             default_effort,
             default_permission_mode,
             handoff_prompt,
+            allow_cross_group_handoff,
             accounts,
         } = raw;
         assert!(default_account.is_some());
@@ -303,15 +349,18 @@ mod tests {
         assert!(default_effort.is_some());
         assert!(default_permission_mode.is_some());
         assert!(handoff_prompt.is_some());
+        assert!(allow_cross_group_handoff.is_some());
         assert!(!accounts.is_empty());
         for RawAccount {
             name,
             command,
             config_dir,
+            group,
         } in accounts
         {
             assert!(!name.is_empty() && !command.is_empty());
             assert!(config_dir.is_some());
+            assert!(group.is_some());
         }
     }
 }

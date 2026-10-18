@@ -98,10 +98,78 @@ fn partial_config_defaults() {
     assert_eq!(c.default_effort, "default");
     assert_eq!(c.default_permission_mode, "auto");
     assert_eq!(c.handoff_prompt, "continue");
+    assert!(
+        !c.allow_cross_group_handoff,
+        "cross-group hand-off is off by default"
+    );
+    assert_eq!(c.accounts[0].group, "", "no group by default");
+    assert!(!Config::defaults(Path::new(HOME)).allow_cross_group_handoff);
 
     // Without default_account the first account is the default.
     let c = parse("[[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\n").unwrap();
     assert_eq!(c.default_account, "alt");
+}
+
+#[test]
+fn account_groups_parse() {
+    let c = parse(
+        r#"
+allow_cross_group_handoff = true
+
+[[accounts]]
+name = "main"
+command = "claude"
+group = "work"
+
+[[accounts]]
+name = "alt"
+command = "claude-alt"
+config_dir = "~/.claude-alt"
+group = "personal_2-b"
+
+[[accounts]]
+name = "spare"
+command = "claude-spare"
+config_dir = "~/.claude-spare"
+"#,
+    )
+    .unwrap();
+    assert!(c.allow_cross_group_handoff);
+    let groups: Vec<(&str, &str)> = c
+        .accounts
+        .iter()
+        .map(|a| (a.name.as_str(), a.group.as_str()))
+        .collect();
+    assert_eq!(
+        groups,
+        [("main", "work"), ("alt", "personal_2-b"), ("spare", "")]
+    );
+    assert_eq!(c.accounts[0].label(), "main (work)");
+    assert_eq!(c.accounts[2].label(), "spare");
+}
+
+#[test]
+fn invalid_group_names_are_rejected() {
+    for bad in [
+        "", "   ", "my work", " work", "work!", "a.b", "groupé", "x/y",
+    ] {
+        let text =
+            format!("[[accounts]]\nname = \"main\"\ncommand = \"claude\"\ngroup = \"{bad}\"\n");
+        let msg = invalid(&text);
+        assert!(
+            msg.contains("main") && msg.contains("group"),
+            "{bad:?}: {msg}"
+        );
+    }
+    // Not a string: a parse error.
+    assert!(matches!(
+        parse("[[accounts]]\nname = \"main\"\ncommand = \"claude\"\ngroup = 1\n"),
+        Err(ConfigError::Parse { .. })
+    ));
+    assert!(matches!(
+        parse("allow_cross_group_handoff = \"yes\"\n"),
+        Err(ConfigError::Parse { .. })
+    ));
 }
 
 #[test]
@@ -238,19 +306,41 @@ fn example_config_is_valid_and_complete() {
     assert_eq!(c.default_effort, defaults.default_effort);
     assert_eq!(c.default_permission_mode, defaults.default_permission_mode);
     assert_eq!(c.handoff_prompt, defaults.handoff_prompt);
+    assert_eq!(
+        c.allow_cross_group_handoff,
+        defaults.allow_cross_group_handoff
+    );
     assert_eq!(c.project_roots, [PathBuf::from("/home/user/workspace")]);
     assert_eq!(c.extra_projects, [PathBuf::from("/home/user/notes")]);
 
-    let accounts: Vec<(&str, &str, PathBuf)> = c
+    let accounts: Vec<(&str, &str, PathBuf, &str)> = c
         .accounts
         .iter()
-        .map(|a| (a.name.as_str(), a.command.as_str(), a.config_dir.clone()))
+        .map(|a| {
+            (
+                a.name.as_str(),
+                a.command.as_str(),
+                a.config_dir.clone(),
+                a.group.as_str(),
+            )
+        })
         .collect();
+    // Both example accounts share a group, so hand-off works between them.
     assert_eq!(
         accounts,
         [
-            ("main", "claude", PathBuf::from("/home/user/.claude")),
-            ("alt", "claude-alt", PathBuf::from("/home/user/.claude-alt")),
+            (
+                "main",
+                "claude",
+                PathBuf::from("/home/user/.claude"),
+                "personal"
+            ),
+            (
+                "alt",
+                "claude-alt",
+                PathBuf::from("/home/user/.claude-alt"),
+                "personal"
+            ),
         ]
     );
     // The default `main` account is the example's first one.
@@ -266,6 +356,7 @@ fn example_config_is_valid_and_complete() {
         keys,
         [
             "accounts",
+            "allow_cross_group_handoff",
             "default_account",
             "default_effort",
             "default_model",
@@ -284,6 +375,6 @@ fn example_config_is_valid_and_complete() {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["command", "config_dir", "name"]);
+        assert_eq!(keys, ["command", "config_dir", "group", "name"]);
     }
 }

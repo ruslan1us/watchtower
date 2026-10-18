@@ -20,6 +20,11 @@
 //! UI then offers the trust flow of doc/0008 for the target account and
 //! retries once ([`HandoffRequest::after_stop`]). Nothing here touches the
 //! sidecar; on success the caller uses [`record`].
+//!
+//! Which accounts a session may go to is decided by [`targets`] and
+//! [`check_target`]: accounts of the owner's `group` only, unless
+//! `allow_cross_group_handoff` is set. A hand-off moves the conversation and
+//! project context under the target account's terms (doc/0004).
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -27,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use crate::actions::{self, StopError};
 use crate::cli::{CliError, CliOutput, CliRunner, CommandLine};
-use crate::config::Account;
+use crate::config::{Account, Config};
 use crate::dispatch::{UNTRUSTED_PREFIX, parse_backgrounded};
 use crate::listing::{Listing, Session};
 use crate::sidecar::{AccountSource, Sidecar};
@@ -276,6 +281,103 @@ impl HandoffError {
                 | HandoffError::Unparsed { .. }
                 | HandoffError::OwnerChanged { stopped: true, .. }
         )
+    }
+}
+
+/// An account with its group for refusal messages: `main (work)`, or
+/// `main (no group)` for an ungrouped account.
+fn group_label(a: &Account) -> String {
+    if a.group.is_empty() {
+        format!("{} (no group)", a.name)
+    } else {
+        a.label()
+    }
+}
+
+/// Whether the configured accounts are in more than one group.
+fn spans_groups(config: &Config) -> bool {
+    config
+        .accounts
+        .iter()
+        .any(|a| a.group != config.accounts[0].group)
+}
+
+/// The refusal for an unknown owner while the accounts span groups.
+fn unknown_owner_refusal(name: &str) -> String {
+    format!(
+        "{name}'s account is unknown (?) and the accounts are in different groups; attach \
+         first (Enter) so tower learns its account, then hand it off \
+         (or set allow_cross_group_handoff = true)"
+    )
+}
+
+/// The refusal for a hand-off from `owner` to accounts of other groups.
+fn cross_group_refusal(owner: &Account, to: &[&Account]) -> String {
+    let to: Vec<String> = to.iter().map(|a| group_label(a)).collect();
+    format!(
+        "hand-off from {} to {} is disabled: different account groups; set \
+         allow_cross_group_handoff = true to allow",
+        group_label(owner),
+        to.join(" or ")
+    )
+}
+
+/// The accounts the session `name` may be handed off to (doc/0004), in
+/// config order, by name. `owner` is the owning account, `None` when it is
+/// unknown (`?`) or not configured.
+///
+/// - Known owner: every other account of the owner's group; every other
+///   account when `allow_cross_group_handoff` is set.
+/// - Unknown owner: every account (the stop then uses the target's
+///   command), but only while all accounts share one group or the flag is
+///   set. Otherwise the session's account must be learned first.
+///
+/// `Err` holds the status message when no account is allowed because of
+/// the groups; `Ok` may be empty with a single account.
+pub fn targets(
+    config: &Config,
+    owner: Option<&Account>,
+    name: &str,
+) -> Result<Vec<String>, String> {
+    let cross = config.allow_cross_group_handoff;
+    let Some(owner) = owner else {
+        if !cross && spans_groups(config) {
+            return Err(unknown_owner_refusal(name));
+        }
+        return Ok(config.accounts.iter().map(|a| a.name.clone()).collect());
+    };
+    let others: Vec<&Account> = config
+        .accounts
+        .iter()
+        .filter(|a| a.name != owner.name)
+        .collect();
+    let allowed: Vec<String> = others
+        .iter()
+        .filter(|a| cross || a.group == owner.group)
+        .map(|a| a.name.clone())
+        .collect();
+    if allowed.is_empty() && !others.is_empty() {
+        return Err(cross_group_refusal(owner, &others));
+    }
+    Ok(allowed)
+}
+
+/// Checks one target right before a hand-off is planned, by the same rules
+/// as [`targets`]; the owner may have been learned since the picker opened.
+pub fn check_target(
+    config: &Config,
+    owner: Option<&Account>,
+    target: &Account,
+    name: &str,
+) -> Result<(), String> {
+    if config.allow_cross_group_handoff {
+        return Ok(());
+    }
+    match owner {
+        None if spans_groups(config) => Err(unknown_owner_refusal(name)),
+        None => Ok(()),
+        Some(owner) if owner.group != target.group => Err(cross_group_refusal(owner, &[target])),
+        Some(_) => Ok(()),
     }
 }
 
