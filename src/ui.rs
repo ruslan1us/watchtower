@@ -1,4 +1,5 @@
-//! Rendering: title, grouped session list, the logs panel, status line,
+//! Rendering: title, grouped session list (with the attention marker and
+//! the age column, doc/0006, doc/0007), the logs panel, status line,
 //! footer, and the overlays: help, account picker, confirmations, the
 //! hand-off target picker and trust window (doc/0004), the orchestrator's
 //! trust window (doc/0010), the new-session dialog ([`dialog`]) and the
@@ -22,6 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::activity;
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
     Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
@@ -30,10 +32,11 @@ use crate::app::{
 use crate::groups::{self, Group};
 use crate::merge::MergedSession;
 use crate::paths;
+use crate::sidecar;
 
 /// Footer key hints of the session list (doc/0011).
 pub const FOOTER_KEYS: &str = "↑↓ move · Enter attach · n new · a hand-off · s stop · d remove · \
-     Space logs · o orchestrator · ? help · q quit";
+     Space logs · m seen · o orchestrator · ? help · q quit";
 
 /// The detach hint, always shown at the right of the footer (doc/0005,
 /// doc/0011); the key hints are cut first when the terminal is narrow.
@@ -43,6 +46,13 @@ pub const DETACH_HINT: &str = "in a session: Ctrl+Z returns to tower";
 /// panel.
 pub const SIDE_PANEL_MIN_WIDTH: u16 = 150;
 
+/// The attention marker in a highlighted row's leading column, and before
+/// the status bar's counter (doc/0007).
+pub const MARKER: &str = "●";
+
+/// Width of the "since last change" column (`now`, `42s`, `59m`, `999d`).
+const AGE_W: usize = 4;
+
 const NAME_MAX: usize = 32;
 const PROJECT_MAX: usize = 40;
 const DETAIL_MAX: usize = 34;
@@ -51,6 +61,12 @@ const GAP: &str = "  ";
 /// Draws the whole screen. Takes `&mut App` only to keep the list's scroll
 /// offset and the page size current.
 pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
+    draw_at(frame, app, now, sidecar::now_ms());
+}
+
+/// [`draw`] with the wall-clock time `now_ms` (Unix ms) the age column
+/// counts from (doc/0006).
+pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let [title, list, status, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -61,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 
     draw_title(frame, app, title);
     match app.logs().cloned() {
-        None => draw_list(frame, app, list),
+        None => draw_list(frame, app, list, now_ms),
         Some(panel) => {
             let [list_area, panel_area] = if list.width >= SIDE_PANEL_MIN_WIDTH {
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -70,7 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
                 Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(list)
             };
-            draw_list(frame, app, list_area);
+            draw_list(frame, app, list_area, now_ms);
             draw_logs(frame, app, &panel, panel_area);
         }
     }
@@ -239,7 +255,26 @@ pub fn row_columns(m: &MergedSession, home: &std::path::Path) -> [String; 4] {
     ]
 }
 
-fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
+/// The style of the attention marker and a highlighted row's state
+/// column: bold, plus an accent colour unless `NO_COLOR` (doc/0007).
+fn attention_style(color: bool) -> Style {
+    let style = Style::new().add_modifier(Modifier::BOLD);
+    if color {
+        style.fg(Color::LightRed)
+    } else {
+        style
+    }
+}
+
+/// The age column of a row: time since its last change (doc/0006).
+pub fn age_column(app: &App, m: &MergedSession, now_ms: i64) -> String {
+    match app.last_change_at(m, now_ms) {
+        Some(at) => activity::age_label(now_ms.saturating_sub(at)),
+        None => "-".to_owned(),
+    }
+}
+
+fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
     app.page_size = usize::from(area.height).max(1);
     if app.entries().is_empty() {
         let text = if app.has_polled() {
@@ -279,22 +314,51 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 if group == Group::Interactive {
                     style = style.add_modifier(Modifier::DIM);
                 }
-                ListItem::new(Line::styled(format!("{} ({count})", group.title()), style))
+                let mut spans = vec![Span::styled(format!("{} ({count})", group.title()), style)];
+                let lit = app.highlighted_in(group);
+                if lit > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!("{MARKER} {lit}"),
+                        attention_style(app.color),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             }
             Entry::Row(i) => {
                 let c = &columns[i];
-                let text = format!(
-                    "{}{GAP}{}{GAP}{}{GAP}{}",
-                    fit(&c[0], nw),
-                    fit(&c[1], pw),
-                    fit(&c[2], dw),
-                    c[3]
-                );
-                let mut style = Style::new();
-                if app.sessions()[i].session.is_interactive() {
-                    style = style.add_modifier(Modifier::DIM);
+                let m = &app.sessions()[i];
+                let lit = app.is_highlighted(m);
+                let mut base = Style::new();
+                if m.session.is_interactive() {
+                    base = base.add_modifier(Modifier::DIM);
                 }
-                ListItem::new(Line::styled(format!("  {text}"), style))
+                if lit {
+                    base = base.add_modifier(Modifier::BOLD);
+                }
+                let accent = if lit {
+                    attention_style(app.color)
+                } else {
+                    base
+                };
+                let age = age_column(app, m, now_ms);
+                let line = Line::from(vec![
+                    Span::styled(
+                        if lit {
+                            format!("{MARKER} ")
+                        } else {
+                            "  ".to_owned()
+                        },
+                        accent,
+                    ),
+                    Span::styled(
+                        format!("{}{GAP}{}{GAP}", fit(&c[0], nw), fit(&c[1], pw)),
+                        base,
+                    ),
+                    Span::styled(fit(&c[2], dw), accent),
+                    Span::styled(format!("{GAP}{age:>AGE_W$}{GAP}{}", c[3]), base),
+                ]);
+                ListItem::new(line)
             }
         })
         .collect();
@@ -307,10 +371,27 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
+/// The status bar's attention counter (doc/0007): `1 needs you`,
+/// `2 need you`; `None` when nothing is highlighted.
+pub fn attention_text(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 needs you".to_owned()),
+        n => Some(format!("{n} need you")),
+    }
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant) {
     let mut spans = vec![Span::raw(" ")];
+    let counter = attention_text(app.attention_count());
+    if let Some(text) = &counter {
+        spans.push(Span::styled(
+            format!("{MARKER} {text}"),
+            attention_style(app.color),
+        ));
+    }
     for (i, seg) in app.status_segments(now).into_iter().enumerate() {
-        if i > 0 {
+        if i > 0 || counter.is_some() {
             spans.push(Span::styled(
                 "  ·  ",
                 Style::new().add_modifier(Modifier::DIM),
@@ -357,11 +438,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(format!(" {key:<22} {what}")));
     }
-    // No blank line before this one, so the help fits 24 rows.
-    lines.push(Line::styled(
-        format!(" Not available yet: {LATER_KEYS}"),
-        Style::new().add_modifier(Modifier::DIM),
-    ));
+    // The keys still to come share the bottom border with the closing
+    // hint, so the help fits 24 rows.
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);
@@ -371,7 +449,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(" Keys ")
                 .title_bottom(Line::styled(
-                    " Esc or ? closes this help ",
+                    format!(" Not available yet: {LATER_KEYS} · Esc or ? closes this help "),
                     Style::new().add_modifier(Modifier::DIM),
                 )),
         ),

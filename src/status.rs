@@ -20,6 +20,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::activity;
 use crate::attach::printable;
 use crate::cli::CliRunner;
 use crate::config::{Account, Config};
@@ -27,7 +28,7 @@ use crate::groups::{self, Group};
 use crate::listing::{Kind, Listing, Session, State, Status, WaitingFor};
 use crate::merge::{AccountListing, EnvironReader, Resolver};
 use crate::paths;
-use crate::sidecar::{Sidecar, StateTuple};
+use crate::sidecar::Sidecar;
 
 /// Exit code when no account could be listed.
 pub const EXIT_ALL_FAILED: u8 = 1;
@@ -90,29 +91,10 @@ pub fn group_slug(group: Group) -> &'static str {
     }
 }
 
-/// When the session's state last changed, read-only by the rules of
-/// doc/0006: the sidecar's `last_change_ms` while its `last_state` is the
-/// row's current tuple; `now_ms` when the tuple has changed since (the
-/// change is observed by this poll); `startedAt` when tower tracks no time
-/// for the session.
+/// When the session's state last changed, read-only: the same rules and
+/// tuple encoding the TUI uses ([`activity::last_change_at`], doc/0006).
 pub fn last_change_at(session: &Session, sidecar: &Sidecar, now_ms: i64) -> Option<i64> {
-    let tracked = session
-        .key()
-        .and_then(|k| sidecar.sessions.get(k))
-        .and_then(|r| Some((r.last_state.as_ref()?, r.last_change_ms?)));
-    match tracked {
-        Some((tuple, ms)) if *tuple == current_tuple(session) => Some(ms),
-        Some(_) => Some(now_ms),
-        None => session.started_at,
-    }
-}
-
-fn current_tuple(s: &Session) -> StateTuple {
-    StateTuple {
-        state: s.state.clone(),
-        status: s.status.clone(),
-        waiting_for: s.waiting_for.clone(),
-    }
+    activity::last_change_at(session, sidecar, now_ms)
 }
 
 /// Lists every account once, each on its own thread, and returns the
@@ -307,6 +289,7 @@ mod tests {
 
     #[test]
     fn last_change_follows_doc_0006() {
+        use crate::sidecar::StateTuple;
         let session = Session {
             session_id: Some("s1".into()),
             started_at: Some(10),
@@ -317,7 +300,7 @@ mod tests {
         let mut sidecar = Sidecar::default();
         assert_eq!(last_change_at(&session, &sidecar, 99), Some(10));
         let rec = sidecar.sessions.entry("s1".into()).or_default();
-        rec.last_state = Some(current_tuple(&session));
+        rec.last_state = Some(StateTuple::of(&session));
         rec.last_change_ms = Some(50);
         assert_eq!(last_change_at(&session, &sidecar, 99), Some(50));
         let done = Session {

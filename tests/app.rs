@@ -198,7 +198,12 @@ fn unknown_owner_asks_records_and_attaches() {
     assert_eq!(selected(&app), "touch-config");
     let effects = press(&mut app, key(KeyCode::Enter));
     assert!(attach_of(&effects).is_none(), "refreshes first");
-    assert!(!app.sidecar.is_dirty(), "the answer waits for the refresh");
+    assert!(
+        app.sidecar
+            .owner("d4a1f7c8-2e5b-4b3a-8c90-1f6d3a5b7e42")
+            .is_none(),
+        "the answer waits for the refresh"
+    );
     let both = [
         ("main", "after-stop-all.json"),
         ("alt", "after-stop-all.json"),
@@ -344,7 +349,7 @@ fn quit_help_refresh_and_reserved_keys() {
     assert_eq!(selected(&app), before);
 
     // Keys of later milestones (doc/0014) only say so.
-    for c in ['/', 'p', 'i', 'm'] {
+    for c in ['/', 'p', 'i'] {
         assert!(press(&mut app, ch(c)).is_empty(), "{c}");
         assert!(message(&app).contains("not available yet"), "{c}");
     }
@@ -450,7 +455,11 @@ fn detections_are_saved_only_on_change() {
             warnings: vec![],
         }),
     };
-    assert!(app.apply_poll(update("alt", &alt_rows)).is_empty());
+    // The first listing records activity times (doc/0006).
+    assert_eq!(
+        app.apply_poll(update("alt", &alt_rows)),
+        [Effect::SaveSidecar]
+    );
     let effects = app.apply_poll(update("main", &main_rows));
     assert_eq!(effects, [Effect::SaveSidecar]);
     assert!(app.apply_poll(update("main", &main_rows)).is_empty());
@@ -459,9 +468,16 @@ fn detections_are_saved_only_on_change() {
 #[test]
 fn single_account_writes_no_implicit_owners() {
     let mut app = app_single();
-    let effects = app.apply_poll(poll("main", "mixed-states.json"));
-    assert!(effects.is_empty(), "{effects:?}");
-    assert!(app.sidecar.sessions.is_empty());
+    app.apply_poll(poll("main", "mixed-states.json"));
+    // Only activity times are recorded (doc/0006), no owner.
+    assert!(
+        app.sidecar
+            .sessions
+            .values()
+            .all(|r| r.account.is_none() && r.account_source.is_none()),
+        "{:?}",
+        app.sidecar.sessions
+    );
     // Every row still attaches with the only account.
     assert!(app.sessions().iter().all(|m| m.owner.label() == "main"));
 }

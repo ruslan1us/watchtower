@@ -113,29 +113,37 @@ pub struct GroupRows<'a, T> {
 }
 
 /// Groups rows by state for the overview: non-empty groups only, in display
-/// order (doc/0006).
-///
-/// Within a group rows are sorted by `startedAt`, most recent first, then by
-/// display name. doc/0006 sorts by last change, which needs the activity
-/// times tower tracks itself (milestone 5); `startedAt` is the stand-in until
-/// then, and is reset whenever a session is woken.
+/// order (doc/0006), each sorted by `startedAt` as the change time. Tower's
+/// own list uses [`group_by_state_with`] and the tracked times.
 pub fn group_by_state<T: AsRef<Session>>(items: &[T]) -> Vec<GroupRows<'_, T>> {
+    group_by_state_with(items, |t| t.as_ref().started_at)
+}
+
+/// Groups rows by state for the overview: non-empty groups only, in display
+/// order (doc/0006). Within a group rows are sorted by last change, most
+/// recent first (a row without a time last), then by display name.
+/// `last_change` gives a row's change time, Unix ms (see
+/// [`crate::activity::last_change_at`]).
+pub fn group_by_state_with<T, F>(items: &[T], last_change: F) -> Vec<GroupRows<'_, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+{
     let mut out: Vec<GroupRows<'_, T>> = Vec::new();
     for group in Group::ALL {
-        let mut rows: Vec<&T> = items
+        let mut rows: Vec<(Option<i64>, String, &T)> = items
             .iter()
             .filter(|t| classify(t.as_ref()) == group)
+            .map(|t| (last_change(t), t.as_ref().display_name(), t))
             .collect();
         if rows.is_empty() {
             continue;
         }
-        rows.sort_by(|a, b| {
-            let (a, b) = (a.as_ref(), b.as_ref());
-            b.started_at
-                .cmp(&a.started_at)
-                .then_with(|| a.display_name().cmp(&b.display_name()))
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        out.push(GroupRows {
+            group,
+            rows: rows.into_iter().map(|(_, _, t)| t).collect(),
         });
-        out.push(GroupRows { group, rows });
     }
     out
 }

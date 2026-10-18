@@ -5,6 +5,7 @@
 //! Fixture pids are replaced with values above Linux's largest possible
 //! pid, so `/proc` of the machine running the tests is never evidence.
 
+mod common;
 #[path = "support/fake_claude.rs"]
 mod fake_claude;
 
@@ -474,4 +475,75 @@ fn help_mentions_status() {
     for fake in &setup.fakes {
         assert_eq!(fake.calls(), 0);
     }
+}
+
+#[test]
+fn last_change_at_matches_the_tuis_tracking() {
+    use watchtower::app::{App, SidecarJob};
+    use watchtower::config::Config;
+    use watchtower::listing::parse_listing;
+    use watchtower::poller::PollUpdate;
+    use watchtower::sidecar::{LOCK_WAIT, Sidecar};
+
+    let _guard = lock();
+    let setup = shared_setup("mixed-states.json");
+    let config_text = std::fs::read_to_string(setup.config_dir().join("config.toml")).unwrap();
+    let home = setup.home.path().to_path_buf();
+    let config = Config::parse(&config_text, &home).unwrap();
+    let mut app = App::new(
+        config,
+        home.clone(),
+        Sidecar::default(),
+        Box::new(common::NoEnviron),
+    );
+    let feed = |app: &mut App, cycle: u64, rows: &[Value]| {
+        for account in ["main", "alt"] {
+            app.apply_poll(PollUpdate {
+                account: account.into(),
+                cycle,
+                result: Ok(parse_listing(&serde_json::to_string(rows).unwrap()).unwrap()),
+            });
+        }
+    };
+    // First sighting, then one row changes state (tower tracks the time).
+    let mut list = rows("mixed-states.json");
+    feed(&mut app, 1, &list);
+    let changed = list
+        .iter_mut()
+        .find(|r| r["name"] == "pick-colour")
+        .unwrap();
+    changed["state"] = json!("working");
+    changed["status"] = json!("busy");
+    changed.as_object_mut().unwrap().remove("waitingFor");
+    feed(&mut app, 2, &list);
+    let Some(SidecarJob::Save { seq, job }) = app.start_save() else {
+        panic!("a save expected");
+    };
+    let result = job.run(&setup.state_file(), LOCK_WAIT);
+    app.sidecar_saved(seq, &job, result);
+    assert!(!app.sidecar.is_dirty());
+    // The fakes now list the changed rows, like the TUI's last poll.
+    setup.serve("shared.json", &list);
+
+    let out = setup.run(&["status", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = parse(&out);
+    assert_eq!(sessions(&report).len(), app.sessions().len());
+    let now = watchtower::sidecar::now_ms();
+    for m in app.sessions() {
+        let sid = m.session.session_id.as_deref().unwrap();
+        let row = sessions(&report)
+            .iter()
+            .find(|r| r["sessionId"] == sid)
+            .unwrap_or_else(|| panic!("{sid} missing"));
+        let tui = app.last_change_at(m, now);
+        assert_eq!(row["lastChangeAt"], json!(tui), "{row}");
+    }
+    let pick = by_name(&report, "pick-colour");
+    assert_ne!(
+        pick["lastChangeAt"], pick["startedAt"],
+        "the tracked change"
+    );
+    let print = by_name(&report, "print-date");
+    assert_eq!(print["lastChangeAt"], print["startedAt"], "first sighting");
 }

@@ -28,15 +28,31 @@ Only background rows are highlighted. Interactive rows (`kind: interactive`, no
 `id`, not attachable) stay in their own dimmed group ([0006](0006-session-states-and-grouping.md))
 and are never highlighted or counted in the attention counter.
 
+Put exactly: a background row is highlighted while it is in the Needs me or
+Failed group and the sidecar's `acknowledged` tuple is not its current
+(`state`, `status`, `waitingFor`) tuple. Stopped rows (no live process) are in
+neither group, whatever their `state`.
+
 **When the highlight clears.**
 
-- The user attaches to the session ([0005](0005-attach-and-detach.md)), or
+- The user attaches to the session and the attach ends with exit code 0
+  ([0005](0005-attach-and-detach.md)); a failed attach acknowledges nothing, or
 - the user acknowledges it with `m` ("mark seen") on the row ([0011](0011-keybindings.md)), or
 - the session leaves the Needs me / Failed groups.
 
-Acknowledgement is stored per session in the sidecar as `acknowledged`, the
-tuple it acknowledged ([0002](0002-tech-stack-and-files.md)). A later transition (for example a second permission prompt
-after the first was answered) highlights the row again.
+Both acknowledgements store the row's current tuple, as of tower's latest
+listing, in the sidecar as `acknowledged` ([0002](0002-tech-stack-and-files.md)).
+Only a row in Needs me or Failed is acknowledged; `m` on any other row says
+it is not highlighted and stores nothing.
+
+When tower observes the session's tuple change ([0006](0006-session-states-and-grouping.md)),
+it drops `acknowledged`: the acknowledgement covered a state the session has
+left. So a later transition highlights the row again, for example a second
+permission prompt after the first was answered (`blocked` → `working` →
+`blocked` with the same tuple), and so does a new tuple inside Needs me (a
+question after a permission prompt). A change that happened while tower was not
+running is noticed at the first poll after startup, against the sidecar's
+`last_state`.
 
 **How it looks.**
 
@@ -44,9 +60,10 @@ after the first was answered) highlights the row again.
   highlight is readable without colour.
 - With colour enabled, an accent foreground on the marker and the state
   column. `NO_COLOR` is honoured; the glyph and bold remain.
-- A counter in the status bar, e.g. `2 need you`, counting all highlighted
-  sessions, including those hidden by a filter or a collapsed group.
-- Group headers show how many of their rows are highlighted.
+- A counter at the start of the status bar, `● 1 needs you`, `● 2 need you`, in
+  the same style, counting all highlighted sessions, including those hidden by
+  a filter or a collapsed group. It is not shown when nothing is highlighted.
+- Group headers show how many of their rows are highlighted (`Needs me (3)  ● 2`).
 
 Highlights are computed from polling, which continues while the user is
 attached to another session, so new highlights are already there on return.

@@ -1,10 +1,10 @@
 //! Tower's own state file, `state.json` next to `config.toml` (doc/0002).
 //!
-//! It holds only what the CLI does not expose. Milestone 1 uses the account
-//! of each session; milestone 2 adds the `started` owner of dispatched
-//! sessions and `recent_projects` (doc/0008). The other fields defined in
-//! doc/0002 (`last_state`, `last_change_ms`, `acknowledged`) are modelled and
-//! carried through unchanged, and unknown fields are kept.
+//! It holds only what the CLI does not expose: the account of each session
+//! (doc/0003), the `started` owner of dispatched sessions and
+//! `recent_projects` (doc/0008), the activity times tower tracks
+//! (`last_state`, `last_change_ms`, doc/0006) and the acknowledged
+//! attention tuple (`acknowledged`, doc/0007). Unknown fields are kept.
 //!
 //! Writes are atomic (a temp file unique to the process and save, fsync,
 //! rename). A corrupt file is moved aside as `state.json.corrupt` and tower
@@ -105,6 +105,18 @@ pub struct StateTuple {
     pub waiting_for: Option<WaitingFor>,
 }
 
+impl StateTuple {
+    /// The row's (`state`, `status`, `waitingFor`) tuple: the one encoding
+    /// the TUI's tracking, the attention highlight and `tower status` share.
+    pub fn of(s: &Session) -> StateTuple {
+        StateTuple {
+            state: s.state.clone(),
+            status: s.status.clone(),
+            waiting_for: s.waiting_for.clone(),
+        }
+    }
+}
+
 /// What tower remembers about one session.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -114,13 +126,15 @@ pub struct SessionRecord {
     /// How [`SessionRecord::account`] was learned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_source: Option<AccountSource>,
-    /// Last observed tuple (milestone 5).
+    /// Last observed tuple (doc/0006).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_state: Option<StateTuple>,
-    /// When `last_state` was first observed, Unix ms (milestone 5).
+    /// When `last_state` was first observed, Unix ms; `startedAt` for a
+    /// session first seen in it (doc/0006).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_change_ms: Option<i64>,
-    /// Tuple the user last acknowledged (milestone 5).
+    /// Tuple the user last acknowledged by attaching or with `m`; cleared
+    /// when the session leaves it (doc/0007).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged: Option<StateTuple>,
     /// When tower last changed `account` / `account_source`, Unix ms. Decides
@@ -637,7 +651,8 @@ impl Sidecar {
     /// under the `sessionId` already exists, it is newer evidence and wins;
     /// the short-id record is dropped. The exception is a `list` record
     /// there: it yields its account and source to a short-id record of any
-    /// other source (doc/0017). Rows without a `sessionId` keep their
+    /// other source (doc/0017), and so does a record without an owner (one
+    /// holding only activity times). Rows without a `sessionId` keep their
     /// short-id key, as [`Session::key`] defines. Call it with the raw rows
     /// of a poll before merging. Returns true when the state changed.
     pub fn adopt_short_id_records<'a, I>(&mut self, sessions: I) -> bool
@@ -659,10 +674,16 @@ impl Sidecar {
                 // A `list` detection never beats a record of another source
                 // (doc/0017), even when it reached the sessionId key first,
                 // e.g. a poll that ran before `record_started`.
+                // A record there without an owner (only activity times,
+                // doc/0006) takes the short-id record's owner too.
                 Some(existing)
-                    if existing.account_source == Some(AccountSource::List)
-                        && rec.account.is_some()
-                        && !matches!(rec.account_source, None | Some(AccountSource::List)) =>
+                    if rec.account.is_some()
+                        && (existing.account.is_none()
+                            || (existing.account_source == Some(AccountSource::List)
+                                && !matches!(
+                                    rec.account_source,
+                                    None | Some(AccountSource::List)
+                                ))) =>
                 {
                     existing.account = rec.account;
                     existing.account_source = rec.account_source;
@@ -751,6 +772,61 @@ impl Sidecar {
             }
         }
         changed
+    }
+
+    /// Records the tuple a fresh listing shows for `key` (doc/0006):
+    ///
+    /// - first sighting (no record, or one without `last_state`): the
+    ///   tuple, with `last_change_ms = started_at` (`now_ms` when the row
+    ///   has no `startedAt`);
+    /// - the same tuple as recorded: nothing (a missing `last_change_ms`
+    ///   gets the first-sighting time);
+    /// - another tuple: the tuple with `last_change_ms = now_ms`, and an
+    ///   `acknowledged` tuple is dropped, because it named a state the
+    ///   session has left, so a later transition into it highlights the row
+    ///   again (doc/0007).
+    ///
+    /// Returns true when the state changed.
+    pub fn observe_state_at(
+        &mut self,
+        key: &str,
+        tuple: &StateTuple,
+        started_at: Option<i64>,
+        now_ms: i64,
+    ) -> bool {
+        let rec = self.sessions.entry(key.to_owned()).or_default();
+        match &rec.last_state {
+            None => {
+                rec.last_state = Some(tuple.clone());
+                rec.last_change_ms = Some(started_at.unwrap_or(now_ms));
+                true
+            }
+            Some(last) if last == tuple => {
+                if rec.last_change_ms.is_some() {
+                    return false;
+                }
+                rec.last_change_ms = Some(started_at.unwrap_or(now_ms));
+                true
+            }
+            Some(_) => {
+                rec.last_state = Some(tuple.clone());
+                rec.last_change_ms = Some(now_ms);
+                rec.acknowledged = None;
+                true
+            }
+        }
+    }
+
+    /// Stores `tuple` as the one the user acknowledged for `key`, by
+    /// attaching or with `m` (doc/0007). Returns true when the state
+    /// changed.
+    pub fn acknowledge(&mut self, key: &str, tuple: &StateTuple) -> bool {
+        let rec = self.sessions.entry(key.to_owned()).or_default();
+        if rec.acknowledged.as_ref() == Some(tuple) {
+            return false;
+        }
+        rec.acknowledged = Some(tuple.clone());
+        true
     }
 
     /// Records one poll's listings for pruning (doc/0017 section 9). The app
@@ -981,7 +1057,11 @@ fn merge_snapshot(base: &Snapshot, mine: &Snapshot, disk: Snapshot) -> Snapshot 
 ///   instance): this instance's record.
 /// - Otherwise field by field: a field changed only here is taken from
 ///   here. When both changed the owner, see [`mine_wins`]. `last_seen_ms`
-///   takes the later time. Other fields changed here are taken from here.
+///   takes the later time. When both changed `last_state` /
+///   `last_change_ms`, the same tuple keeps the earlier time and different
+///   tuples the newer change (this instance on a tie), so two towers never
+///   revert each other's newer observation. Other fields changed here are
+///   taken from here.
 fn merge_record(
     base: Option<&SessionRecord>,
     mine: Option<&SessionRecord>,
@@ -1010,9 +1090,22 @@ fn merge_record(
         // Only the age stamp of an older record (see `observe_listing`).
         out.updated_ms = m.updated_ms;
     }
-    if (&m.last_state, m.last_change_ms) != (&b.last_state, b.last_change_ms) {
-        out.last_state = m.last_state.clone();
-        out.last_change_ms = m.last_change_ms;
+    let activity = |r: &SessionRecord| (r.last_state.clone(), r.last_change_ms);
+    if activity(m) != activity(b) {
+        if activity(d) == activity(b) || d.last_state.is_none() {
+            out.last_state = m.last_state.clone();
+            out.last_change_ms = m.last_change_ms;
+        } else if m.last_state == d.last_state {
+            // Both saw the same change: the earlier sighting is its time.
+            out.last_change_ms = match (m.last_change_ms, d.last_change_ms) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            };
+        } else if m.last_change_ms.unwrap_or(0) >= d.last_change_ms.unwrap_or(0) {
+            // Both saw different changes: the newer one wins.
+            out.last_state = m.last_state.clone();
+            out.last_change_ms = m.last_change_ms;
+        }
     }
     if m.acknowledged != b.acknowledged {
         out.acknowledged = m.acknowledged.clone();

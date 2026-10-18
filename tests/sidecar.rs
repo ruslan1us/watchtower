@@ -785,3 +785,127 @@ fn read_owner_reads_one_record_without_the_lock() {
         None
     );
 }
+
+// ---- activity times and acknowledgements (doc/0006, doc/0007) -------------
+
+fn tuple_of(state: State, status: Status, waiting: Option<WaitingFor>) -> StateTuple {
+    StateTuple {
+        state: Some(state),
+        status: Some(status),
+        waiting_for: waiting,
+    }
+}
+
+#[test]
+fn observe_state_records_first_sighting_changes_only() {
+    let working = tuple_of(State::Working, Status::Busy, None);
+    let blocked = tuple_of(
+        State::Blocked,
+        Status::Waiting,
+        Some(WaitingFor::PermissionPrompt),
+    );
+    let mut sc = Sidecar::default();
+    assert!(sc.observe_state_at(SID, &working, Some(100), 900));
+    assert_eq!(sc.sessions[SID].last_change_ms, Some(100), "startedAt");
+    assert!(!sc.observe_state_at(SID, &working, Some(100), 950));
+    assert_eq!(sc.sessions[SID].last_change_ms, Some(100));
+    assert!(sc.observe_state_at(SID, &blocked, Some(100), 1_000));
+    assert_eq!(sc.sessions[SID].last_state, Some(blocked.clone()));
+    assert_eq!(sc.sessions[SID].last_change_ms, Some(1_000));
+
+    // An acknowledgement lasts while the tuple does.
+    assert!(sc.acknowledge(SID, &blocked));
+    assert!(!sc.acknowledge(SID, &blocked));
+    assert!(!sc.observe_state_at(SID, &blocked, Some(100), 1_100));
+    assert_eq!(sc.sessions[SID].acknowledged, Some(blocked.clone()));
+    assert!(sc.observe_state_at(SID, &working, Some(100), 1_200));
+    assert_eq!(sc.sessions[SID].acknowledged, None);
+
+    // An owner-only record (e.g. `started`) counts as a first sighting.
+    sc.record_owner_at(SID2, "alt", AccountSource::Started, 5);
+    assert!(sc.observe_state_at(SID2, &working, Some(42), 2_000));
+    assert_eq!(sc.sessions[SID2].last_change_ms, Some(42));
+    assert_eq!(sc.owner(SID2), Some(("alt", &AccountSource::Started)));
+}
+
+#[test]
+fn two_instances_recording_changes_do_not_revert_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut a, mut b) = two_instances(dir.path());
+    let working = tuple_of(State::Working, Status::Busy, None);
+    let blocked = tuple_of(
+        State::Blocked,
+        Status::Waiting,
+        Some(WaitingFor::PermissionPrompt),
+    );
+    let done = tuple_of(State::Done, Status::Idle, None);
+    let activity = |sc: &Sidecar| {
+        let r = &sc.sessions[SID];
+        (r.last_state.clone(), r.last_change_ms)
+    };
+
+    // Both saw the session working; a's save reaches b.
+    a.observe_state_at(SID, &working, Some(100), 150);
+    a.save(&path).unwrap();
+    b.save(&path).unwrap();
+    assert_eq!(activity(&b), (Some(working.clone()), Some(100)));
+
+    // a sees it go blocked at 1000; b, slower, sees it done at 2000 (the
+    // newer change) but saves first. a's older change does not revert it.
+    b.observe_state_at(SID, &done, Some(100), 2_000);
+    b.save(&path).unwrap();
+    a.observe_state_at(SID, &blocked, Some(100), 1_000);
+    a.save(&path).unwrap();
+    assert_eq!(activity(&on_disk(&path)), (Some(done.clone()), Some(2_000)));
+    assert_eq!(
+        activity(&a),
+        (Some(done.clone()), Some(2_000)),
+        "a adopts it"
+    );
+
+    // And a newer change saved second wins too.
+    a.observe_state_at(SID, &working, Some(100), 3_000);
+    b.observe_state_at(SID, &blocked, Some(100), 3_500);
+    a.save(&path).unwrap();
+    b.save(&path).unwrap();
+    assert_eq!(
+        activity(&on_disk(&path)),
+        (Some(blocked.clone()), Some(3_500))
+    );
+
+    // Both see the same change: the earlier sighting is kept.
+    a.save(&path).unwrap();
+    a.observe_state_at(SID, &done, Some(100), 4_100);
+    b.observe_state_at(SID, &done, Some(100), 4_000);
+    a.save(&path).unwrap();
+    b.save(&path).unwrap();
+    a.save(&path).unwrap();
+    assert_eq!(activity(&on_disk(&path)), (Some(done.clone()), Some(4_000)));
+    assert_eq!(activity(&a), activity(&b));
+
+    // An acknowledgement in one instance survives the other's saves.
+    a.acknowledge(SID, &done);
+    a.save(&path).unwrap();
+    b.record_owner_at(SID2, "main", AccountSource::Asked, 5_000);
+    b.save(&path).unwrap();
+    assert_eq!(on_disk(&path).sessions[SID].acknowledged, Some(done));
+}
+
+#[test]
+fn a_started_owner_moves_onto_an_activity_only_record() {
+    let mut sc = Sidecar::default();
+    // A poll ran before the dispatch was recorded: an activity record
+    // without an owner sits at the sessionId.
+    let working = tuple_of(State::Working, Status::Busy, None);
+    sc.observe_state_at(SID, &working, Some(100), 200);
+    assert!(sc.record_started("1a2b3c4d", "alt"));
+    let row = Session {
+        id: Some("1a2b3c4d".into()),
+        session_id: Some(SID.into()),
+        ..Session::default()
+    };
+    assert!(sc.adopt_short_id_records([&row]));
+    assert_eq!(sc.owner(SID), Some(("alt", &AccountSource::Started)));
+    assert_eq!(sc.sessions[SID].last_state, Some(working));
+    assert!(!sc.sessions.contains_key("1a2b3c4d"));
+}

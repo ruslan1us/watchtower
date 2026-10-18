@@ -83,12 +83,15 @@ CLI does not expose:
     list), `started` (dispatched by tower), `handoff`, or `asked` (the user's
     answer for a session whose account was unknown)
     ([0003](0003-accounts-and-session-ownership.md));
-  - `last_state`, the last observed (`state`, `status`, `waitingFor`) tuple, and
-    `last_change_ms`, when tower first observed it
-    ([0006](0006-session-states-and-grouping.md));
-  - `acknowledged`, the tuple the user last acknowledged (by attaching or with
-    `m`), or absent
-    ([0007](0007-visual-only-attention.md));
+  - `last_state`, the last observed (`state`, `status`, `waitingFor`) tuple
+    (absent members omitted), and `last_change_ms`, when tower first observed
+    it: the poll time of the change, or `startedAt` when the session was first
+    seen in it. Every listed row with a `sessionId` (or short `id`) gets them,
+    interactive rows included ([0006](0006-session-states-and-grouping.md));
+  - `acknowledged`, the tuple the user last acknowledged (by a successful
+    attach or with `m`) while the row needed attention; tower drops it when
+    it observes the tuple change, so it is normally absent or equal to
+    `last_state` ([0007](0007-visual-only-attention.md));
   - `updated_ms`, when tower last changed `account` / `account_source`, and
     `last_seen_ms`, when a successful listing last showed the session (to the
     hour), both Unix ms
@@ -137,7 +140,9 @@ CLI does not expose:
   applied on top. The same check runs right before an attach, and a
   hand-off re-reads the session's record right before it stops and before
   it wakes the session ([0017](0017-ownership-evidence-rules.md) section 8).
-- Writes happen only when something changed, not on every poll.
+- Writes happen only when something changed, not on every poll. Changed
+  activity times alone are saved at most once per poll cycle
+  ([0006](0006-session-states-and-grouping.md)).
 - On a missing file tower starts empty. On an unreadable or corrupt one it
   moves it aside as `state.json.corrupt`, starts fresh and shows a warning. It
   never refuses to start.

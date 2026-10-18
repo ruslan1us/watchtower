@@ -56,7 +56,8 @@ Rules:
 - Empty groups are hidden. Group headers show a row count.
 - Finished and stopped rows stay until the user removes them
   ([0009](0009-stop-remove-and-logs.md)); the user often needs to go back into them.
-- Within a group, rows are sorted by last change, most recent first.
+- Within a group, rows are sorted by last change, most recent first, then by
+  name.
 
 **Alternative grouping.** `p` toggles between grouping by state and grouping by
 project (`cwd`). In project mode each project is a group, rows inside are
@@ -66,10 +67,14 @@ ordered by the state order above, and the Interactive toggle still applies.
 name, `cwd` and account. Group counts reflect the filter; the attention counter
 does not ([0007](0007-visual-only-attention.md)).
 
-**Row content:** name (or short id when unnamed), project folder (`cwd` with the
+**Row content:** the attention marker column ([0007](0007-visual-only-attention.md)),
+name (or short id when unnamed), project folder (`cwd` with the
 home directory shortened to `~`, e.g. `~/workspace/api`), state detail from the
-table above, time since last change ("3m", "2h", "4d"), account (`?` when unknown,
+table above, time since last change, account (`?` when unknown,
 [0003](0003-accounts-and-session-ownership.md)).
+
+The age column is right-aligned, four columns wide, rounded down: `now` under
+10 s (and for a time in the future), then `42s`, `5m`, `3h`, `2d`.
 
 **Activity times.** Tower tracks them itself:
 
@@ -77,8 +82,23 @@ table above, time since last change ("3m", "2h", "4d"), account (`?` when unknow
   keeps the last observed tuple (`state`, `status`, `waitingFor`) and the time it
   first observed that tuple. The pair is stored in the sidecar state file as
   `last_state` and `last_change_ms` ([0002](0002-tech-stack-and-files.md)).
-- A changed tuple on a poll sets the change time to the poll time.
-- On the first sighting of a session the change time is `startedAt`.
+- A changed tuple on a poll sets the change time to the poll time. A changed
+  tuple also drops the session's `acknowledged` tuple ([0007](0007-visual-only-attention.md)).
+- On the first sighting of a session (no record, or a record without
+  `last_state`) the change time is `startedAt`, or the poll time when the row
+  has none.
+- Only the rows of the listing that just arrived are compared. The last good
+  rows of other accounts, merged again after another tower's change to the
+  sidecar is read in, are not, so an older listing never records its tuple
+  over a newer one another tower saw.
+- Saves are debounced: changed activity times alone cause at most one sidecar
+  save per poll cycle; a change seen after that cycle's save goes out with the
+  next cycle. Owner changes still save at once.
+- When two towers both changed a session's tuple, the merge on save keeps the
+  newer change; when both saw the same tuple, it keeps the earlier time
+  ([0017](0017-ownership-evidence-rules.md) section 8).
+- `tower status --json` reports the same value as `lastChangeAt`, read-only
+  ([0010](0010-orchestrator.md)).
 - Changes that happened while tower was not running are not observable: the
   row shows the time tower first saw the new tuple. This is a known limitation,
   not an error.
@@ -89,7 +109,8 @@ better activity time.
 
 ## Consequences
 
-- One sidecar write per observed change; no extra CLI calls for times.
+- At most one sidecar write per poll cycle for observed changes; no extra CLI
+  calls for times.
 - Times after a restart of tower can be too recent for sessions that changed
   while it was not running.
 - A new `state` value from a future Claude Code release shows up in "Other"

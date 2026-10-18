@@ -55,7 +55,7 @@ Rule 2 applies to a row only when all of these hold:
 
 - A `proc` detection replaces any record: it is the live process's own config dir.
 - A `list` detection is written only when the session has no record or a `list` record. It never replaces `started`, `handoff`, `asked` or `proc`.
-- When a record keyed by a short id ([0008](0008-new-session-dialog.md)) moves to its `sessionId`, an existing record there wins, except a `list` record, which takes the account and source of the short-id record.
+- When a record keyed by a short id ([0008](0008-new-session-dialog.md)) moves to its `sessionId`, an existing record there wins, except a `list` record or one without an account (only activity times, [0006](0006-session-states-and-grouping.md)), which takes the account and source of the short-id record.
 
 ### 6. Duplicate config dirs
 
@@ -72,7 +72,7 @@ Two towers (for example in two SSH sessions) share `state.json`. Neither may rev
 - Every save holds an exclusive `flock` on `state.json.lock` for the whole read-modify-write. The lock file is never removed. Tower retries a non-blocking lock for up to 2 s. On timeout it writes nothing and shows a warning. The change stays pending: the next save writes it, and after a failed save the next poll asks for a retry once 10 s have passed.
 - Under the lock, tower re-reads the file and applies only what this instance changed since its last load or save. It compares memory with the state it last read or wrote: added, changed and removed records, and changed fields. Everything else comes from the file, including the format version and unknown fields. The merged result is written (a temp file named with the pid and a per-save counter, fsync, rename, fsync of the directory) and becomes the in-memory state.
 - Each record carries `updated_ms`, when tower last changed its `account` / `account_source`. When both instances changed a record's owner, a `list` detection never beats another source, as in section 5, so `proc` never loses to `list`. Otherwise the newer `updated_ms` wins, and the saving instance wins a tie. A record moved from its short id keeps the short-id record's `updated_ms`.
-- Other fields: `last_seen_ms` takes the later time, and `last_state`, `acknowledged` and unknown fields take the saving instance's value. If both instances changed `recent_projects`, the lists are united: one entry per path with the later `last_used_ms`, newest first, capped at 50.
+- Other fields: `last_seen_ms` takes the later time. `last_state` and `last_change_ms` go together: when both instances changed them, the same tuple keeps the earlier `last_change_ms` and different tuples the later one (the saving instance on a tie), so neither tower reverts the other's newer observation ([0006](0006-session-states-and-grouping.md)). `acknowledged` and unknown fields take the saving instance's value. If both instances changed `recent_projects`, the lists are united: one entry per path with the later `last_used_ms`, newest first, capped at 50.
 - A removal (pruning, or a short-id record moved to its `sessionId`) applies only if the file's record is unchanged since this instance read it. A record changed here but removed by the other instance is written back.
 - A missing file, or a corrupt one (moved aside as on load), is replaced by the whole in-memory state.
 - Saves run on a worker thread, one at a time with at most one queued ([0002](0002-tech-stack-and-files.md)). What changed in memory while a save ran is applied on top of the state it wrote, by the same rules, and stays pending for the next save.

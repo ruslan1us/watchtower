@@ -13,6 +13,8 @@
 //! - [`sidecar`]: tower's own `state.json` (doc/0002).
 //! - [`groups`]: maps sessions to the overview groups and detail labels
 //!   (doc/0006).
+//! - [`activity`]: tracked activity times and the attention highlight
+//!   (doc/0006, doc/0007).
 //! - [`paths`]: home and XDG directories, `~` expansion.
 //! - [`logview`]: `claude logs` fetched and replayed into a screen for the
 //!   logs panel (doc/0009).
@@ -47,6 +49,7 @@
 mod strenum;
 
 pub mod actions;
+pub mod activity;
 pub mod app;
 pub mod args;
 pub mod attach;

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{by_name, listing};
-use watchtower::groups::{Group, classify, detail, group_by_state};
+use watchtower::groups::{Group, classify, detail, group_by_state, group_by_state_with};
 use watchtower::listing::{Session, parse_listing};
 
 fn row(json: &str) -> Session {
@@ -141,4 +141,33 @@ fn groups_in_order_non_empty_sorted_by_started_at() {
     assert!(!Group::Stopped.default_expanded());
     assert!(Group::NeedsMe.default_expanded());
     assert_eq!(Group::Stopped.title(), "Stopped & finished");
+}
+
+#[test]
+fn rows_sort_by_last_change_then_name() {
+    let l = listing("after-stop-all.json");
+    // Tracked change times: pick-colour changed last; the two done rows
+    // tie and fall back to their names; a row without a time sorts last.
+    let time = |s: &Session| match s.name.as_deref() {
+        Some("pick-colour") => Some(9_000),
+        Some("touch-config") => Some(5_000),
+        Some("run-test-suite" | "print-date") => Some(7_000),
+        _ => None,
+    };
+    let grouped = group_by_state_with(&l.sessions, |s| time(s));
+    let names = |g: Group| -> Vec<String> {
+        grouped
+            .iter()
+            .find(|x| x.group == g)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|s| s.display_name())
+            .collect()
+    };
+    assert_eq!(names(Group::NeedsMe), ["pick-colour", "touch-config"]);
+    assert_eq!(
+        names(Group::ReadyForReview),
+        ["print-date", "run-test-suite"]
+    );
 }

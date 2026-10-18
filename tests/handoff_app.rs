@@ -949,10 +949,7 @@ fn help_and_footer_offer_the_handoff() {
         screen.contains("continue under another account"),
         "{screen}"
     );
-    assert!(
-        screen.contains("Not available yet: m / p i Tab"),
-        "{screen}"
-    );
+    assert!(screen.contains("Not available yet: / p i Tab"), "{screen}");
     assert!(screen.contains("Ctrl+Z"), "{screen}");
     app.handle_key(key(KeyCode::Esc));
     let screen = render(&mut app, 160, 20);

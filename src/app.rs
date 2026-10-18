@@ -2,7 +2,9 @@
 //! list, selection, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
 //! logs panel (doc/0009), the hand-off to another account (doc/0004), the
-//! orchestrator key `o` (doc/0010), and the key table (doc/0011).
+//! orchestrator key `o` (doc/0010), the tracked activity times and the
+//! attention highlight with `m` (doc/0006, doc/0007, via
+//! [`crate::activity`]), and the key table (doc/0011).
 //!
 //! Nothing here touches the terminal, spawns processes or does file I/O
 //! (apart from the `/proc` reads of ownership rule 1, and resolving the
@@ -27,6 +29,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::actions::{RemoveError, StopError};
+use crate::activity;
 use crate::config::{Account, Config};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
@@ -43,6 +46,7 @@ use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
+    StateTuple,
 };
 
 /// How long a transient status message stays visible.
@@ -578,6 +582,8 @@ pub enum Action {
     Handoff,
     /// `o`: attach to the orchestrator, starting it if missing (doc/0010).
     Orchestrator,
+    /// `m`: mark the highlighted row as seen (doc/0007).
+    MarkSeen,
     ToggleLogs,
     /// `Esc`: close the logs panel.
     Close,
@@ -590,7 +596,7 @@ pub enum Action {
     NotYet(&'static str),
 }
 
-/// Keys of the session list (doc/0011, milestones 1–4).
+/// Keys of the session list (doc/0011, milestones 1–5a).
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
     (
@@ -603,6 +609,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("o", "attach to the orchestrator, starting it if missing"),
     ("s", "stop the session (confirm when working or blocked)"),
     ("d", "remove the session (confirm)"),
+    ("m", "mark the highlighted session as seen"),
     ("Space, Esc", "toggle / close the logs panel"),
     ("r", "refresh now"),
     ("?", "this help"),
@@ -621,7 +628,7 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
 ];
 
 /// Keys of later milestones, shown in the help as not yet available.
-pub const LATER_KEYS: &str = "m / p i Tab";
+pub const LATER_KEYS: &str = "/ p i Tab";
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
 /// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
@@ -657,7 +664,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('a') => Action::Handoff,
         KeyCode::Char('o') => Action::Orchestrator,
-        KeyCode::Char('m') => Action::NotYet("mark seen"),
+        KeyCode::Char('m') => Action::MarkSeen,
         KeyCode::Char('/') => Action::NotYet("filter"),
         KeyCode::Char('p') => Action::NotYet("group by project"),
         KeyCode::Char('i') => Action::NotYet("show/hide interactive"),
@@ -704,6 +711,15 @@ pub struct App {
     attach_note: Option<String>,
     /// Sidecar saves and checks on worker threads.
     sidecar_io: SidecarIo,
+    /// Poll cycle of the last save a poll asked for: activity times are
+    /// saved at most once per cycle (doc/0006).
+    save_cycle: Option<u64>,
+    /// Activity times changed after this cycle's save; the next cycle
+    /// saves them.
+    activity_pending: bool,
+    /// Short id of the session the running attach went to: a successful
+    /// attach acknowledges its highlight (doc/0007).
+    attached_id: Option<String>,
     /// Why the last sidecar check failed; shown until one succeeds.
     check_error: Option<String>,
     /// Number of the latest project scan; the open dialog waits for it.
@@ -777,6 +793,9 @@ impl App {
             pending_attach: None,
             attach_note: None,
             sidecar_io: SidecarIo::default(),
+            save_cycle: None,
+            activity_pending: false,
+            attached_id: None,
             check_error: None,
             scan: 0,
             root: dispatch::is_root(),
@@ -862,6 +881,68 @@ impl App {
             Entry::Row(i) => self.sessions.get(*i),
             Entry::Header { .. } => None,
         }
+    }
+
+    /// When the session last changed state, Unix ms (doc/0006): the same
+    /// value `tower status --json` reports as `lastChangeAt`.
+    pub fn last_change_at(&self, m: &MergedSession, now_ms: i64) -> Option<i64> {
+        activity::last_change_at(&m.session, &self.sidecar, now_ms)
+    }
+
+    /// Whether the row is highlighted for attention (doc/0007).
+    pub fn is_highlighted(&self, m: &MergedSession) -> bool {
+        activity::highlighted(&m.session, &self.sidecar)
+    }
+
+    /// Number of highlighted sessions, for the status bar's `N need you`.
+    /// Counts every row, whatever the view shows (doc/0007).
+    pub fn attention_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|m| self.is_highlighted(m))
+            .count()
+    }
+
+    /// Number of highlighted rows in `group`, for its header (doc/0007).
+    pub fn highlighted_in(&self, group: Group) -> usize {
+        self.sessions
+            .iter()
+            .filter(|m| groups::classify(&m.session) == group && self.is_highlighted(m))
+            .count()
+    }
+
+    /// Acknowledges the highlight of the session with `key` (doc/0007):
+    /// stores its current tuple as `acknowledged`. Only rows that need
+    /// attention are acknowledged. Returns true when the sidecar changed.
+    fn acknowledge(&mut self, key: &str) -> bool {
+        let Some(m) = self.sessions.iter().find(|m| m.session.key() == Some(key)) else {
+            return false;
+        };
+        if !activity::needs_attention(&m.session) {
+            return false;
+        }
+        let tuple = StateTuple::of(&m.session);
+        self.sidecar.acknowledge(key, &tuple)
+    }
+
+    /// `m`: marks the selected row as seen (doc/0007, doc/0011).
+    fn mark_seen(&mut self) -> Vec<Effect> {
+        let Some(m) = self.selected_session() else {
+            return Vec::new();
+        };
+        let name = m.session.display_name();
+        if !self.is_highlighted(m) {
+            self.set_message(format!("{name} is not highlighted"), Severity::Info);
+            return Vec::new();
+        }
+        let Some(key) = m.session.key().map(str::to_owned) else {
+            return Vec::new();
+        };
+        if !self.acknowledge(&key) {
+            return Vec::new();
+        }
+        self.set_message(format!("marked {name} as seen"), Severity::Info);
+        vec![Effect::SaveSidecar]
     }
 
     /// The current overlay.
@@ -986,9 +1067,11 @@ impl App {
     /// Applies one finished poll: moves `started` records keyed by a short
     /// id to their `sessionId`, merges all accounts (each with the cycle and
     /// arrival order of its last good rows, doc/0017; the processes rule 1
-    /// accepted carry over between polls), records detections
-    /// in the sidecar and rebuilds the list. Returns [`Effect::SaveSidecar`]
-    /// when the sidecar changed, and a logs fetch when the panel is open and
+    /// accepted carry over between polls), records detections and the
+    /// listed rows' state tuples (doc/0006) in the sidecar and rebuilds the
+    /// list. Returns [`Effect::SaveSidecar`] when the sidecar changed (for
+    /// activity times alone, at most once per poll cycle), and a logs fetch
+    /// when the panel is open and
     /// this was the poll of the shown session's account (one refresh per
     /// poll, doc/0009).
     pub fn apply_poll(&mut self, update: PollUpdate) -> Vec<Effect> {
@@ -1012,6 +1095,7 @@ impl App {
         }
         let mut changed = false;
         let listed_ok = update.result.is_ok();
+        let fresh = listed_ok.then(|| update.account.clone());
         match update.result {
             Ok(listing) => {
                 // Before the merge, so rule 3 finds the record (doc/0008).
@@ -1026,12 +1110,23 @@ impl App {
             }
             Err(err) => poll.error = Some(err),
         }
-        changed |= self.rebuild();
+        let (owners, activity) = self.rebuild(fresh.as_deref());
+        changed |= owners;
         self.track_started_orchestrator(&update.account, listed_ok);
         let mut effects = Vec::new();
-        // A save that failed (e.g. the lock was busy) is retried.
-        if changed || self.sidecar.retry_due() {
+        // A save that failed (e.g. the lock was busy) is retried. Changed
+        // activity times alone are saved at most once per poll cycle; the
+        // rest wait for the next cycle (doc/0006).
+        let activity = activity || self.activity_pending;
+        if changed
+            || self.sidecar.retry_due()
+            || (activity && self.save_cycle != Some(update.cycle))
+        {
             effects.push(Effect::SaveSidecar);
+            self.save_cycle = Some(update.cycle);
+            self.activity_pending = false;
+        } else if activity {
+            self.activity_pending = true;
         }
         let refresh = self
             .logs
@@ -1044,9 +1139,13 @@ impl App {
     }
 
     /// Merges the accounts' last listings with the sidecar and rebuilds the
-    /// list (see [`App::apply_poll`]). Returns true when the sidecar
-    /// changed.
-    fn rebuild(&mut self) -> bool {
+    /// list (see [`App::apply_poll`]). `fresh` names the account whose
+    /// listing just arrived: the tuples of its rows are recorded as activity
+    /// (doc/0006). Rows of older listings are not, so a reload never records
+    /// a stale tuple over another tower's newer one. Returns whether the
+    /// sidecar's owners, seen times or records changed, and whether its
+    /// activity times did.
+    fn rebuild(&mut self, fresh: Option<&str>) -> (bool, bool) {
         let mut changed = false;
         let listings: Vec<AccountListing> = self
             .polls
@@ -1069,6 +1168,23 @@ impl App {
         let merged = resolver.merge(&listings, &self.sidecar);
         (self.known, self.canon) = resolver.into_parts();
         changed |= self.sidecar.record_detections(&merged);
+        let now_ms = sidecar::now_ms();
+        let mut activity = false;
+        if let Some(account) = fresh {
+            for m in merged
+                .iter()
+                .filter(|m| m.seen_in.iter().any(|a| a == account))
+            {
+                if let Some(key) = m.session.key() {
+                    activity |= self.sidecar.observe_state_at(
+                        key,
+                        &StateTuple::of(&m.session),
+                        m.session.started_at,
+                        now_ms,
+                    );
+                }
+            }
+        }
         // Last-seen times and pruning (doc/0017 section 9): rows of every
         // good listing count as seen; pruning only while every account's
         // latest poll succeeded with a full listing.
@@ -1082,15 +1198,40 @@ impl App {
             .filter(|p| p.error.is_none())
             .flat_map(|p| p.rows.iter().flatten())
             .filter_map(Session::key);
-        changed |= self
-            .sidecar
-            .observe_listing(seen, complete, sidecar::now_ms());
+        changed |= self.sidecar.observe_listing(seen, complete, now_ms);
         self.set_sessions(merged);
-        changed
+        (changed, activity)
     }
 
-    /// Reports how an attach ended and asks for an immediate poll.
+    /// [`Effect::Attach`] for `request`, remembering its session so a
+    /// successful attach acknowledges the highlight (doc/0007).
+    fn attach_effect(&mut self, request: AttachRequest) -> Effect {
+        self.attached_id = Some(request.id.clone());
+        Effect::Attach(request)
+    }
+
+    /// Reports how an attach ended and asks for an immediate poll. A
+    /// successful attach (exit code 0) acknowledges the session's highlight
+    /// with the tuple it had (doc/0007).
     pub fn attach_finished(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if let Some(id) = self.attached_id.take()
+            && matches!(outcome.result, Ok(Some(0)))
+            && let Some(key) = self
+                .sessions
+                .iter()
+                .find(|m| m.session.id.as_deref() == Some(id.as_str()))
+                .and_then(|m| m.session.key())
+                .map(str::to_owned)
+            && self.acknowledge(&key)
+        {
+            effects.push(Effect::SaveSidecar);
+        }
+        effects.extend(self.attach_report(outcome));
+        effects
+    }
+
+    fn attach_report(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
         let who = format!("{} ({})", outcome.name, outcome.account);
         if let Some(note) = self.attach_note.take() {
             let severity = match outcome.result {
@@ -1165,7 +1306,7 @@ impl App {
                 );
                 if job.attach {
                     // attach_finished polls once tower is back.
-                    effects.push(Effect::Attach(AttachRequest {
+                    effects.push(self.attach_effect(AttachRequest {
                         account,
                         id: started.id,
                         name,
@@ -1710,6 +1851,7 @@ impl App {
             Action::Remove => effects = self.request_action(Purpose::Remove),
             Action::Handoff => effects = self.request_handoff(),
             Action::Orchestrator => effects = self.request_orchestrator(),
+            Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
                     self.logs = Some(LogsPanel {
@@ -1901,7 +2043,7 @@ impl App {
                 self.set_message(text, Severity::Info);
                 return Vec::new();
             }
-            return vec![Effect::Attach(AttachRequest {
+            return vec![self.attach_effect(AttachRequest {
                 account: started.account.clone(),
                 id: started.id.clone(),
                 name: orchestrator::NAME.to_owned(),
@@ -1952,7 +2094,7 @@ impl App {
                 } else {
                     self.set_message(what, Severity::Info);
                     // attach_finished polls once tower is back.
-                    effects.push(Effect::Attach(AttachRequest {
+                    effects.push(self.attach_effect(AttachRequest {
                         account,
                         id: started.id,
                         name: orchestrator::NAME.to_owned(),
@@ -2232,7 +2374,7 @@ impl App {
             }
         }
         self.attach_note = (!notes.is_empty()).then(|| notes.join("; "));
-        effects.push(Effect::Attach(AttachRequest {
+        effects.push(self.attach_effect(AttachRequest {
             account: chosen,
             id: p.request.id,
             name,
@@ -2385,7 +2527,7 @@ impl App {
             return Vec::new();
         }
         let mut effects = Vec::new();
-        if self.rebuild() {
+        if self.rebuild(None).0 {
             effects.push(Effect::SaveSidecar);
         }
         effects.extend(self.logs_follow(false));
@@ -2940,7 +3082,10 @@ impl App {
     /// Replaces the merged sessions, ordered for display, and keeps the
     /// selection on the same session when it is still listed.
     fn set_sessions(&mut self, merged: Vec<MergedSession>) {
-        let grouped = groups::group_by_state(&merged);
+        let now_ms = sidecar::now_ms();
+        let grouped = groups::group_by_state_with(&merged, |m| {
+            activity::last_change_at(&m.session, &self.sidecar, now_ms)
+        });
         let mut sessions = Vec::with_capacity(merged.len());
         let mut entries = Vec::new();
         let mut rows = Vec::new();

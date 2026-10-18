@@ -30,7 +30,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `o` | Attach to the orchestrator as `Enter` on its row would, starting it if missing ([0010](0010-orchestrator.md)); after a `Workspace not trusted` start a window offers `Ctrl+T` (run the account's command in its folder, then retry once) and `Esc` |
 | `s` | Stop the session (confirm when working or blocked) |
 | `d` | Remove the session (confirm) |
-| `m` | Mark the highlighted session as seen ([0007](0007-visual-only-attention.md)) |
+| `m` | Mark the selected highlighted session as seen: stores its current tuple as acknowledged, so the highlight clears until its next transition ([0007](0007-visual-only-attention.md)); on a row that is not highlighted the status line says so |
 | `/` | Text filter; `Esc` clears it |
 | `p` | Toggle grouping: by state / by project ([0006](0006-session-states-and-grouping.md)) |
 | `i` | Show / hide interactive sessions |
@@ -84,8 +84,10 @@ variant that works.
   itself; in raw mode `Ctrl+Z` arrives as a key and tower treats it as a no-op,
   optionally with a hint that it is the detach key inside sessions.
 - `l` is not used for logs because it means "right" to vim users.
-- The footer always shows the most used keys and the detach hint
-  (`in a session: Ctrl+Z returns to tower`).
+- The footer always shows the most used keys (including `m seen`) and the
+  detach hint (`in a session: Ctrl+Z returns to tower`).
+- The help overlay fits a 24-row terminal; keys of later milestones are
+  named in its bottom border.
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
 - A window that a background result opens (the hand-off and orchestrator
