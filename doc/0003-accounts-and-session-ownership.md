@@ -54,6 +54,8 @@ config_dir = "~/.claude-alt"
 
 A config dir found in `environ` that matches no configured account also yields `?`, with the raw path shown in the row details.
 
+**Single account.** With one configured account, rule 2 does not apply (one listing says nothing about shared lists) and rule 4 yields that account instead of `?`. This implicit owner is never written to the sidecar, so adding a second account with a shared listing later cannot inherit stale `list` records; rule 1 still applies, and a live process whose config dir is not the account's is `?`.
+
 **Command routing.** Every command that needs the hosting supervisor (`logs`, `attach`, wake via `--resume --bg`) runs with the owning account's command. `stop` and `rm` also use it, for consistency, although they work from any account.
 
 ## Consequences

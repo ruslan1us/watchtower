@@ -354,10 +354,25 @@ fn failed_account_is_not_rule_two_evidence() {
 
 #[test]
 fn detections_are_saved_only_on_change() {
-    let mut app = app_single();
+    let mut app = app_two();
+    // Separate lists: alt lists nothing, so main's rows resolve by rule 2.
+    app.apply_poll(watchtower::poller::PollUpdate {
+        account: "alt".into(),
+        result: Ok(watchtower::listing::parse_listing("[]").unwrap()),
+    });
     let effects = app.apply_poll(poll("main", "mixed-states.json"));
     assert_eq!(effects, [Effect::SaveSidecar]);
     assert!(app.apply_poll(poll("main", "mixed-states.json")).is_empty());
+}
+
+#[test]
+fn single_account_writes_no_implicit_owners() {
+    let mut app = app_single();
+    let effects = app.apply_poll(poll("main", "mixed-states.json"));
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(app.sidecar.sessions.is_empty());
+    // Every row still attaches with the only account.
+    assert!(app.sessions().iter().all(|m| m.owner.label() == "main"));
 }
 
 #[test]

@@ -8,7 +8,7 @@
 
 use std::io;
 use std::process::{Command, ExitStatus};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::app::{AttachOutcome, AttachRequest};
@@ -88,10 +88,16 @@ pub fn announcement(req: &AttachRequest) -> String {
 /// SIGQUIT and SIGTSTP in place, then reclaim the terminal. On a non-zero exit
 /// it waits for a key first, so Claude Code's error text can be read (doc/0005
 /// open item: stderr stays inherited).
+///
+/// A SIGTERM or SIGHUP that arrives while the child runs is not forwarded:
+/// the child owns the terminal and keeps running until it exits on its own.
+/// Afterwards, if `termination` is pending, tower neither waits for a key nor
+/// reclaims the terminal, so the caller can exit straight away (doc/0005).
 pub fn attach(
     handover: &mut dyn Handover,
     spawner: &mut dyn Spawner,
     req: &AttachRequest,
+    termination: &Termination,
 ) -> AttachOutcome {
     let outcome = |result| AttachOutcome {
         name: req.name.clone(),
@@ -116,18 +122,25 @@ pub fn attach(
         Ok(status) => Ok(status.code()),
         Err(err) => Err(format!("cannot run `{}`: {err}", line.program)),
     };
-    match &result {
-        Ok(Some(0)) | Err(_) => {}
-        Ok(Some(code)) => {
-            let _ = handover.wait_for_key(&format!(
-                "tower: attach exited with code {code}. Press any key to return to tower."
-            ));
+    let ending = || termination.pending().is_some();
+    if !ending() {
+        match &result {
+            Ok(Some(0)) | Err(_) => {}
+            Ok(Some(code)) => {
+                let _ = handover.wait_for_key(&format!(
+                    "tower: attach exited with code {code}. Press any key to return to tower."
+                ));
+            }
+            Ok(None) => {
+                let _ = handover.wait_for_key(
+                    "tower: attach was ended by a signal. Press any key to return to tower.",
+                );
+            }
         }
-        Ok(None) => {
-            let _ = handover.wait_for_key(
-                "tower: attach was ended by a signal. Press any key to return to tower.",
-            );
-        }
+    }
+    if ending() {
+        // Tower is about to exit and the terminal is already released.
+        return outcome(result);
     }
     if let Err(err) = handover.reclaim() {
         return outcome(Err(format!("cannot restore the terminal: {err}")));
@@ -186,4 +199,68 @@ impl Drop for SignalGuard {
     fn drop(&mut self) {
         self.flag.store(true, Ordering::SeqCst);
     }
+}
+
+/// The signals that end tower gracefully: the event loop stops, the terminal
+/// is restored and tower exits with status 128 + signal.
+pub const TERMINATION_SIGNALS: [i32; 2] =
+    [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP];
+
+/// The process-wide flag behind [`Termination::install`].
+static TERMINATION: OnceLock<Result<Arc<AtomicUsize>, String>> = OnceLock::new();
+
+/// A pending SIGTERM or SIGHUP, recorded by a signal handler and acted on by
+/// the event loop (`0` = none, otherwise the signal number).
+///
+/// Like [`SignalGuard`], this uses signal-hook handlers rather than `SIG_IGN`,
+/// installed once and never removed: the child of an attach gets the default
+/// dispositions back on `exec`, so it reacts to these signals as it would
+/// without tower. [`Termination::default`] is a flag no handler sets (tests,
+/// or the fallback when the handlers cannot be installed).
+#[derive(Debug, Clone, Default)]
+pub struct Termination {
+    pending: Arc<AtomicUsize>,
+}
+
+impl Termination {
+    /// Installs handlers for [`TERMINATION_SIGNALS`] (once per process) and
+    /// returns the flag they set.
+    pub fn install() -> io::Result<Termination> {
+        let registered = TERMINATION.get_or_init(|| {
+            let pending = Arc::new(AtomicUsize::new(0));
+            for sig in TERMINATION_SIGNALS {
+                let value = usize::try_from(sig).map_err(|e| e.to_string())?;
+                signal_hook::flag::register_usize(sig, Arc::clone(&pending), value)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(pending)
+        });
+        let pending = registered
+            .as_ref()
+            .map_err(|e| io::Error::other(e.clone()))?;
+        Ok(Termination {
+            pending: Arc::clone(pending),
+        })
+    }
+
+    /// The signal that asked tower to end, if any (the latest one wins).
+    pub fn pending(&self) -> Option<i32> {
+        match self.pending.load(Ordering::SeqCst) {
+            0 => None,
+            sig => i32::try_from(sig).ok(),
+        }
+    }
+
+    /// Records `sig` as if its handler had run.
+    pub fn request(&self, sig: i32) {
+        if let Ok(value) = usize::try_from(sig) {
+            self.pending.store(value, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The exit status for a process ended by `sig`: 128 + signal, as a shell
+/// reports it.
+pub fn signal_exit_status(sig: i32) -> u8 {
+    u8::try_from(128 + sig).unwrap_or(u8::MAX)
 }

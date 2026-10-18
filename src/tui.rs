@@ -2,8 +2,12 @@
 //! loop, feeds key presses and poll results to [`App`], and carries out the
 //! [`Effect`]s it returns (doc/0005, doc/0014 milestone 1).
 //!
-//! The terminal is restored on normal exit, on error (a drop guard) and on
-//! panic (a panic hook). Tower never writes BEL or OSC notifications
+//! The terminal is restored on normal exit, on error (a drop guard), on panic
+//! (a panic hook) and on SIGTERM or SIGHUP: their handlers only set a flag
+//! ([`attach::Termination`]), and the event loop checks it every tick and
+//! ends, so tower exits with 128 + signal. After SIGHUP the terminal may be
+//! gone, so only raw mode is turned off and no escape sequences are written.
+//! During an attach the flag waits until the child has exited (doc/0005). Tower never writes BEL or OSC notifications
 //! (doc/0007); it does not enable mouse capture, bracketed paste or keyboard
 //! enhancement in milestone 1, so there is nothing of that kind to undo.
 
@@ -22,7 +26,7 @@ use ratatui::crossterm::terminal::{
 };
 
 use crate::app::{App, Effect, Severity};
-use crate::attach::{self, Handover, InheritSpawner};
+use crate::attach::{self, Handover, InheritSpawner, Termination};
 use crate::cli::CliRunner;
 use crate::config::Config;
 use crate::merge::ProcEnviron;
@@ -36,8 +40,43 @@ const TICK: Duration = Duration::from_millis(200);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// Runs the TUI until the user quits.
-pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<()> {
+/// How the TUI ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    /// The user quit.
+    Quit,
+    /// A SIGTERM or SIGHUP ended it.
+    Signal(i32),
+}
+
+impl Exit {
+    /// The process exit status: 0, or 128 + signal.
+    pub fn status(self) -> u8 {
+        match self {
+            Exit::Quit => 0,
+            Exit::Signal(sig) => attach::signal_exit_status(sig),
+        }
+    }
+
+    /// Whether restoring the terminal may write escape sequences. Not after
+    /// SIGHUP: the terminal is probably gone and a write could fail or block.
+    pub fn may_write_to_terminal(self) -> bool {
+        self != Exit::Signal(signal_hook::consts::SIGHUP)
+    }
+}
+
+/// How the event loop's end and a pending termination signal combine: a
+/// pending signal wins, even over an error (after SIGHUP the terminal fails
+/// first, and that error is a symptom, not the cause).
+pub fn exit_for(result: io::Result<()>, pending: Option<i32>) -> io::Result<Exit> {
+    match pending {
+        Some(sig) => Ok(Exit::Signal(sig)),
+        None => result.map(|()| Exit::Quit),
+    }
+}
+
+/// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
+pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(io::Error::other(
             "needs an interactive terminal (stdin and stdout must be a TTY)",
@@ -55,8 +94,13 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<()> {
         app.add_warning(warning);
     }
 
+    let termination = Termination::install().unwrap_or_else(|err| {
+        app.add_warning(format!("cannot handle SIGTERM/SIGHUP: {err}"));
+        Termination::default()
+    });
+
     install_panic_hook();
-    let _restore = RestoreGuard;
+    let mut restore = RestoreGuard { write: true };
     let mut terminal = enter()?;
 
     let poller = Poller::start(
@@ -64,16 +108,27 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<()> {
         Arc::new(CliRunner::new()),
         config.poll_interval(),
     );
-    event_loop(&mut terminal, &mut app, &poller, &state_file)
+    let result = event_loop(&mut terminal, &mut app, &poller, &state_file, &termination);
+    let exit = exit_for(result, termination.pending());
+    if let Ok(exit) = exit {
+        restore.write = exit.may_write_to_terminal();
+    }
+    exit
 }
 
+/// Runs until the user quits or `termination` is pending; the flag is checked
+/// before every draw, so tower stops within one [`TICK`].
 fn event_loop(
     terminal: &mut Term,
     app: &mut App,
     poller: &Poller,
     state_file: &Path,
+    termination: &Termination,
 ) -> io::Result<()> {
     loop {
+        if termination.pending().is_some() {
+            return Ok(());
+        }
         terminal.draw(|frame| crate::ui::draw(frame, app, Instant::now()))?;
         let mut effects = Vec::new();
         if event::poll(TICK)? {
@@ -88,7 +143,7 @@ fn event_loop(
         while let Some(update) = poller.try_recv() {
             effects.extend(app.apply_poll(update));
         }
-        if !run_effects(terminal, app, poller, state_file, effects)? {
+        if !run_effects(terminal, app, poller, state_file, termination, effects)? {
             return Ok(());
         }
     }
@@ -100,6 +155,7 @@ fn run_effects(
     app: &mut App,
     poller: &Poller,
     state_file: &Path,
+    termination: &Termination,
     effects: Vec<Effect>,
 ) -> io::Result<bool> {
     let mut queue: std::collections::VecDeque<Effect> = effects.into();
@@ -116,8 +172,11 @@ fn run_effects(
                 }
             }
             Effect::Attach(req) => {
-                let mut handover = TermHandover { terminal };
-                let outcome = attach::attach(&mut handover, &mut InheritSpawner, &req);
+                let mut handover = TermHandover {
+                    terminal,
+                    termination,
+                };
+                let outcome = attach::attach(&mut handover, &mut InheritSpawner, &req, termination);
                 queue.extend(app.attach_finished(outcome));
             }
         }
@@ -141,12 +200,20 @@ pub fn restore_terminal() {
     let _ = io::stdout().flush();
 }
 
-/// Restores the terminal when dropped (normal exit or `?` error).
-struct RestoreGuard;
+/// Restores the terminal when dropped (normal exit, signal or `?` error).
+/// With `write` false (after SIGHUP) it only turns raw mode off, which is a
+/// `tcsetattr` call and writes nothing.
+struct RestoreGuard {
+    write: bool,
+}
 
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
-        restore_terminal();
+        if self.write {
+            restore_terminal();
+        } else {
+            let _ = disable_raw_mode();
+        }
     }
 }
 
@@ -171,6 +238,7 @@ fn drain_events() {
 /// The real [`Handover`] over the crossterm terminal.
 struct TermHandover<'a> {
     terminal: &'a mut Term,
+    termination: &'a Termination,
 }
 
 impl Handover for TermHandover<'_> {
@@ -198,13 +266,16 @@ impl Handover for TermHandover<'_> {
         out.flush()?;
         enable_raw_mode()?;
         drain_events();
-        loop {
-            if let Event::Key(key) = event::read()?
+        // Polled, not a blocking read, so a SIGTERM/SIGHUP ends the wait.
+        while self.termination.pending().is_none() {
+            if event::poll(TICK)?
+                && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
                 return Ok(());
             }
         }
+        Ok(())
     }
 
     fn reclaim(&mut self) -> io::Result<()> {

@@ -9,7 +9,9 @@ use std::process::{Command, ExitStatus};
 use std::sync::{Mutex, MutexGuard};
 
 use watchtower::app::AttachRequest;
-use watchtower::attach::{Handover, InheritSpawner, SignalGuard, Spawner, announcement, attach};
+use watchtower::attach::{
+    Handover, InheritSpawner, SignalGuard, Spawner, Termination, announcement, attach,
+};
 use watchtower::config::Account;
 
 /// Serializes tests: signal dispositions are process-wide, and writing an
@@ -105,7 +107,12 @@ fn runs_owning_account_attach_with_short_id() {
         "touch-config",
     );
     let mut term = FakeTerm::default();
-    let outcome = attach(&mut term, &mut InheritSpawner, &req);
+    let outcome = attach(
+        &mut term,
+        &mut InheritSpawner,
+        &req,
+        &Termination::default(),
+    );
 
     assert_eq!(outcome.result, Ok(Some(0)));
     assert_eq!(outcome.account, "alt");
@@ -136,6 +143,7 @@ fn account_command_words_are_kept() {
         &mut term,
         &mut InheritSpawner,
         &request(account, "1a2b3c4d", "x"),
+        &Termination::default(),
     );
     assert_eq!(
         fake.argv("claude"),
@@ -159,6 +167,7 @@ fn nonzero_exit_waits_for_key_and_reports_code() {
         &mut term,
         &mut InheritSpawner,
         &request(fake.account("main", "claude"), "0000aaaa", "gone"),
+        &Termination::default(),
     );
     assert_eq!(outcome.result, Ok(Some(1)));
     assert_eq!(term.log.len(), 4, "{:?}", term.log);
@@ -181,6 +190,7 @@ fn missing_command_is_an_error_and_terminal_is_reclaimed() {
         &mut term,
         &mut InheritSpawner,
         &request(account, "1a2b3c4d", "x"),
+        &Termination::default(),
     );
     let err = outcome.result.unwrap_err();
     assert!(err.contains("cannot run"), "{err}");
@@ -209,6 +219,7 @@ fn tower_survives_signals_while_attached() {
         &mut term,
         &mut SignalRaisingSpawner,
         &request(fake.account("main", "claude"), "1a2b3c4d", "x"),
+        &Termination::default(),
     );
     // Still alive and not stopped: SIGINT would have killed the test process
     // and SIGTSTP would have stopped it.
@@ -253,6 +264,39 @@ fn stopped_child_is_resumed_not_waited_on_forever() {
         &mut term,
         &mut InheritSpawner,
         &request(fake.account("main", "claude"), "1a2b3c4d", "x"),
+        &Termination::default(),
     );
     assert_eq!(outcome.result, Ok(Some(7)));
+}
+
+/// Runs the child after a SIGTERM was "received" while it runs, as the
+/// handler would record it.
+struct TerminatingSpawner(Termination);
+
+impl Spawner for TerminatingSpawner {
+    fn run(&mut self, command: Command) -> io::Result<ExitStatus> {
+        self.0.request(signal_hook::consts::SIGTERM);
+        InheritSpawner.run(command)
+    }
+}
+
+#[test]
+fn termination_while_attached_waits_for_child_then_skips_pause_and_reclaim() {
+    let _l = lock();
+    // The child outlives the signal and exits on its own; its exit code
+    // comes through, and the terminal is left released for tower's exit.
+    let fake = Fake::new("claude", "sleep 0.2; exit 1");
+    let termination = Termination::default();
+    let mut term = FakeTerm::default();
+    let outcome = attach(
+        &mut term,
+        &mut TerminatingSpawner(termination.clone()),
+        &request(fake.account("main", "claude"), "1a2b3c4d", "x"),
+        &termination,
+    );
+    assert_eq!(outcome.result, Ok(Some(1)));
+    assert_eq!(termination.pending(), Some(signal_hook::consts::SIGTERM));
+    assert_eq!(term.log.len(), 2, "{:?}", term.log);
+    assert_eq!(term.log[0], "release");
+    assert!(term.log[1].starts_with("announce "));
 }

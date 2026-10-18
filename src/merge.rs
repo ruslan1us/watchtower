@@ -15,7 +15,12 @@
 //! 3. the sidecar record;
 //! 4. unknown (`?`).
 //!
-//! With a single configured account every row belongs to it (source `list`).
+//! With a single configured account, rule 2 is skipped (one listing proves
+//! nothing about shared lists) and rule 4 gives that account instead of `?`,
+//! with source [`AccountSource::Implicit`], which is never written to the
+//! sidecar: if a second account with a shared listing is added later, no
+//! stale `list` records claim its sessions. Rule 1 still applies, so a live
+//! process whose config dir is not the account's is `?` with the raw path.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -242,9 +247,6 @@ impl<'a> Resolver<'a> {
         all_polled: bool,
         sidecar: &Sidecar,
     ) -> Ownership {
-        if let [only] = self.accounts {
-            return known(&only.name, AccountSource::List);
-        }
         // Rule 1: live process.
         if let Some(pid) = m.session.pid
             && let Ok(var) = self.environ.config_dir_var(pid)
@@ -262,7 +264,9 @@ impl<'a> Resolver<'a> {
             };
         }
         // Rule 2: listed by exactly one account, every other poll succeeded.
-        if all_polled
+        // Needs at least two accounts to compare.
+        if self.accounts.len() > 1
+            && all_polled
             && let [account] = m.seen_in.as_slice()
             && self.accounts.iter().any(|a| a.name == *account)
         {
@@ -274,7 +278,11 @@ impl<'a> Resolver<'a> {
         {
             return known(account, source.clone());
         }
-        Ownership::Unknown { config_dir: None }
+        // Rule 4, except that the only configured account owns the rest.
+        match self.accounts {
+            [only] => known(&only.name, AccountSource::Implicit),
+            _ => Ownership::Unknown { config_dir: None },
+        }
     }
 
     /// `~` expanded and symlinks resolved; a path that cannot be resolved

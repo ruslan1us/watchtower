@@ -325,22 +325,76 @@ fn sidecar_naming_unconfigured_account_is_ignored() {
 }
 
 #[test]
-fn single_account_owns_everything() {
+fn single_account_owns_everything_implicitly() {
     let home = Home::new();
     let accounts = vec![home.accounts[0].clone()];
     let rows = listing("after-stop-all.json").sessions;
-    let env = FakeEnviron::default().with(4241, Env::Var("/elsewhere".into()));
-    let merged = Resolver::new(&accounts, home.path(), &env)
+    // No environ readable: every row falls to the implicit owner.
+    let merged = Resolver::new(&accounts, home.path(), &FakeEnviron::default())
         .merge(&[al("main", Some(rows))], &Sidecar::default());
     assert_eq!(merged.len(), 7);
     for m in &merged {
         assert_eq!(
             m.owner,
-            known("main", AccountSource::List),
+            known("main", AccountSource::Implicit),
             "{:?}",
             m.session.name
         );
     }
+    // The implicit owner is not evidence and is never persisted, so a second
+    // account with a shared listing added later finds no stale records.
+    let mut sidecar = Sidecar::default();
+    assert!(!sidecar.record_detections(&merged));
+    assert!(sidecar.sessions.is_empty());
+}
+
+#[test]
+fn single_account_still_applies_rule_one() {
+    let home = Home::new();
+    let accounts = vec![home.accounts[0].clone()];
+    let rows = listing("after-stop-all.json").sessions;
+    let env = FakeEnviron::default()
+        .with(4241, Env::Var("/elsewhere/.claude-x".into())) // bad-model: not main's dir
+        .with(4240, Env::Missing); // run-test-suite: default ~/.claude = main
+    let mut sidecar = Sidecar::default();
+    // A record naming the only account is still honoured over the implicit owner.
+    sidecar.record_owner(
+        "b2f8d064-6a3c-4e1f-9d58-0c7a2b4e6f81",
+        "main",
+        AccountSource::Started,
+    );
+    let merged =
+        Resolver::new(&accounts, home.path(), &env).merge(&[al("main", Some(rows))], &sidecar);
+    // A live process under another config dir is not silently the only account.
+    assert_eq!(
+        owner(&merged, "bad-model"),
+        Ownership::Unknown {
+            config_dir: Some(PathBuf::from("/elsewhere/.claude-x"))
+        }
+    );
+    assert_eq!(
+        owner(&merged, "run-test-suite"),
+        known("main", AccountSource::Proc)
+    );
+    assert_eq!(
+        owner(&merged, "say-ok"),
+        known("main", AccountSource::Started)
+    );
+    assert_eq!(
+        owner(&merged, "print-date"),
+        known("main", AccountSource::Implicit)
+    );
+    // Only the genuine detection is recorded: no `list` records at all.
+    assert!(sidecar.record_detections(&merged));
+    let sources: Vec<_> = sidecar
+        .sessions
+        .values()
+        .filter_map(|r| r.account_source.clone())
+        .collect();
+    assert_eq!(sources.len(), 2, "{sources:?}");
+    assert!(sources.contains(&AccountSource::Proc));
+    assert!(sources.contains(&AccountSource::Started));
+    assert!(!sources.contains(&AccountSource::List));
 }
 
 #[test]

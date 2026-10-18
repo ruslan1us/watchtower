@@ -34,6 +34,9 @@ string_enum! {
         Handoff => "handoff",
         /// The user's answer for a session whose account was unknown.
         Asked => "asked",
+        /// In memory only, never written: the single configured account,
+        /// assumed for want of any evidence (see [`crate::merge`]).
+        Implicit => "implicit",
     }
 }
 
@@ -213,7 +216,9 @@ impl Sidecar {
     }
 
     /// Stores every live detection (rule 1 `proc`, rule 2 `list`) from a merge
-    /// result, as doc/0003 requires. Returns true when anything changed.
+    /// result, as doc/0003 requires. The implicit owner of single-account mode
+    /// is not a detection and is never stored. Returns true when anything
+    /// changed.
     pub fn record_detections(&mut self, merged: &[MergedSession]) -> bool {
         let mut changed = false;
         for m in merged {

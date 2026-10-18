@@ -43,7 +43,7 @@ fn main() -> ExitCode {
     };
     let loaded = Sidecar::load(&dirs.state_file());
     match watchtower::tui::run(config, dirs, loaded) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit) => ExitCode::from(exit.status()),
         Err(err) => {
             eprintln!("tower: {err}");
             ExitCode::FAILURE
