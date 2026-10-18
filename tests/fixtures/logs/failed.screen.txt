@@ -1,0 +1,64 @@
+
+ ▐▛███▛█   Claude Code v2.1.302
+▝▜██████▀  no-such-model-xyz · Claude Pro
+ ▝▝   ▝▝   ~/workspace/demo-app
+
+⚠ Model "no-such-model-xyz" isn't recognized · context assumed to be 200k tokens · update Claude Code, or see https://code.claude.com/docs/en/model-config
+
+❯ reply with OK
+
+● There's an issue with the selected model (no-such-model-xyz). It may not exist or you may not have access to it. Run /model to pick a different model.
+
+✻ Sautéed for 1s · done 1:59 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── bad-model ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,68 @@
+[
+  {
+    "pid": 1201,
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "interactive",
+    "startedAt": 1767225600000,
+    "sessionId": "e6c3b5d9-4f7a-4c2e-b1d8-9a0f2c4e6b13",
+    "name": "demo-app-3f",
+    "status": "busy"
+  },
+  {
+    "pid": 4241,
+    "id": "3e9a1c07",
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "background",
+    "startedAt": 1767232793428,
+    "sessionId": "3e9a1c07-5b2d-4f60-9a1e-7c3b2d4e5f60",
+    "name": "bad-model",
+    "status": "idle",
+    "state": "failed"
+  },
+  {
+    "pid": 4240,
+    "id": "5a7c2e91",
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "background",
+    "startedAt": 1767232811369,
+    "sessionId": "5a7c2e91-0d4b-4c8e-8f21-6b3a9d0e7c12",
+    "name": "run-test-suite",
+    "status": "idle",
+    "state": "done"
+  },
+  {
+    "pid": 4290,
+    "id": "7b4d9f02",
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "background",
+    "startedAt": 1767232815195,
+    "sessionId": "7b4d9f02-3c1e-4a7b-b5d6-2e8f0a1c4b93",
+    "name": "print-date",
+    "status": "idle",
+    "state": "done"
+  },
+  {
+    "pid": 4315,
+    "id": "9c6e1a35",
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "background",
+    "startedAt": 1767232818776,
+    "sessionId": "9c6e1a35-8f2b-4d09-a7c4-5e1b3d6f8a20",
+    "name": "pick-colour",
+    "status": "waiting",
+    "waitingFor": "input needed",
+    "state": "blocked"
+  },
+  {
+    "pid": 4377,
+    "id": "d4a1f7c8",
+    "cwd": "/home/user/workspace/demo-app",
+    "kind": "background",
+    "startedAt": 1767232875668,
+    "sessionId": "d4a1f7c8-2e5b-4b3a-8c90-1f6d3a5b7e42",
+    "name": "touch-config",
+    "status": "waiting",
+    "waitingFor": "permission prompt",
+    "state": "blocked"
+  }
+]

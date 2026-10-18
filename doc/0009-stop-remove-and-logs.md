@@ -8,8 +8,9 @@
 Besides attaching, the overview needs three actions on a row: stop a session, remove it from
 the list, and peek at its recent output without attaching. Claude Code provides `stop`, `rm`
 and `logs` ([reference](reference/claude-code-cli.md#cli-commands)). `logs` only works with
-the command of the account hosting the session; `stop` takes the short id only; `rm` can
-delete a worktree. `logs` returns a raw terminal byte stream, not text
+the command of the account hosting the session, and only while the session has a live
+process (for a stopped session it exits 1); `stop` takes the short id only, not a name; `rm`
+can delete a worktree. `logs` returns a raw terminal byte stream, not text
 ([reference](reference/claude-code-cli.md#claude-logs-output)). Destructive actions need a
 confirmation, and work must never be deleted silently.
 
@@ -18,8 +19,10 @@ confirmation, and work must never be deleted silently.
 All three actions use the command of the **owning account**
 ([0003](0003-accounts-and-session-ownership.md)) and the short `id`.
 
-**Stop.** Run `<owning account command> stop <id>`. Sessions in state `working` or
-`blocked` ask for confirmation first; others stop directly. Success prints `stopped <id>`; the conversation
+**Stop.** Run `<owning account command> stop <id>` with the short `id`; a name is rejected
+with `No job matching '<name>'`. Sessions in state `working` or
+`blocked` ask for confirmation first; others stop directly. Success prints `stopped <id>`
+(exit 0, also when the session was already stopped); the conversation
 is kept and the session can be woken by attaching.
 
 **Remove.** After confirmation, run `<owning account command> rm <id>`. The transcript stays
@@ -44,10 +47,15 @@ suggested command manually. These flags destroy work.
 - Refresh on every poll, only for the selected row and only while the panel is open.
   Changing the selection fetches the new row immediately.
 - Interactive rows have no `id`; the panel shows a short note instead of output.
+- Rows without a live process (no `pid` and no `status`,
+  [0006](0006-session-states-and-grouping.md)) show the note "no live output — session
+  stopped; attach to view it". Tower does not call `logs` for them, since it would only fail
+  with `Couldn't read logs for <id> — job not found …` (exit 1).
 
 ## Consequences
 
-- One extra `logs` process per poll while the panel is open; nothing when it is closed.
+- One extra `logs` process per poll while the panel is open and the selected row has a live
+  process; nothing otherwise.
 - A row whose owning account is unknown ("?") cannot show logs until the account is known;
   the panel says so.
 - Removing a session with unfinished work in its worktree is always a manual step outside
@@ -66,6 +74,5 @@ suggested command manually. These flags destroy work.
 
 ## Open items
 
-- `logs` behaviour for a stopped session (empty output, last screen, or an error).
-- Exit codes of `logs`, `stop` and an `rm` refusal; exact refusal message format.
+- Exit code and exact message format of an `rm` refusal.
 - A reliable way to learn the session's PTY size instead of inferring it.

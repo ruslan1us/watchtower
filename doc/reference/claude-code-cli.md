@@ -8,7 +8,9 @@ fact is marked:
 - **documented**: stated in the Claude Code docs (URL given).
 - **CLI help**: stated in `claude --help` or a subcommand's `--help`.
 - **verified**: observed in tests on Linux, including the tmux attach/detach harness
-  ([0015](../0015-testing-strategy.md)).
+  ([0015](../0015-testing-strategy.md)). Sanitized captures are under `tests/fixtures/`
+  (e.g. `tests/fixtures/agents-json/after-stop-all.json`, `tests/fixtures/logs/`,
+  `tests/fixtures/cli-output/`).
 
 Open questions are listed under [Not yet verified](#not-yet-verified).
 
@@ -31,12 +33,12 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 
 | Command | Behaviour | Source |
 |---|---|---|
-| `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>`, preceded by `Starting background service…` when the supervisor has to start first. | CLI help, verified |
-| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints e.g. `note: woke session 1a2b3c4d with its saved options (--name, --model).`; the prompt becomes the next turn. If the session is already running, starts a copy under a new id and prints a `note:` line. | CLI help, verified (stopped case) |
-| `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
+| `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
+| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. | CLI help, verified (stopped case) |
+| `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions, including sessions stopped with `claude stop`, which are missing without it; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
-| `claude logs <id\|name>` | "Recent terminal output" of the session. **No line-limit flag.** Format below. | CLI help, verified |
-| `claude stop <id>` / `claude kill <id>` | Stops the session's process; the conversation is kept. **Short id only**: a full `sessionId` or a pid gives `No job matching '<x>'`. | CLI help, verified |
+| `claude logs <id\|name>` | "Recent terminal output" of the session. Part of a name is accepted. **No line-limit flag.** Format below. Fails (exit 1, empty stdout) for a stopped session, since there is no live process. | CLI help, verified |
+| `claude stop <id>` / `claude kill <id>` | Stops the session's process; the conversation is kept. **Short id only**: a name, a full `sessionId` or a pid gives `No job matching '<x>'`. Idempotent: on an already stopped session it prints `stopped <id>` and exits 0. | CLI help, verified |
 | `claude rm <id> [--discard-unpushed <commit>@<worktree>] [--force-remove-worktree <worktree>]` | Removes the row and, when safe, the session's worktree. The transcript stays on disk. Works on exited sessions. Refuses on uncommitted changes, unpushed commits or a worktree in use, and prints the flag to pass for a second try. | CLI help, verified (success case) |
 | `claude respawn <id>\|--all` | Restarts sessions onto the currently installed binary. | CLI help |
 | `claude daemon status\|logs\|stop [--any] [--keep-workers]` | Supervisor information (pid, version, socket dir, worker counts), its log, stopping it. | CLI help |
@@ -64,7 +66,7 @@ output over reading Claude Code's files.
 | `kind` | always | `interactive` or `background` |
 | `startedAt` | always | start time of the **current process**, Unix ms |
 | `id` | always on background rows | short id used by `attach`, `logs`, `stop`, `rm` |
-| `state` | always on background rows | `working`, `blocked`, `done`, `failed`, `stopped` |
+| `state` | always on background rows | `working`, `blocked`, `done`, `failed`, `stopped` (documented; after `claude stop` the row keeps its last value instead, see below) |
 | `pid` | while the process is alive | OS process id |
 | `status` | while the process is alive | `busy`, `waiting`, `idle` |
 | `waitingFor` | when `status` is `waiting` | `permission prompt`, `input needed`, `sandbox request`, `worker request`, `dialog open` |
@@ -92,7 +94,26 @@ Sample rows (made up, shape as observed):
 { "pid": 4444, "id": "5e6f7a8b", "cwd": "~/workspace/example-web", "kind": "background",
   "startedAt": 1790000200000, "sessionId": "5e6f7a8b-0000-4000-8000-000000000000",
   "name": "update-deps", "status": "idle", "state": "done" }
+
+{ "id": "9c8d7e6f", "cwd": "~/workspace/demo-app", "kind": "background",
+  "startedAt": 1790000300000, "sessionId": "9c8d7e6f-0000-4000-8000-000000000000",
+  "name": "add-readme", "state": "done" }
 ```
+
+The last row is a session after `claude stop`: listed only with `--all`, no `pid`, no
+`status`, last `state` kept.
+
+Observed `state` / `status` / `waitingFor` combinations (verified):
+
+| Situation | `state` | `status` | `waitingFor` |
+|---|---|---|---|
+| Working on a turn | `working` | `busy` | — |
+| Writing command in `manual` mode (e.g. `touch <file>`); a read-only command such as `date` ran without a prompt | `blocked` | `waiting` | `permission prompt` |
+| Question asked with the question tool | `blocked` | `waiting` | `input needed` |
+| Turn finished | `done` | `idle` | — |
+| Failed (e.g. unknown `--model` name); the process stays alive, `pid` present | `failed` | `idle` | — |
+| Woken with `--resume <sessionId> --bg` and no prompt, right after the wake | `working` | `idle` | — |
+| Stopped with `claude stop` (only with `--all`) | last value kept (observed: `done`) | absent | — |
 
 Observed oddities (verified):
 
@@ -102,6 +123,11 @@ Observed oddities (verified):
 - The short `id` was observed to equal the first 8 characters of `sessionId`. This is
   undocumented; do not rely on it.
 - `startedAt` is reset when a session is woken; it is not the session's creation time.
+- `state: "stopped"` was not seen after `claude stop`. The stopped session disappears from
+  `--json` and appears only in `--json --all`, keeping its last `state`, with no `pid` and no
+  `status`. While every session was alive, `--json` and `--json --all` returned the same rows.
+  A row without a live process is therefore recognised by the missing `pid` and `status`, not
+  by its `state`.
 
 ## `claude logs` output
 
@@ -118,6 +144,9 @@ Verified:
 - A `Session <id> · <name>` banner is written to a different stream than the screen bytes
   (first in a pipe, last in a terminal), probably stderr.
 - `logs` works only through the binary of the account hosting the session (see below).
+- For a stopped session `logs` exits 1 with empty stdout and stderr
+  `Couldn't read logs for <id> — job not found — it may have already exited`. An unknown id
+  exits 1 with `No job matching '<x>'. …`.
 
 How Watchtower uses it: [0009](../0009-stop-remove-and-logs.md).
 
@@ -213,7 +242,16 @@ Documented ([permission modes](https://code.claude.com/docs/en/permission-modes)
   session silently starts in manual mode.
 - Workspace trust is stored in `.claude.json` in the config dir, so it is **per account**.
 - `claude --bg` in a folder the account has not trusted fails with `Workspace not trusted`
-  when no trust dialog can be shown (documented; exact output not yet captured).
+  when no trust dialog can be shown. Verified output: exit 1, empty stdout, stderr
+  ``Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry.``
+
+Verified (observed behaviour; the mechanism is not documented):
+
+- A folder inside a trusted parent folder was covered by the parent's trust until it became a
+  git repository (`git init`); after that it was reported untrusted. Each git clone may
+  therefore need its own trust acceptance, per account.
+- In `manual` mode a read-only Bash command (`date`) ran without a prompt; a writing command
+  (`touch <file>`) raised a permission prompt (`state: blocked`, `waitingFor: "permission prompt"`).
 
 ## Cross-session messaging
 
@@ -230,27 +268,32 @@ Documented ([cross-session messaging](https://code.claude.com/docs/en/cross-sess
 
 | Situation | Output | Exit code | Source |
 |---|---|---|---|
-| Unknown id for `attach` or `stop` (or full sessionId / pid for `stop`) | `No job matching '<x>'. Run 'claude agents' to list running sessions.` | 1 | verified |
+| Unknown id for `attach`, `logs` or `stop` (or a name, full sessionId or pid for `stop`) | `No job matching '<x>'. Run 'claude agents' to list running sessions.` | 1 | verified |
 | `rm` success | `removed <id>` | 0 | verified |
-| `stop` success | `stopped <id>` | not captured | verified (output) |
+| `stop` success, also on an already stopped session | `stopped <id>` | 0 | verified |
 | `attach` after detach | none | 0 | verified |
 | `attach` while agent view is disabled | `'attach' is disabled by …` | 1 | verified |
-| `--bg` success | `backgrounded · <id> · <name>` | not captured | verified (output) |
+| `--bg` success | stdout `backgrounded · <id> · <name>` plus hint lines; stderr `Starting background service…` when the supervisor starts | 0 | verified |
+| `--bg` with an unknown `--model` name | as `--bg` success; the session then turns `failed` | 0 | verified |
+| `--bg` in an untrusted folder | stderr ``Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry.``; empty stdout | 1 | verified |
+| `--resume <sessionId> --bg` without a prompt (stopped session) | stdout `backgrounded · <id> · <name> (idle — send a prompt to start)`; stderr `note: woke session <id> with its saved options (…).` | 0 | verified |
+| `logs` on a stopped session | stderr `Couldn't read logs for <id> — job not found — it may have already exited`; empty stdout | 1 | verified |
 | `logs` with another account's command | `job not found` | not captured | verified (output) |
 
 ## Not yet verified
 
-- Exact stderr text and exit codes of `--bg` failures (untrusted folder, unknown model name).
 - Exact format of the `rm` refusal message and its exit code.
-- Exit codes of `logs`, and its behaviour for a stopped session.
 - How to learn the PTY size of a session for replaying `logs`.
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.
-- Whether `--resume <sessionId> --bg` works without a prompt, and whether the permission mode
-  is kept (the `note:` line mentions only `--name` and `--model`).
-- Whether attaching with the hosting account after the 1-hour idle stop keeps the account.
+- Whether `--effort` survives a wake with `--resume <sessionId> --bg` (the `note:` line lists
+  `--name`, `--permission-mode` and `--model` only).
+- Whether attaching with the hosting account after the 1-hour idle stop keeps the account, and
+  how such a row looks in the JSON (probably like a row after `claude stop`).
+- Whether `claude agents --json` starts a supervisor for an account with no live sessions.
 - Whether `ListAgents` / `SendMessage` reach sessions hosted by another account's
   supervisor.
 - Whether background workers refresh an expiring login token themselves.
 - Effect of `leftArrowOpensAgents=false` (deliberately not tested, see
   [0016](../0016-do-not-change-claude-code-defaults.md)).
-- JSON fixtures covering every `state` and `waitingFor` value.
+- JSON fixtures for the values not yet observed: `state: stopped` and `waitingFor` values
+  `sandbox request`, `worker request`, `dialog open`.

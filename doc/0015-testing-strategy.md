@@ -15,21 +15,23 @@ terminal hand-over in `claude attach`, which can't be faked meaningfully.
 **Unit tests from fixtures.** Sanitized captures
 ([0013](0013-privacy-and-repository-hygiene.md)) live under `tests/fixtures/`:
 
-- `agents/` — `claude agents --json --all` output covering:
+- `agents-json/` — `claude agents --json [--all]` output covering:
   - each `state`: `working`, `blocked`, `done`, `failed`, `stopped`;
   - each `waitingFor`: `permission prompt`, `input needed`,
     `sandbox request`, `worker request`, `dialog open`;
   - `blocked` with `status: idle` and no `waitingFor` (seen on an expired
     login);
-  - stopped rows without `pid`/`status`, and interactive rows without `id`
-    and `state`;
+  - stopped rows without `pid`/`status` that keep their last `state` and are
+    listed only with `--all` (e.g. `agents-json/after-stop-all.json`), and
+    interactive rows without `id` and `state`;
   - unknown fields, unknown enum values, missing optional fields, an empty
     list, and a malformed row among good ones.
 - `logs/` — raw `claude logs` byte streams with the expected reconstructed
   screen as a text snapshot.
-- `cli/` — text output of other commands: `backgrounded · <id> · <name>`,
-  `Starting background service…`, `note:` lines from `--resume`,
-  `No job matching '<x>'…`, `stopped <id>`, `removed <id>`, `rm` refusals.
+- `cli-output/` — stdout, stderr and exit code of other commands:
+  `backgrounded · <id> · <name>`, `Starting background service…`, `note:` lines
+  from `--resume`, `No job matching '<x>'…`, `stopped <id>`, `removed <id>`,
+  `Workspace not trusted…`, `Couldn't read logs for <id>…`, `rm` refusals.
 
 The tests cover:
 
@@ -86,7 +88,6 @@ This is the method used to verify the detach behaviour described in
 
 ## Open items
 
-- A complete fixture set from a real host: every state and `waitingFor` value,
-  `failed` and `stopped` rows.
-- Captures of `--bg` failures (`Workspace not trusted`, an unknown model), the
-  `rm` refusal text, and `logs` exit codes and output for a stopped session.
+- Captures still missing: `state: stopped`, the `waitingFor` values
+  `sandbox request`, `worker request` and `dialog open`, and the `rm` refusal
+  text.

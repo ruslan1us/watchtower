@@ -18,6 +18,13 @@ Interactive sessions (running in some other terminal) are listed with
 always tidy: a session whose login had expired was listed as `state: blocked`,
 `status: idle`, with no `waitingFor`.
 
+`state: stopped` is documented but was not seen after `claude stop`: the stopped
+session disappears from `--json`, appears only in `--json --all`, and keeps its
+last `state` (observed: `done`) with no `pid` and no `status`. While every
+session was alive, both listings returned the same rows
+([CLI reference](reference/claude-code-cli.md#json-listing-claude-agents---json)).
+So `state` alone cannot tell a stopped session from a live one.
+
 The JSON has no last-activity time. `startedAt` is the start of the *current
 process* and is reset every time a stopped session is woken, so it is neither
 the creation time nor the time of the last change. Claude Code's built-in agent
@@ -35,11 +42,14 @@ view shows a one-line summary and an activity age, but they are not in the JSON
 | Ready for review | `state: done` (turn finished, waiting for the next prompt) | "done" | expanded |
 | Working | `state: working` | from `status`: `busy` → "working", `idle` → "idle" | expanded |
 | Other | any `state` value tower does not know | the raw value | expanded |
-| Stopped & finished | `state: stopped`, plus completed rows that only `--all` returns | "stopped" / "finished" | collapsed |
+| Stopped & finished | background rows with **no live process**: no `pid` and no `status` (the rows only `--all` returns), whatever their `state`; also `state: stopped` if it appears | "stopped" | collapsed |
 | Interactive | `kind: interactive` | `status`; dimmed, marked not attachable | shown, toggle with `i` |
 
 Rules:
 
+- The no-live-process check comes first: a background row without `pid` and
+  `status` goes to Stopped & finished even when its `state` is `done`, `failed`
+  or anything else. The other groups apply only to rows with a live process.
 - Parsing is lenient: unknown fields are ignored, missing fields get defaults,
   and an unknown `state`/`status`/`waitingFor` value is displayed as-is. It never
   crashes the UI or drops the row.
@@ -96,11 +106,10 @@ better activity time.
 
 ## Open items
 
-- Which `state` the JSON shows for a session whose process Claude Code stopped
-  by its idle rule (about 1 hour). It has no `pid` or `status` once the process
-  is gone; whether `state` stays `done` or becomes `stopped` is not verified.
-  Rows are grouped by `state` either way.
-- How to tell, from one `--all` call, a completed row from an active one. If no
-  field marks it, tower compares the listings with and without `--all`.
+- How a session whose process Claude Code stopped by its idle rule (about
+  1 hour) looks in the JSON. After `claude stop` the row keeps its last `state`
+  and has no `pid` or `status`; the idle stop is not verified but probably looks
+  the same. Either way it lands in Stopped & finished by the no-live-process
+  rule.
 - A full sanitized fixture set covering every `state` and `waitingFor` value
   ([0015](0015-testing-strategy.md)).

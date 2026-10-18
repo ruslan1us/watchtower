@@ -9,11 +9,13 @@ When an account hits its usage limits, the user wants the session to continue un
 
 Verified flow, accounts sharing their session lists:
 
-1. `<A> stop <id>`. Only the short id works; a full `sessionId` or a pid gives `No job matching '<x>'`.
+1. `<A> stop <id>`. Only the short id works; a name, a full `sessionId` or a pid gives `No job matching '<x>'`.
 2. From the session's `cwd`: `<B> --resume <sessionId> --bg "continue"`. Output:
-   `note: woke session <id> with its saved options (--name, --model).` then `backgrounded · <id> · <name>`. The short id is unchanged, the prompt becomes the next turn, and `logs` then works with B's binary.
+   `note: woke session <id> with its saved options (--name, --model).` (stderr) then `backgrounded · <id> · <name>` (stdout). The short id is unchanged, the prompt becomes the next turn, and `logs` then works with B's binary.
 
 No attach is needed.
+
+The saved options are the flags given at the original dispatch: a session dispatched with `--permission-mode` is woken with `(--name, --permission-mode, --model)`, so an explicitly set permission mode survives the hand-off. Without a prompt, `--resume <sessionId> --bg` also exits 0 but prints `backgrounded · <id> · <name> (idle — send a prompt to start)`; the session sits idle (`state: working`, `status: idle`) and does not continue by itself, and a permission prompt pending before the stop is not shown again ([CLI reference](reference/claude-code-cli.md#cli-commands)).
 
 ## Decision
 
@@ -23,8 +25,8 @@ Key `a` on a row hands the session off. v1 only has the manual trigger.
 - **Confirmation**: required when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn.
 - **Steps**:
   1. If the session has a process (`pid` present), run `<owner> stop <id>`, then poll the listing until the process is gone (short timeout; abort with an error if it stays).
-  2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`.
-  3. Parse `backgrounded · <id> · <name>`. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)).
+  2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`. The prompt is always passed: without one the woken session stays idle.
+  3. Parse `backgrounded · <id> · <name>` from stdout. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)).
 - **Copy detection**: if `--resume <sessionId> --bg` starts a copy instead of continuing (Claude Code prints a `note:` line and a different id, e.g. because the session was still running), tower shows a warning. On the next poll it finds the copy by the short id printed in `backgrounded · <id> · <name>` and reads its `sessionId`. It records the copy under that `sessionId` in the sidecar with the target account and `account_source: handoff`, and leaves the original session's entry as it was.
 - **Unknown owner** (`?`): `stop` works from any account, so tower stops with the target's command and asks only for the target.
 - **Preconditions**, checked before step 1:
@@ -40,7 +42,8 @@ Limits are not in the JSON. A later version could take per-account 5 h / 7 d usa
 ## Consequences
 
 - The same short id, history and worktree continue under the target's limits; rows, logs and attach follow the new owner from the next poll.
-- The interrupted turn is lost; the hand-off prompt asks the agent to pick up where it stopped.
+- The interrupted turn is lost; the hand-off prompt asks the agent to pick up where it stopped. A permission prompt that was pending is not shown again.
+- The permission mode carries over only when it was passed at dispatch. Tower always passes `--permission-mode` on dispatch ([0008](0008-new-session-dialog.md)), so its sessions keep their mode.
 - The hand-off depends on the target account seeing the session's transcript, so the config dirs must share their history (as in the verified setup).
 - If the target account's login has expired, the woken session shows `blocked` with no `waitingFor` (see the [CLI reference](reference/claude-code-cli.md)). Tower shows that state; logging in is up to the user (run the target command interactively). Tower never touches credentials.
 - `startedAt` resets on wake. Activity times come from the sidecar ([0006](0006-session-states-and-grouping.md)).
@@ -53,7 +56,6 @@ Limits are not in the JSON. A later version could take per-account 5 h / 7 d usa
 
 ## Open items
 
-- Whether `--resume <sessionId> --bg` works with no prompt.
-- Whether the permission mode (and effort) survives the wake. The `note:` mentions only `--name` and `--model`; the resume docs say auto mode is restored when the account still qualifies.
+- Whether effort survives the wake. The `note:` lists `--name`, `--permission-mode` (when set at dispatch) and `--model` only; the resume docs say auto mode is restored when the account still qualifies.
 - Whether a session stopped by the ~1 h idle rule (not by `stop`) keeps its account when its owner wakes it.
 - Hand-off between accounts that do not share history has not been tested.

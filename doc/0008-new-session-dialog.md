@@ -1,7 +1,7 @@
 # 0008. New-session dialog
 
 - Status: Accepted · 2026-10-18
-- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -10,7 +10,11 @@ and permission mode, and start a background session there. Claude Code does this
 `claude --bg` run in the project directory
 ([reference](reference/claude-code-cli.md#cli-commands)). Most projects are git clones
 under a few root folders (e.g. `~/workspace`), with a handful elsewhere. Workspace trust is
-stored per account, and `--bg` cannot show the trust dialog.
+stored per account, and `--bg` cannot show the trust dialog. A folder covered by a trusted
+parent folder was observed to lose that cover once it became a git repository, so each git
+clone may need its own trust acceptance, per account
+([reference](reference/claude-code-cli.md#permissions-and-trust)). `--bg` does not validate
+`--model`: an unknown name exits 0 and the session then turns `failed`.
 
 ## Decision
 
@@ -43,19 +47,20 @@ Dispatch runs, with the project as working directory:
 - Flags left at `default` are omitted, so Claude Code's own defaults apply.
 - The permission mode has no `default` entry, so `--permission-mode` is always passed
   (`default_permission_mode`, built-in `auto`, unless changed).
-- Tower parses `backgrounded · <id> · <name>` from stdout. A `Starting background service…`
-  line may come first and is skipped.
+- Tower parses `backgrounded · <id> · <name>` from stdout and ignores the hint lines after
+  it. stderr carries progress (`Starting background service…`) and error text; it is shown
+  only when the dispatch fails.
 - Tower records the account for the new session in the sidecar (`account_source: started`),
   updates the project's `recent_projects` entry, and the row appears under Working on the
   next poll.
 - "Dispatch and attach" (`Ctrl+Enter` / `Alt+Enter`) dispatches and then attaches to the new
   id ([0005](0005-attach-and-detach.md)).
 
-Untrusted folder: if `--bg` fails with `Workspace not trusted`, tower shows the error and
-offers a key that suspends tower and runs the interactive `<account command>` in that
+Untrusted folder: if `--bg` exits 1 with stderr starting `Workspace not trusted`, tower
+shows the error and offers a key that suspends tower and runs the interactive `<account command>` in that
 folder. The user accepts the trust dialog and exits (`Ctrl+C` twice or `/exit`); tower then
 resumes and retries the same dispatch. Trust is per account, so the same folder may need
-this once per account.
+this once per account, and a git clone under an already trusted root may still need it.
 
 Tower does not change worktree, commit or push behaviour. Background sessions isolate in
 `.claude/worktrees/` and decide on commits, pushes and merge requests as Claude Code
@@ -70,6 +75,10 @@ defines; the task text is the place to ask for something else
   Code's own dialog.
 - Any other `--bg` failure is shown verbatim with the exit code; the dialog keeps its
   contents so the user can fix a field and retry.
+- Model names cannot be validated up front: a typo in the free-text model dispatches normally,
+  and the session turns `failed` shortly after start. It then shows in the Failed group with
+  the usual attention highlight ([0006](0006-session-states-and-grouping.md),
+  [0007](0007-visual-only-attention.md)).
 - `--agent` is not exposed in v1.
 
 ## Alternatives considered
@@ -80,8 +89,3 @@ defines; the task text is the place to ask for something else
 - **Pre-trusting folders by editing `.claude.json`.** Changes Claude Code's own state; rejected
   by [0016](0016-do-not-change-claude-code-defaults.md).
 - **Setting `worktree.bgIsolation: "none"`.** Changes how agents work; rejected.
-
-## Open items
-
-- Exact stderr text and exit code of `--bg` failures (untrusted folder, unknown model name),
-  needed to detect the trust case reliably.
