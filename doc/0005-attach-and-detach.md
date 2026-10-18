@@ -116,7 +116,9 @@ turns raw mode off and writes nothing. During an attach the child owns the
 terminal, so tower forwards nothing and keeps waiting: the signal takes effect
 only after `claude attach` exits (on an SSH hang-up the child loses the terminal
 too and gets its own `SIGHUP`). Tower then skips the key pause and the redraw
-and exits. The session is never stopped.
+and exits. The session is never stopped. While a hand-off runs, tower first
+waits up to 15 s for it to report back and records its result
+([0004](0004-account-hand-off.md)).
 
 **A terminal that is gone.** The `SIGHUP` may never come: when a tmux server
 or SSH connection goes away, only the session leader is sure to get it. The
@@ -147,7 +149,12 @@ The same procedure is used by dispatch-and-attach in the new-session dialog
 - A user who set `CLAUDE_CODE_DISABLE_AGENT_VIEW` or `disableAgentView` cannot
   attach through tower; tower reports Claude Code's message and does not override it.
 - Tower must be careful that no thread reads stdin or writes to the terminal
-  between steps 1 and the resume.
+  between steps 1 and the resume. A panic on a worker thread therefore
+  neither restores nor writes to the terminal: only a panic of the main
+  thread does ([0001](0001-thin-wrapper-over-claude-cli.md)).
+- The lines tower prints itself around a hand-over (the announcement, the
+  key-pause prompt) quote session names, folders and commands; control
+  characters in them are printed as `?` ([0007](0007-visual-only-attention.md)).
 - A `kill <tower pid>` while attached appears to do nothing until the user
   detaches; then tower exits instead of returning to the list.
 - A failed attach costs one extra key press, the price of a readable error.

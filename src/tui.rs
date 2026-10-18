@@ -6,15 +6,18 @@
 //! editor and the trust flow take over
 //! the terminal through the same hand-over ([`attach::run_foreground`]).
 //!
-//! The terminal is restored on normal exit, on error (a drop guard), on panic
-//! (a panic hook) and on SIGTERM or SIGHUP: their handlers only set a flag
-//! ([`attach::Termination`]), and the event loop checks it every tick and
+//! The terminal is restored on normal exit, on error (a drop guard), on a
+//! panic of the main thread (a panic hook; other threads' panics are only
+//! recorded, see [`jobs`]) and on SIGTERM or SIGHUP: their handlers only set
+//! a flag ([`attach::Termination`]), and the event loop checks it every tick and
 //! ends, so tower exits with 128 + signal. After SIGHUP the terminal may be
 //! gone, so only the terminal settings are put back and no escape sequences
 //! are written. A terminal whose input reaches EOF, fails or hangs up counts
 //! as SIGHUP, whether or not the signal arrives ([`wait_input`]); every loop
 //! that waits for input checks the flag on each turn. During an attach the
-//! flag waits until the child has exited (doc/0005).
+//! flag waits until the child has exited (doc/0005). When a hand-off runs,
+//! tower first waits up to [`HANDOFF_EXIT_WAIT`] for its result, records it
+//! and saves the sidecar ([`finish_handoff_for_exit`], doc/0004).
 //!
 //! The terminal settings from before the first raw mode are saved once and
 //! put back after every foreground child and on exit, so a child that died
@@ -52,7 +55,7 @@ use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
 use crate::cli::{CliError, CliRunner};
 use crate::config::Config;
 use crate::dispatch::DispatchError;
-use crate::jobs::{JobResult, Jobs};
+use crate::jobs::{self, JobResult, Jobs};
 use crate::merge::ProcEnviron;
 use crate::paths::{self, Dirs};
 use crate::poller::Poller;
@@ -326,6 +329,39 @@ pub fn exit_for(result: io::Result<()>, pending: Option<i32>) -> io::Result<Exit
     }
 }
 
+/// How long tower waits, after a SIGTERM or SIGHUP, for a running
+/// hand-off to report back before it exits (doc/0004): up to the stop wait
+/// plus a `--resume` that does not have to start a supervisor.
+pub const HANDOFF_EXIT_WAIT: Duration = Duration::from_secs(15);
+
+/// The exit path after a SIGTERM or SIGHUP while a hand-off runs
+/// (doc/0004): waits up to `timeout` for its result through `recv` (the
+/// jobs' `recv_timeout`), feeding every job result that arrives meanwhile
+/// to the app, so the `handoff` record is made as usual. Returns whether
+/// the sidecar must be saved. Returns at once when no hand-off runs; never
+/// touches the terminal, and the effects other than the save are dropped,
+/// since tower is exiting.
+pub fn finish_handoff_for_exit(
+    app: &mut App,
+    timeout: Duration,
+    mut recv: impl FnMut(Duration) -> Option<JobResult>,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut save = false;
+    while app.handoff_progress().is_some() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        // None: the time is up (or no job can report any more).
+        let Some(done) = recv(left) else {
+            break;
+        };
+        save |= done.apply(app).contains(&Effect::SaveSidecar);
+    }
+    save
+}
+
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
 pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
@@ -342,6 +378,10 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     );
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     if let Some(warning) = loaded.warning {
+        app.add_warning(warning);
+    }
+    let inherited = std::env::var_os(crate::cli::CONFIG_DIR_VAR);
+    if let Some(warning) = crate::cli::inherited_config_dir_warning(inherited.as_deref()) {
         app.add_warning(warning);
     }
 
@@ -373,6 +413,26 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
         pending: VecDeque::new(),
     };
     let result = event_loop(&mut rt, &mut app);
+    if let Some(sig) = termination.pending()
+        && let Some(progress) = app.handoff_progress()
+    {
+        // Exiting now could leave the session stopped without having
+        // continued, and would lose its `handoff` record (doc/0004).
+        if Exit::Signal(sig).may_write_to_terminal() {
+            let text = format!(
+                "ending: waiting up to {}s for the running hand-off ({progress})",
+                HANDOFF_EXIT_WAIT.as_secs()
+            );
+            app.set_message(text, Severity::Warning);
+            let _ = rt
+                .terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app, Instant::now()));
+        }
+        if finish_handoff_for_exit(&mut app, HANDOFF_EXIT_WAIT, |t| jobs.recv_timeout(t)) {
+            // Nowhere to report a failure: tower is exiting.
+            let _ = app.sidecar.save(&state_file);
+        }
+    }
     let exit = exit_for(result, termination.pending());
     if let Ok(exit) = exit {
         restore.write = exit.may_write_to_terminal();
@@ -453,6 +513,12 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
                 effects.push(Effect::PollNow);
             }
             effects.extend(done.apply(app));
+        }
+        if let Some(panic) = jobs::take_stray_panic() {
+            app.set_message(
+                format!("a background thread failed: {panic}"),
+                Severity::Error,
+            );
         }
         if !run_effects(rt, app, effects)? {
             return Ok(());
@@ -609,11 +675,21 @@ impl Drop for RestoreGuard {
     }
 }
 
+/// Installs the panic hook; call it on the main thread. A panic there
+/// restores the terminal and then prints as usual. Any other thread (a job
+/// worker, the poller) must not touch the terminal, which the UI or an
+/// attached child still uses: its message is only recorded for the status
+/// line ([`jobs::record_panic`]) and nothing is printed.
 fn install_panic_hook() {
+    let main = thread::current().id();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
-        previous(info);
+        if thread::current().id() == main {
+            restore_terminal();
+            previous(info);
+        } else {
+            jobs::record_panic(jobs::panic_message(info));
+        }
     }));
 }
 
@@ -668,13 +744,13 @@ impl Handover for TermHandover<'_> {
 
     fn announce(&mut self, line: &str) -> io::Result<()> {
         let mut out = io::stdout();
-        writeln!(out, "{line}")?;
+        writeln!(out, "{}", attach::printable(line))?;
         out.flush()
     }
 
     fn wait_for_key(&mut self, prompt: &str) -> io::Result<()> {
         let mut out = io::stdout();
-        writeln!(out, "{prompt}")?;
+        writeln!(out, "{}", attach::printable(prompt))?;
         out.flush()?;
         enable_raw_mode()?;
         drain_events(self.pending);

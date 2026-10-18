@@ -85,12 +85,20 @@ Two towers (for example in two SSH sessions) share `state.json`. Neither may rev
 - A record written by an older tower, with neither time, first gets `updated_ms` set to the current time, so it is aged rather than dropped at once.
 - A removal is a recorded change, so it survives the merge on save (section 8).
 
+### 10. Environment hygiene
+
+`CLAUDE_CONFIG_DIR` picks the account. When tower itself is started from a shell that exported it, a bare `claude` (for example `main`'s command) would inherit it and talk to that config dir's supervisor: dispatches, hand-offs and attaches would land on another account while tower records them as `main`.
+
+- Tower removes `CLAUDE_CONFIG_DIR` from the environment of every command it spawns: background calls (listing, `stop`, `rm`, `logs`, dispatch, the hand-off's `--resume`) and inherited-stdio commands (attach, the trust flow, the task editor). Everything else in the environment is passed on unchanged. An account command that is a wrapper setting the variable itself (`claude-alt`, or `env CLAUDE_CONFIG_DIR=… claude`) still sets it for its own `claude`.
+- When tower starts with a non-empty `CLAUDE_CONFIG_DIR`, the status line shows a persistent warning naming the value and saying that tower removes it; to use another config dir, set it in that account's `command`. An empty value means the default `~/.claude` (section 3) and gives no warning.
+
 ## Consequences
 
 - Rule 2 applies less often. An account with no sessions gives no `list` evidence for the other account's rows, and an account whose polls take longer than the poll interval rarely shares a cycle with the others. Such rows rely on `started`, `handoff`, `asked` or `proc` records, or are `?` and asked once. Being asked is safe; a wrong owner is not.
 - A suspended host or a stepped wall clock no longer costs rule-1 evidence. The first sighting trusts the `cmdline`: a row whose exited process's pid was taken by another Claude Code process before tower saw the row (for example while tower was not running) gives that process's config dir. The pairs live in memory, so every tower start is a first sighting for every live row.
 - A process with a literal `~` in `CLAUDE_CONFIG_DIR` shows `?` until the user answers.
 - A config that worked before with two accounts on one config dir now fails to load. The error says how to fix it.
+- A setup that relied on an exported `CLAUDE_CONFIG_DIR` for an account whose `command` is a bare `claude` now reaches `~/.claude` instead; the startup warning says so, and the variable belongs in that account's `command`.
 
 ## Alternatives considered
 

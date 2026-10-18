@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use watchtower::app::AttachRequest;
 use watchtower::attach::{
-    Handover, InheritSpawner, SignalGuard, Spawner, Termination, announcement, attach,
+    Handover, InheritSpawner, SignalGuard, Spawner, Termination, announcement, attach, printable,
 };
 use watchtower::config::Account;
 
@@ -262,6 +262,41 @@ fn announcement_names_session_and_account() {
         announcement(&request(account, "1a2b3c4d", "fix-flaky-test")),
         "tower: attaching to fix-flaky-test (alt)… Ctrl+Z returns to tower"
     );
+}
+
+#[test]
+fn printable_replaces_every_control_character() {
+    assert_eq!(printable("fix-flaky-test"), "fix-flaky-test");
+    assert_eq!(printable("caf\u{e9} \u{2026} ok"), "caf\u{e9} \u{2026} ok");
+    assert_eq!(
+        printable("a\x07b\x1b]9;hi\x1b\\c\u{9b}2Jd\x7fe\tf\r\ng\0"),
+        "a?b?]9;hi?\\c?2Jd?e?f??g?"
+    );
+}
+
+#[test]
+fn announcement_cannot_emit_control_characters() {
+    // Session names come from the CLI's JSON: a BEL or an OSC 9 notification
+    // in one must not reach the terminal (doc/0007).
+    let _l = lock();
+    let fake = Fake::new("claude", "exit 0");
+    let req = request(
+        fake.account("main", "claude"),
+        "1a2b3c4d",
+        "evil\x07\x1b]9;ding\x07name",
+    );
+    let mut term = FakeTerm::default();
+    attach(
+        &mut term,
+        &mut InheritSpawner,
+        &req,
+        &Termination::default(),
+    );
+    assert_eq!(
+        term.log[1],
+        "announce tower: attaching to evil??]9;ding?name (main)… Ctrl+Z returns to tower"
+    );
+    assert!(term.log.iter().all(|l| !l.chars().any(char::is_control)));
 }
 
 #[test]

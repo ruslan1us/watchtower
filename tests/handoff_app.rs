@@ -566,6 +566,216 @@ fn failures_report_and_poll_without_touching_the_sidecar() {
     assert_eq!(owner_of(&app, PRINT_DATE).account(), Some("main"));
 }
 
+// ---- quitting while a hand-off runs ---------------------------------------------
+
+fn quit_question(app: &App) -> Option<String> {
+    app.quit_prompt().map(|q| q.text())
+}
+
+#[test]
+fn quitting_during_a_handoff_asks_and_defaults_to_no() {
+    let mut app = app_two_owned();
+    select(&mut app, "print-date");
+    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    app.handoff_step(Step::WaitingForStop);
+
+    // q asks; Enter, n and Esc keep tower running.
+    for cancel in [key(KeyCode::Enter), ch('n'), key(KeyCode::Esc)] {
+        assert!(app.handle_key(ch('q')).is_empty(), "q does not quit");
+        assert_eq!(
+            quit_question(&app).as_deref(),
+            Some("a hand-off of print-date is running; quitting may leave it stopped — quit?")
+        );
+        let screen = render(&mut app, 120, 30);
+        assert!(screen.contains("Quit tower?"), "{screen}");
+        assert!(screen.contains("quitting may leave it stopped"), "{screen}");
+        // Other keys, Ctrl+C included, leave the question open.
+        assert!(app.handle_key(ch('j')).is_empty());
+        assert!(app.handle_key(ctrl('c')).is_empty());
+        assert!(app.quit_prompt().is_some());
+        assert!(app.handle_key(cancel).is_empty());
+        assert_eq!(app.quit_prompt(), None);
+        assert!(
+            status_text(&app).contains("not quitting"),
+            "{}",
+            status_text(&app)
+        );
+    }
+    assert!(app.handoff_progress().is_some(), "still running");
+
+    // Ctrl+C asks too, from the list and from other windows; y quits.
+    assert!(app.handle_key(ctrl('c')).is_empty());
+    assert!(app.quit_prompt().is_some());
+    assert_eq!(app.handle_key(ch('y')), [Effect::Quit]);
+    assert_eq!(app.quit_prompt(), None);
+
+    app.handle_key(ch('?'));
+    assert!(app.handle_key(ch('q')).is_empty());
+    assert!(app.quit_prompt().is_some());
+    app.handle_key(key(KeyCode::Esc));
+
+    // The new-session dialog: straight to this question.
+    app.handle_key(key(KeyCode::Esc)); // close the help
+    app.open_dialog(Default::default());
+    assert!(app.handle_key(ctrl('c')).is_empty());
+    assert!(app.quit_prompt().is_some());
+    assert_eq!(app.handle_key(ch('Y')), [Effect::Quit]);
+
+    // Once the hand-off reports back, the question goes away and q quits.
+    app.handle_key(ctrl('c'));
+    assert!(app.quit_prompt().is_some());
+    app.handoff_finished(job, Ok(continued("7b4d9f02")));
+    assert_eq!(app.quit_prompt(), None);
+}
+
+#[test]
+fn without_a_handoff_quitting_does_not_ask() {
+    let mut app = app_two_owned();
+    assert_eq!(app.handle_key(ch('q')), [Effect::Quit]);
+    assert_eq!(app.handle_key(ctrl('c')), [Effect::Quit]);
+    assert_eq!(app.quit_prompt(), None);
+}
+
+// ---- row actions while a hand-off runs -------------------------------------------
+
+fn attach_account(effects: &[Effect]) -> Option<String> {
+    effects.iter().find_map(|e| match e {
+        Effect::Attach(r) => Some(r.account.name.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn row_actions_on_the_session_being_handed_off_are_refused() {
+    let mut app = app_two_owned();
+    select(&mut app, "print-date");
+    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    app.handoff_step(Step::WaitingForStop);
+
+    // Enter would wake it under main, the old owner; s and d would race it.
+    for k in [key(KeyCode::Enter), ch('s'), ch('d')] {
+        assert!(app.handle_key(k).is_empty(), "{k:?}");
+        assert_eq!(app.overlay(), &Overlay::None, "{k:?}");
+        assert!(
+            status_text(&app).contains("print-date is being handed off"),
+            "{k:?}: {}",
+            status_text(&app)
+        );
+    }
+    // A second hand-off is refused.
+    assert!(app.handle_key(ch('a')).is_empty());
+    assert!(status_text(&app).contains("already running (print-date)"));
+
+    // Other rows are not affected.
+    select(&mut app, "say-ok");
+    assert_eq!(
+        attach_account(&app.handle_key(key(KeyCode::Enter))).as_deref(),
+        Some("main")
+    );
+
+    // Afterwards the row attaches with its new owner.
+    app.handoff_finished(job, Ok(continued("7b4d9f02")));
+    select(&mut app, "print-date");
+    assert_eq!(
+        attach_account(&app.handle_key(key(KeyCode::Enter))).as_deref(),
+        Some("alt")
+    );
+}
+
+#[test]
+fn an_unknown_owner_row_being_handed_off_opens_no_picker() {
+    let mut app = app_two_with(Sidecar::default());
+    poll_both(&mut app, "after-stop-all.json");
+    select(&mut app, "print-date");
+    app.handle_key(ch('a'));
+    assert!(handoff_of(&app.handle_key(key(KeyCode::Enter))).is_some());
+    for k in [key(KeyCode::Enter), ch('s'), ch('d')] {
+        assert!(app.handle_key(k).is_empty());
+        assert_eq!(app.overlay(), &Overlay::None, "no account picker");
+    }
+    assert_eq!(app.sidecar.owner(PRINT_DATE), None, "nothing asked");
+}
+
+// ---- termination while a hand-off runs -------------------------------------------
+
+#[test]
+fn termination_waits_for_the_handoff_and_records_it() {
+    use watchtower::jobs::JobResult;
+    use watchtower::tui::finish_handoff_for_exit;
+
+    // No hand-off: nothing to wait for.
+    let mut app = app_two_owned();
+    let mut asked = 0;
+    assert!(!finish_handoff_for_exit(
+        &mut app,
+        Duration::from_secs(15),
+        |_| {
+            asked += 1;
+            None
+        }
+    ));
+    assert_eq!(asked, 0);
+
+    // The step, then the result: applied and due for a save.
+    select(&mut app, "print-date");
+    let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let mut results = vec![
+        JobResult::Handoff(job.clone(), Ok(continued("7b4d9f02"))),
+        JobResult::HandoffStep(Step::Resuming {
+            account: "alt".into(),
+        }),
+    ];
+    let mut waits = Vec::new();
+    let save = finish_handoff_for_exit(&mut app, Duration::from_secs(15), |left| {
+        waits.push(left);
+        results.pop()
+    });
+    assert!(save);
+    assert_eq!(waits.len(), 2, "stops once the hand-off reported back");
+    assert!(waits.iter().all(|w| *w <= Duration::from_secs(15)));
+    assert!(app.handoff_progress().is_none());
+    assert_eq!(
+        app.sidecar.owner(PRINT_DATE),
+        Some(("alt", &AccountSource::Handoff))
+    );
+
+    // No result in time: gives up, nothing to save.
+    let mut app = app_two_owned();
+    select(&mut app, "print-date");
+    handoff_of(&app.handle_key(ch('a'))).unwrap();
+    let before = app.sidecar.clone();
+    assert!(!finish_handoff_for_exit(
+        &mut app,
+        Duration::from_secs(15),
+        |_| None
+    ));
+    assert!(app.handoff_progress().is_some());
+    assert_eq!(app.sidecar, before);
+    // A zero wait does not even ask.
+    assert!(!finish_handoff_for_exit(&mut app, Duration::ZERO, |_| {
+        panic!("no wait left")
+    }));
+
+    // A failed hand-off is applied too, without a save.
+    let job = HandoffJob {
+        request: job.request,
+        after_trust: false,
+    };
+    let mut once = Some(JobResult::Handoff(
+        job,
+        Err(HandoffError::StillRunning {
+            waited: Duration::from_secs(10),
+            last_error: None,
+        }),
+    ));
+    assert!(!finish_handoff_for_exit(
+        &mut app,
+        Duration::from_secs(15),
+        |_| once.take()
+    ));
+    assert!(app.handoff_progress().is_none());
+}
+
 // ---- trust ----------------------------------------------------------------------
 
 #[test]

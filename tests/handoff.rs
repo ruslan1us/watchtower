@@ -496,6 +496,157 @@ esac"#,
     assert_eq!(main_fake.calls(), 3);
 }
 
+/// Another session, so a listing can be non-empty without the handed-off row.
+const OTHER_ROW: &str = r#"[{ "id": "0a1b2c3d", "cwd": "/home/user/workspace/demo-app",
+    "kind": "background", "sessionId": "0a1b2c3d-1111-4222-8333-444455556666",
+    "name": "other", "state": "done" }]"#;
+
+#[test]
+fn stop_evidence_needs_the_row_or_a_non_empty_complete_listing() {
+    use handoff::{StopEvidence, stop_evidence};
+    let req = request(Path::new("/tmp"), None, account("alt", "claude-alt"), true);
+    let listed = |json: &str| Ok(parse_listing(json).unwrap());
+    assert_eq!(
+        stop_evidence(&listed(&row_json(false)), &req),
+        StopEvidence::Stopped
+    );
+    assert_eq!(
+        stop_evidence(&listed(&row_json(true)), &req),
+        StopEvidence::Running
+    );
+    assert_eq!(stop_evidence(&listed("[]"), &req), StopEvidence::Nothing);
+    assert_eq!(
+        stop_evidence(&listed(OTHER_ROW), &req),
+        StopEvidence::Absent
+    );
+    // A listing whose parser skipped a row may have skipped this one.
+    let partial = format!(
+        "[{}, 42]",
+        OTHER_ROW
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+    );
+    let partial = parse_listing(&partial).unwrap();
+    assert!(!partial.warnings.is_empty());
+    assert_eq!(stop_evidence(&Ok(partial), &req), StopEvidence::Nothing);
+    assert_eq!(
+        stop_evidence(&Err("listing broke".into()), &req),
+        StopEvidence::Nothing
+    );
+}
+
+/// A stopper whose listings after `stop` follow `files` (one per call,
+/// the last one repeating).
+fn scripted_stopper(world: &World, files: &[&str]) -> String {
+    let cases: Vec<String> = files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| format!("    {}) cat '{}' ;;", i + 1, world.file(f)))
+        .collect();
+    format!(
+        r#"case "$1" in
+  stop) echo "stopped {ID}" ;;
+  agents)
+    c=$(cat "$FAKE_DIR/agents.n" 2>/dev/null || echo 0); c=$((c+1)); echo $c > "$FAKE_DIR/agents.n"
+    case $c in
+{}
+    *) cat '{}' ;;
+    esac ;;
+esac"#,
+        cases.join("\n"),
+        world.file(files.last().unwrap())
+    )
+}
+
+fn alt_resumer() -> Fake {
+    Fake::new(
+        "claude-alt",
+        &resumer_body(Some("cli-output/resume-prompt.stdout"), None, 0),
+    )
+}
+
+#[test]
+fn an_empty_listing_does_not_end_the_stop_wait() {
+    let _l = lock();
+    let world = World::new();
+    std::fs::write(world.data.path().join("empty.json"), "[]").unwrap();
+    // Live, then empty listings while the process still lives: never resumed.
+    let main_fake = Fake::new(
+        "claude",
+        &scripted_stopper(&world, &["live.json", "empty.json"]),
+    );
+    let alt_fake = alt_resumer();
+    let req = request(
+        &world.project(),
+        Some(main_fake.account_named("main", None)),
+        alt_fake.account_named("alt", None),
+        true,
+    );
+    let timing = HandoffTiming {
+        stop_timeout: Duration::from_millis(300),
+        poll_interval: Duration::from_millis(30),
+    };
+    let (result, _) = run(&req, &timing);
+    assert!(
+        matches!(result, Err(HandoffError::StillRunning { .. })),
+        "{result:?}"
+    );
+    assert_eq!(alt_fake.calls(), 0, "never resumed");
+}
+
+#[test]
+fn one_listing_without_the_row_is_not_enough_two_in_a_row_are() {
+    let _l = lock();
+    let world = World::new();
+    std::fs::write(world.data.path().join("empty.json"), "[]").unwrap();
+    std::fs::write(world.data.path().join("other.json"), OTHER_ROW).unwrap();
+    // Missing, empty (breaks the run), missing, missing: gone after call 4.
+    let main_fake = Fake::new(
+        "claude",
+        &scripted_stopper(
+            &world,
+            &[
+                "other.json",
+                "empty.json",
+                "other.json",
+                "other.json",
+                "live.json",
+            ],
+        ),
+    );
+    let alt_fake = alt_resumer();
+    let req = request(
+        &world.project(),
+        Some(main_fake.account_named("main", None)),
+        alt_fake.account_named("alt", None),
+        true,
+    );
+    let (result, _) = run(&req, &fast());
+    assert_eq!(result.unwrap().outcome, Outcome::Continued);
+    assert_eq!(main_fake.calls(), 1 + 4, "stop + four listings");
+    assert_eq!(alt_fake.calls(), 1);
+
+    // A live sighting in between resets the count too.
+    let main_fake = Fake::new(
+        "claude",
+        &scripted_stopper(
+            &world,
+            &["other.json", "live.json", "other.json", "stopped.json"],
+        ),
+    );
+    let alt_fake = alt_resumer();
+    let req = request(
+        &world.project(),
+        Some(main_fake.account_named("main", None)),
+        alt_fake.account_named("alt", None),
+        true,
+    );
+    let (result, _) = run(&req, &fast());
+    assert_eq!(result.unwrap().outcome, Outcome::Continued);
+    assert_eq!(main_fake.calls(), 1 + 4, "ended by the stopped row");
+}
+
 #[test]
 fn a_failed_stop_aborts_before_the_resume() {
     let _l = lock();

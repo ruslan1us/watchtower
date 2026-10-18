@@ -4,8 +4,9 @@
 //! survive), its physical working directory and one line per invocation,
 //! then runs a shell snippet that prints fixture output. The arguments and
 //! directory of every call are also kept per call (`argv.<n>.bin`,
-//! `cwd.<n>.txt`, `n` from 1), and the snippet sees the call number as `$n`
-//! and the fake's directory as `$FAKE_DIR`.
+//! `cwd.<n>.txt`, `n` from 1), as is its environment (`env.<n>.txt`), and
+//! the snippet sees the call number as `$n` and the fake's directory as
+//! `$FAKE_DIR`.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ impl Fake {
              cp '{argv}' \"$FAKE_DIR/argv.$n.bin\"\n\
              pwd -P > '{cwd}'\n\
              cp '{cwd}' \"$FAKE_DIR/cwd.$n.txt\"\n\
+             env > \"$FAKE_DIR/env.$n.txt\"\n\
              {body}\n",
             dir = dir.path().display(),
             argv = rec("argv.bin"),
@@ -113,6 +115,16 @@ impl Fake {
     /// The physical working directory of call `n` (from 1).
     pub fn cwd_of(&self, n: usize) -> PathBuf {
         self.read_cwd(&format!("cwd.{n}.txt"))
+    }
+
+    /// The value of the environment variable `name` in call `n` (from 1),
+    /// `None` when it was not set.
+    pub fn env_var_of(&self, n: usize, name: &str) -> Option<String> {
+        let text = std::fs::read_to_string(self.dir.path().join(format!("env.{n}.txt"))).unwrap();
+        let prefix = format!("{name}=");
+        text.lines()
+            .find_map(|l| l.strip_prefix(prefix.as_str()))
+            .map(str::to_owned)
     }
 
     /// The arguments of every call, in order.

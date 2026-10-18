@@ -211,6 +211,58 @@ fn unknown_owner_asks_records_and_attaches() {
 }
 
 #[test]
+fn owner_learned_while_the_picker_is_open_wins_over_the_answer() {
+    let sid = "d4a1f7c8-2e5b-4b3a-8c90-1f6d3a5b7e42";
+    for purpose_key in [key(KeyCode::Enter), ch('s')] {
+        let mut app = app_two();
+        app.apply_poll(poll("main", "after-stop-all.json"));
+        app.apply_poll(poll("alt", "after-stop-all.json"));
+        assert_eq!(selected(&app), "touch-config");
+        press(&mut app, purpose_key);
+        let Overlay::Picker(p) = app.overlay().clone() else {
+            panic!("picker expected, got {:?}", app.overlay());
+        };
+        assert_eq!(p.selected, 0, "main preselected");
+
+        // Meanwhile a poll learns the owner: alt (here from a record, as
+        // after another tower's hand-off; rule 3).
+        app.sidecar.record_owner(sid, "alt", AccountSource::Handoff);
+        app.apply_poll(poll("main", "after-stop-all.json"));
+        assert!(matches!(app.overlay(), Overlay::Picker(_)), "still open");
+        assert_eq!(app.selected_session().unwrap().owner.label(), "alt");
+
+        // Enter on main: alt is used, nothing is recorded as asked.
+        let effects = press(&mut app, key(KeyCode::Enter));
+        assert!(!effects.contains(&Effect::SaveSidecar), "{effects:?}");
+        match purpose_key.code {
+            KeyCode::Enter => assert_eq!(
+                attach_of(&effects),
+                Some(("alt", "d4a1f7c8", "touch-config"))
+            ),
+            _ => {
+                let Overlay::Confirm(watchtower::app::Confirm::Stop { action, .. }) =
+                    app.overlay().clone()
+                else {
+                    panic!("stop confirmation expected, got {:?}", app.overlay());
+                };
+                assert_eq!(action.account.name, "alt");
+            }
+        }
+        assert_eq!(
+            app.sidecar
+                .owner(sid)
+                .map(|(a, s)| (a.to_owned(), s.clone())),
+            Some(("alt".to_owned(), AccountSource::Handoff))
+        );
+        let msg = message(&app);
+        assert!(
+            msg.contains("touch-config turned out to run under alt; using alt instead of main"),
+            "{msg}"
+        );
+    }
+}
+
+#[test]
 fn picker_escape_cancels() {
     let mut app = app_two();
     app.apply_poll(poll("main", "after-stop-all.json"));

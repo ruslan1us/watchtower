@@ -44,6 +44,12 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   the same account is still running, so calls never pile up. `attach` is the
   only call that runs in the foreground, because it takes over the terminal
   ([0005](0005-attach-and-detach.md)).
+- **Workers always report back.** Each background job (dispatch, `stop`,
+  `rm`, `logs`, hand-off) sends exactly one result. A job that panics, or
+  whose thread cannot be started, reports an error of its own kind, so no
+  dialog, hand-off or logs fetch is left waiting. Tower's panic hook restores
+  the terminal only when the main thread panics; on any other thread it
+  prints nothing and keeps the message for the status line.
 - **Background calls in their own process group.** Every captured-output call
   (polls, `stop`, `rm`, `logs`, dispatch, hand-off resume) runs in a new
   process group, outside tower's foreground group, so `Ctrl+C` or `Ctrl+Z`

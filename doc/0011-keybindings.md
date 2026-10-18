@@ -36,7 +36,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `i` | Show / hide interactive sessions |
 | `r` | Refresh now |
 | `?` | Help overlay listing all keys |
-| `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open |
+| `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
 | `Esc` | Close the topmost panel, overlay or filter |
 
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
@@ -45,7 +45,11 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 **Hand-off** ([0004](0004-account-hand-off.md)): with more than one candidate account, `a`
 opens a target picker (`↑` / `↓`, `Enter` continues, `Esc` cancels). After a `Workspace not
 trusted` failure a window offers `Ctrl+T` (run the target account's command in the folder,
-then retry once, as in the dialog) and `Esc` (leave the session stopped).
+then retry once, as in the dialog) and `Esc` (leave the session stopped). While a hand-off
+runs, `q` and `Ctrl+C` (from any window, including the new-session dialog) ask "a hand-off
+of X is running; quitting may leave it stopped — quit?": `y` quits; `n`, `Esc` and `Enter`
+keep tower running, and other keys are ignored. Enter, `s`, `d` and `a` on the session being
+handed off are refused until it reports back.
 
 **New-session dialog** (field layout is defined in [0008](0008-new-session-dialog.md))
 

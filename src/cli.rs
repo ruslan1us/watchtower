@@ -17,6 +17,10 @@
 //! inherited stdio. The same goes for the interactive trust flow of doc/0008
 //! ([`crate::dispatch::trust_command`]).
 //!
+//! Every command tower spawns, background or foreground, runs without an
+//! inherited `CLAUDE_CONFIG_DIR` ([`CommandLine::to_command`]): the account
+//! command alone decides the account (doc/0017).
+//!
 //! A [`CommandLine`] may carry a working directory ([`CommandLine::cwd`]):
 //! `claude --bg` starts the session in the current directory, so dispatch
 //! runs in the project folder (doc/0008).
@@ -83,11 +87,15 @@ impl CommandLine {
     }
 
     /// A [`Command`] for this line. The working directory is set when
-    /// [`CommandLine::cwd`] is; no stdio or environment is set, so by default
-    /// the child inherits them.
+    /// [`CommandLine::cwd`] is; no stdio is set, so by default the child
+    /// inherits it. The environment is tower's, without
+    /// [`CONFIG_DIR_VAR`]: an inherited value would send a plain `claude`
+    /// to another account's config dir (doc/0017, environment hygiene). A
+    /// wrapper command that sets the variable itself still does.
     pub fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
+        cmd.env_remove(CONFIG_DIR_VAR);
         if let Some(dir) = &self.cwd {
             cmd.current_dir(dir);
         }
@@ -100,6 +108,24 @@ impl CommandLine {
             .chain(self.args.iter().cloned())
             .collect()
     }
+}
+
+/// The variable that selects Claude Code's config dir, i.e. the account
+/// (doc/0003). Tower removes it from every command it runs
+/// ([`CommandLine::to_command`]).
+pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
+
+/// The startup warning when tower itself was started with
+/// [`CONFIG_DIR_VAR`] set to `value` (doc/0017, environment hygiene). An
+/// unset or empty value means the default config dir and gives no warning.
+pub fn inherited_config_dir_warning(value: Option<&std::ffi::OsStr>) -> Option<String> {
+    let value = value.filter(|v| !v.is_empty())?;
+    Some(format!(
+        "tower was started with {CONFIG_DIR_VAR}={}; tower removes it from every command it \
+         runs, so each account uses its own command (set the variable in an account's \
+         command to use another config dir)",
+        value.to_string_lossy()
+    ))
 }
 
 /// `<account command> attach <id>` (doc/0005). Always the short `id`, never
@@ -157,14 +183,24 @@ pub enum CliError {
         /// Whatever stderr was written before the kill.
         stderr: String,
     },
+    /// The worker thread running the call could not be started or panicked
+    /// (`jobs`), so the call's own result never came back; whether it ran is
+    /// unknown.
+    #[error("the {job} worker failed: {message}")]
+    Worker {
+        /// Which job, e.g. `logs`.
+        job: String,
+        /// Why: the spawn error or the panic message.
+        message: String,
+    },
 }
 
 /// Runs background CLI calls.
 ///
 /// The `PATH` used to find the account command can be overridden for tests
-/// ([`CliRunner::with_path`]); by default the child inherits tower's
-/// environment unchanged and tower adds no variables of its own (doc/0002,
-/// doc/0016).
+/// ([`CliRunner::with_path`]); otherwise the child inherits tower's
+/// environment, minus [`CONFIG_DIR_VAR`] ([`CommandLine::to_command`]),
+/// and tower adds no variables of its own (doc/0002, doc/0016).
 #[derive(Debug, Clone)]
 pub struct CliRunner {
     timeout: Duration,

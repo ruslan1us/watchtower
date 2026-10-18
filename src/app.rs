@@ -209,11 +209,35 @@ pub enum Confirm {
     Handoff { job: HandoffJob, detail: String },
 }
 
-/// A running hand-off, for the status line.
+/// A running hand-off, for the status line and the row-action guard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HandoffProgress {
     name: String,
+    /// Short id of the session being handed off.
+    id: String,
+    /// Its `sessionId`.
+    session_id: String,
     text: String,
+}
+
+/// The question asked when the user quits while a hand-off runs (doc/0004,
+/// doc/0011): quitting may leave the session stopped without having
+/// continued, and the `handoff` record would be lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuitPrompt {
+    /// Display name of the session being handed off.
+    pub name: String,
+}
+
+impl QuitPrompt {
+    /// The question, e.g. `a hand-off of say-ok is running; quitting may
+    /// leave it stopped — quit?`.
+    pub fn text(&self) -> String {
+        format!(
+            "a hand-off of {} is running; quitting may leave it stopped — quit?",
+            self.name
+        )
+    }
 }
 
 /// The target picker of a hand-off with more than one candidate account
@@ -488,6 +512,9 @@ pub struct App {
     root: bool,
     message: Option<Message>,
     handoff: Option<HandoffProgress>,
+    /// Open while asking whether to quit during a hand-off; above
+    /// everything else.
+    quit_prompt: Option<QuitPrompt>,
     warnings: Vec<String>,
     last_refresh: Option<Instant>,
     /// Rows per page for PgUp/PgDn; the renderer keeps it current.
@@ -543,6 +570,7 @@ impl App {
             root: dispatch::is_root(),
             message: None,
             handoff: None,
+            quit_prompt: None,
             warnings: Vec::new(),
             last_refresh: None,
             page_size: 10,
@@ -614,6 +642,12 @@ impl App {
     /// The current overlay.
     pub fn overlay(&self) -> &Overlay {
         &self.overlay
+    }
+
+    /// The quit question while a hand-off runs, when open (doc/0004). It is
+    /// drawn and handled above every other window.
+    pub fn quit_prompt(&self) -> Option<&QuitPrompt> {
+        self.quit_prompt.as_ref()
     }
 
     /// True once at least one account has reported (successfully or not).
@@ -1043,11 +1077,65 @@ impl App {
         Vec::new()
     }
 
-    /// Handles one key press.
+    /// Handles one key press. Any way of quitting (`q`, `Ctrl+C`, the
+    /// dialog's own quit) asks first while a hand-off runs (doc/0004).
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
+        if let Some(prompt) = self.quit_prompt.clone() {
+            return self.quit_prompt_key(key, prompt);
+        }
+        let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'C'));
+        if ctrl_c && self.handoff.is_some() {
+            // Straight to the question, also from the new-session dialog,
+            // which would otherwise ask its own first.
+            return self.guard_quit(vec![Effect::Quit]);
+        }
+        let effects = self.route_key(key);
+        self.guard_quit(effects)
+    }
+
+    /// While a hand-off runs, turns [`Effect::Quit`] into the quit
+    /// question; other effects pass through.
+    fn guard_quit(&mut self, effects: Vec<Effect>) -> Vec<Effect> {
+        if !effects.contains(&Effect::Quit) {
+            return effects;
+        }
+        let Some(running) = &self.handoff else {
+            return effects;
+        };
+        self.quit_prompt = Some(QuitPrompt {
+            name: running.name.clone(),
+        });
+        effects.into_iter().filter(|e| *e != Effect::Quit).collect()
+    }
+
+    /// `y` quits; anything that cancels (`n`, `Esc`, `Enter`: the default
+    /// is no, doc/0011) closes the question; other keys are ignored.
+    fn quit_prompt_key(&mut self, key: KeyEvent, prompt: QuitPrompt) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            _ if ctrl || alt => Vec::new(),
+            KeyCode::Char('y' | 'Y') => {
+                self.quit_prompt = None;
+                vec![Effect::Quit]
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => {
+                self.quit_prompt = None;
+                self.set_message(
+                    format!("not quitting; the hand-off of {} continues", prompt.name),
+                    Severity::Info,
+                );
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn route_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if self.popup.is_some() {
             return self.popup_key(key);
         }
@@ -1185,26 +1273,55 @@ impl App {
     }
 
     /// Records the picked account (`asked`, doc/0003) and carries on with
-    /// the action the picker was opened for.
+    /// the action the picker was opened for. When a poll made the owner
+    /// known while the picker was open, the known owner is used instead and
+    /// nothing is recorded: the answer was given without that evidence.
     fn pick_account(&mut self, picker: Picker) -> Vec<Effect> {
         self.overlay = Overlay::None;
-        let Some(account) = self.config.accounts.get(picker.selected).cloned() else {
+        let Some(picked) = self.config.accounts.get(picker.selected).cloned() else {
             return Vec::new();
         };
+        let learned = self
+            .sessions
+            .iter()
+            .find(|m| m.session.key() == Some(picker.key.as_str()))
+            .and_then(|m| m.owner.account())
+            .and_then(|a| self.config.account(a))
+            .cloned();
         let mut effects = Vec::new();
-        if self.sidecar.record_answer(&picker.key, &account.name) {
-            effects.push(Effect::SaveSidecar);
-        }
-        let mut confirm_stop = None;
-        for m in &mut self.sessions {
-            if m.session.key() == Some(picker.key.as_str()) {
-                m.owner = Ownership::Known {
-                    account: account.name.clone(),
-                    source: AccountSource::Asked,
+        let account = match learned {
+            Some(known) => {
+                let text = if known.name == picked.name {
+                    format!("{} turned out to run under {}", picker.name, known.name)
+                } else {
+                    format!(
+                        "{} turned out to run under {}; using {} instead of {}",
+                        picker.name, known.name, known.name, picked.name
+                    )
                 };
-                confirm_stop = Some(stop_needs_confirmation(&m.session));
+                self.set_message(text, Severity::Info);
+                known
             }
-        }
+            None => {
+                if self.sidecar.record_answer(&picker.key, &picked.name) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                for m in &mut self.sessions {
+                    if m.session.key() == Some(picker.key.as_str()) {
+                        m.owner = Ownership::Known {
+                            account: picked.name.clone(),
+                            source: AccountSource::Asked,
+                        };
+                    }
+                }
+                picked
+            }
+        };
+        let confirm_stop = self
+            .sessions
+            .iter()
+            .find(|m| m.session.key() == Some(picker.key.as_str()))
+            .map(|m| stop_needs_confirmation(&m.session));
         let action = SessionAction {
             account,
             id: picker.id,
@@ -1333,6 +1450,15 @@ impl App {
             );
             return Vec::new();
         };
+        if self.handing_off(&m.session) {
+            // Attaching now would wake it under the old owner's account;
+            // stop and remove would race the hand-off (doc/0004).
+            self.set_message(
+                format!("{name} is being handed off to another account; wait until it finishes"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
         let confirm_stop = stop_needs_confirmation(&m.session);
         match &m.owner {
             Ownership::Known { account, .. } => {
@@ -1413,12 +1539,25 @@ impl App {
         self.handoff.as_ref().map(|h| h.text.as_str())
     }
 
+    /// Whether `s` is the session of the running hand-off, by `sessionId`
+    /// or short id. Its row actions are refused until the hand-off reports
+    /// back (doc/0004).
+    fn handing_off(&self, s: &Session) -> bool {
+        self.handoff.as_ref().is_some_and(|h| {
+            s.session_id.as_deref() == Some(h.session_id.as_str())
+                || s.id.as_deref() == Some(h.id.as_str())
+        })
+    }
+
     /// `a` on the selected row (doc/0004): background rows with a short id
     /// and a `sessionId` only. With one candidate account the hand-off is
     /// planned right away, with more the target picker opens.
     fn request_handoff(&mut self) -> Vec<Effect> {
         if let Some(running) = &self.handoff {
-            let text = format!("a hand-off is already running ({})", running.name);
+            let text = format!(
+                "a hand-off is already running ({}); wait until it finishes",
+                running.name
+            );
             self.set_message(text, Severity::Info);
             return Vec::new();
         }
@@ -1535,6 +1674,8 @@ impl App {
         let r = &job.request;
         self.handoff = Some(HandoffProgress {
             name: r.name.clone(),
+            id: r.id.clone(),
+            session_id: r.session_id.clone(),
             text: format!("hand-off: {} — {}…", r.name, r.plan()),
         });
         vec![Effect::Handoff(job)]
@@ -1629,6 +1770,8 @@ impl App {
         result: Result<Resumed, HandoffError>,
     ) -> Vec<Effect> {
         self.handoff = None;
+        // Nothing runs any more, so the quit question no longer applies.
+        self.quit_prompt = None;
         let r = &job.request;
         let target = r.target.name.clone();
         let mut effects = Vec::new();

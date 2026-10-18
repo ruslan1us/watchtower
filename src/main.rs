@@ -4,6 +4,7 @@
 use std::process::ExitCode;
 
 use watchtower::args::{self, Command};
+use watchtower::attach::printable;
 use watchtower::config::Config;
 use watchtower::paths::Dirs;
 use watchtower::sidecar::Sidecar;
@@ -20,7 +21,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(err) => {
-            eprintln!("tower: {err}");
+            eprintln!("tower: {}", shown(&err));
             eprint!("{}", args::USAGE);
             return ExitCode::from(2);
         }
@@ -33,7 +34,7 @@ fn main() -> ExitCode {
     let config = match Config::load(&dirs) {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("tower: {err}");
+            eprintln!("tower: {}", shown(&err));
             eprintln!(
                 "tower: fix {} (or move it away to use the defaults) and start again",
                 dirs.config_file().display()
@@ -45,8 +46,16 @@ fn main() -> ExitCode {
     match watchtower::tui::run(config, dirs, loaded) {
         Ok(exit) => ExitCode::from(exit.status()),
         Err(err) => {
-            eprintln!("tower: {err}");
+            eprintln!("tower: {}", shown(&err));
             ExitCode::FAILURE
         }
     }
+}
+
+/// An error message safe for the terminal: each line without control
+/// characters (doc/0007), since it can quote an argument or a file.
+fn shown(err: &dyn std::fmt::Display) -> String {
+    let text = err.to_string();
+    let lines: Vec<String> = text.lines().map(printable).collect();
+    lines.join("\n")
 }

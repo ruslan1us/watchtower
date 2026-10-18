@@ -5,7 +5,9 @@
 //! 1. If the row has a live process, `<stop account> stop <id>` with the
 //!    owning account's command, or the target's when the owner is unknown
 //!    (`stop` works from any account, doc/0004). Then the listing is polled
-//!    until the row no longer has a live process ([`HandoffTiming`]).
+//!    until the row is listed without a live process, or is missing from
+//!    two non-empty listings in a row ([`wait_until_stopped`],
+//!    [`HandoffTiming`]).
 //! 2. `<target command> --resume <sessionId> --bg <handoff_prompt>` with the
 //!    session's `cwd` as working directory. The prompt is always passed:
 //!    without it the woken session sits idle (reference doc).
@@ -27,7 +29,7 @@ use crate::actions::{self, StopError};
 use crate::cli::{CliError, CliOutput, CliRunner, CommandLine};
 use crate::config::Account;
 use crate::dispatch::{UNTRUSTED_PREFIX, parse_backgrounded};
-use crate::listing::Session;
+use crate::listing::{Listing, Session};
 use crate::sidecar::{AccountSource, Sidecar};
 
 /// How long [`run`] waits for the stopped process to go away, and how often
@@ -336,8 +338,44 @@ fn find_row<'a>(rows: &'a [Session], request: &HandoffRequest) -> Option<&'a Ses
         })
 }
 
-/// Lists with `account` until the row of `request` has no live process
-/// (or is not listed at all), up to `timing.stop_timeout`.
+/// How many successful, non-empty, complete listings in a row must miss
+/// the row before [`wait_until_stopped`] counts it as gone.
+pub const ABSENT_LISTINGS: u32 = 2;
+
+/// What one listing says about the stopped row (doc/0004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopEvidence {
+    /// Listed without a live process: stopped.
+    Stopped,
+    /// Listed with a live process: still running.
+    Running,
+    /// Not listed in a non-empty, complete listing: gone, if it repeats.
+    Absent,
+    /// No evidence: an empty or partial listing (a supervisor that is still
+    /// starting, or a parser that skipped rows) or a failed one.
+    Nothing,
+}
+
+/// What one listing result says about the row of `request`.
+pub fn stop_evidence(listing: &Result<Listing, String>, request: &HandoffRequest) -> StopEvidence {
+    let Ok(listing) = listing else {
+        return StopEvidence::Nothing;
+    };
+    match find_row(&listing.sessions, request) {
+        Some(row) if row.has_live_process() => StopEvidence::Running,
+        Some(_) => StopEvidence::Stopped,
+        None if listing.sessions.is_empty() || !listing.warnings.is_empty() => {
+            StopEvidence::Nothing
+        }
+        None => StopEvidence::Absent,
+    }
+}
+
+/// Lists with `account` until the row of `request` is listed without a
+/// live process, or is missing from [`ABSENT_LISTINGS`] successful,
+/// non-empty, complete listings in a row, up to `timing.stop_timeout`.
+/// An empty or partial listing is no evidence: it may come while the
+/// process still lives, and resuming then would start a copy.
 pub fn wait_until_stopped(
     runner: &CliRunner,
     account: &Account,
@@ -345,14 +383,19 @@ pub fn wait_until_stopped(
     timing: &HandoffTiming,
 ) -> Result<(), HandoffError> {
     let start = Instant::now();
+    let mut absent = 0;
     loop {
-        let last_error = match runner.list_sessions(account) {
-            Ok(listing) => match find_row(&listing.sessions, request) {
-                Some(row) if row.has_live_process() => None,
-                _ => return Ok(()),
-            },
-            Err(err) => Some(err.to_string()),
+        let listing = runner.list_sessions(account).map_err(|err| err.to_string());
+        let evidence = stop_evidence(&listing, request);
+        absent = match evidence {
+            StopEvidence::Stopped => return Ok(()),
+            StopEvidence::Absent => absent + 1,
+            _ => 0,
         };
+        if absent >= ABSENT_LISTINGS {
+            return Ok(());
+        }
+        let last_error = listing.err();
         let waited = start.elapsed();
         if waited >= timing.stop_timeout {
             return Err(HandoffError::StillRunning { waited, last_error });

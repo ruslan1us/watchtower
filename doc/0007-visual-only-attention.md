@@ -56,6 +56,13 @@ never emits OSC 9, OSC 777 or OSC 99 desktop-notification sequences, and does
 not change the terminal or tab title to signal attention. No option to enable
 these exists in v1.
 
+**Nothing from the data reaches the terminal raw.** Session names, folders
+and commands come from the CLI's JSON, the config or the environment, and
+could carry BEL or escape sequences. ratatui filters what it draws; the lines
+tower prints outside it (the announcements and key-pause prompts around a
+hand-over ([0005](0005-attach-and-detach.md)) and error messages on exit)
+replace every control character with `?`.
+
 ## Consequences
 
 - Attention is only noticed when the tower screen is visible. This is accepted:

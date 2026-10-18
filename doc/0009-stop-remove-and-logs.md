@@ -52,6 +52,15 @@ the list instead, since the replayed screen is wide:
   return), capped at 300 × 600. Other relative moves are not counted.
 - Only the last 2 MiB of the stream are replayed, starting at the last full clear in that
   window, if any. Malformed sequences and invalid UTF-8 never fail the panel.
+- Bounded replay work: vt100 handles some sequences in time proportional to a count
+  (`ESC[999999@` took over a second). Before the replay, the count and position parameters
+  of ICH, DCH, ECH, IL, DL, SU, SD, REP, CUF, CUB, CUU, CUD, CNL, CPL, CHA, HPA, VPA and
+  the CUP/HVP row and column are clamped to the emulator size (REP to one screenful plus
+  its remainder modulo the width), which leaves the result unchanged; positions inside
+  the screen are kept as they are. The count sequences and the screen-wide ones (ED,
+  DECSED, alternate-screen switches, reset) also share fixed work budgets per replay;
+  once one is spent, further sequences of that kind are dropped. Claude Code's streams
+  stay far below them. Any 2 MiB window then replays in well under a second.
 - Refresh on every poll, only for the selected row and only while the panel is open.
   Changing the selection fetches the new row immediately.
 - Interactive rows have no `id`; the panel shows a short note instead of output.

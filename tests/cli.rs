@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use watchtower::cli::{CliError, CliRunner, CommandLine, ListError, OUTPUT_CAP, attach_command};
+use watchtower::cli::{
+    CliError, CliRunner, CommandLine, ListError, OUTPUT_CAP, attach_command,
+    inherited_config_dir_warning,
+};
 use watchtower::config::Account;
 use watchtower::listing::State;
 
@@ -166,18 +169,40 @@ fn stdin_is_null() {
 }
 
 #[test]
-fn environment_is_passed_through_unchanged() {
+fn config_dir_is_never_inherited_but_a_wrapper_sets_it() {
+    // Whether or not the test's own environment has CLAUDE_CONFIG_DIR, the
+    // child never inherits it (tests/env_hygiene.rs sets it explicitly).
     let _g = lock();
-    let fake = Fake::new("claude", "printf '%s' \"${CLAUDE_CONFIG_DIR-unset}\"");
+    let fake = Fake::new(
+        "claude",
+        "printf '%s|%s' \"${CLAUDE_CONFIG_DIR-unset}\" \"${HOME-unset}\"",
+    );
     let out = CliRunner::new()
         .run(&fake.account("claude"), ["x"])
         .unwrap();
-    let expected = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "unset".into());
-    assert_eq!(
-        out.stdout_text(),
-        expected,
-        "tower sets no CLAUDE_CONFIG_DIR itself"
+    let home = std::env::var("HOME").unwrap_or_else(|_| "unset".into());
+    assert_eq!(out.stdout_text(), format!("unset|{home}"));
+    // A wrapper command that sets the variable itself still does.
+    let cmd = format!(
+        "env CLAUDE_CONFIG_DIR=/x '{}'",
+        fake.path("claude").display()
     );
+    let wrapper = Account::new("alt", cmd, None, Path::new("/home/user")).unwrap();
+    let out = CliRunner::new().run(&wrapper, ["x"]).unwrap();
+    assert_eq!(out.stdout_text(), format!("/x|{home}"));
+}
+
+#[test]
+fn inherited_config_dir_gives_a_startup_warning() {
+    use std::ffi::OsStr;
+    assert_eq!(inherited_config_dir_warning(None), None);
+    assert_eq!(inherited_config_dir_warning(Some(OsStr::new(""))), None);
+    let w = inherited_config_dir_warning(Some(OsStr::new("/home/user/.claude-alt"))).unwrap();
+    assert!(
+        w.contains("CLAUDE_CONFIG_DIR=/home/user/.claude-alt"),
+        "{w}"
+    );
+    assert!(w.contains("removes it"), "{w}");
 }
 
 #[test]
@@ -261,7 +286,13 @@ fn attach_command_line() {
     let cmd = line.to_command();
     assert_eq!(cmd.get_program(), "claude-alt");
     assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["attach", "1a2b3c4d"]);
-    assert_eq!(cmd.get_envs().count(), 0, "no environment changes");
+    // The only environment change: an inherited CLAUDE_CONFIG_DIR is removed.
+    let envs: Vec<_> = cmd.get_envs().collect();
+    assert_eq!(
+        envs,
+        [(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"), None)],
+        "only CLAUDE_CONFIG_DIR is removed"
+    );
 
     let wrapped = Account::new("alt", "env FOO=1 claude", None, home).unwrap();
     assert_eq!(

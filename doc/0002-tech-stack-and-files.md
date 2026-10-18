@@ -65,7 +65,11 @@ command = "claude-alt"               # wrapper that sets CLAUDE_CONFIG_DIR=~/.cl
 config_dir = "~/.claude-alt"
 ```
 
-`command` is run as-is; tower does not set `CLAUDE_CONFIG_DIR` itself.
+`command` is run as-is; tower does not set `CLAUDE_CONFIG_DIR` itself, and
+it removes an inherited one from every command it runs, so a value exported
+in tower's own shell never reaches an account's command (a wrapper such as
+`claude-alt` sets its own). Tower started with it set shows a warning
+([0017](0017-ownership-evidence-rules.md), environment hygiene).
 `config_dir` is used to recognise which account hosts a running session
 ([0003](0003-accounts-and-session-ownership.md)). It defaults to `~/.claude`.
 

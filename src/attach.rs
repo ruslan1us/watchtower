@@ -102,6 +102,19 @@ pub fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
     }
 }
 
+/// `text` safe to print on the terminal outside ratatui: every control
+/// character (C0, DEL, C1; line breaks and tabs included) becomes `?`, so a
+/// session name, folder or command from the CLI's JSON or the environment
+/// cannot ring the bell or start an escape sequence (doc/0007). Every line
+/// tower writes itself goes through this: the announcements and prompts of
+/// [`run_foreground`], the real [`Handover`] (`tui`) and the error messages
+/// printed by `main`, line by line.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 /// The line printed before the child takes over (doc/0005 step 5).
 pub fn announcement(req: &AttachRequest) -> String {
     format!(
@@ -147,7 +160,7 @@ pub fn run_foreground(
         return Err(format!("cannot release the terminal: {err}"));
     }
     if let Some(line) = &fg.announce {
-        let _ = handover.announce(line);
+        let _ = handover.announce(&printable(line));
     }
 
     // A failure to install the handlers is not a reason to refuse to run;
@@ -167,7 +180,7 @@ pub fn run_foreground(
     };
     let ending = || termination.pending().is_some();
     if !ending() && fg.pause_on_failure {
-        let label = fg.label;
+        let label = printable(fg.label);
         match &result {
             Ok(Some(0)) | Err(_) => {}
             Ok(Some(code)) => {

@@ -24,7 +24,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
-    Picker, Popup, Purpose, Severity, TargetPicker, UntrustedHandoff,
+    Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
 };
 use crate::groups::{self, Group};
 use crate::merge::MergedSession;
@@ -91,6 +91,41 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
     if let Some(popup) = app.popup_mut() {
         draw_popup(frame, popup, area);
     }
+    if let Some(prompt) = app.quit_prompt() {
+        draw_quit_prompt(frame, app, prompt, area);
+    }
+}
+
+/// The quit question while a hand-off runs (doc/0004, doc/0011), above
+/// every other window.
+fn draw_quit_prompt(frame: &mut Frame, app: &App, prompt: &QuitPrompt, area: Rect) {
+    let w = area.width.saturating_sub(4).min(76);
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let mut lines: Vec<Line> = wrap(&prompt.text(), inner_w)
+        .into_iter()
+        .map(|r| Line::from(format!(" {r}")))
+        .collect();
+    lines.push(Line::from(""));
+    let key_style = if app.color {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" y", key_style),
+        Span::raw(" quit   "),
+        Span::styled("n", key_style),
+        Span::raw("/"),
+        Span::styled("Esc", key_style),
+        Span::raw(" keep running (default)"),
+    ]));
+    let h = lines.len() as u16 + 2;
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(" Quit tower? ")),
+        rect,
+    );
 }
 
 /// The footer: key hints on the left, the detach hint on the right.

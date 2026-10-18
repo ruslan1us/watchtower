@@ -243,6 +243,67 @@ fn huge_input_replays_only_the_tail() {
     assert!(!screen.is_empty());
 }
 
+#[test]
+fn huge_counts_render_quickly_and_as_a_terminal_would() {
+    // vt100 runs these in time proportional to the count: unclamped, one
+    // `ESC[999999@` took over a second and twenty of them half a minute.
+    let mut bytes = b"\x1b[2J\x1b[Hhello world\x1b[1;3H".to_vec();
+    for _ in 0..20 {
+        bytes.extend_from_slice(b"\x1b[999999@");
+    }
+    for seq in [
+        &b"\x1b[999999P"[..],
+        b"\x1b[999999X",
+        b"\x1b[999999L",
+        b"\x1b[999999M",
+        b"\x1b[999999S",
+        b"\x1b[999999T",
+        b"x\x1b[999999b",
+        b"\x1b[999999C\x1b[999999D\x1b[999999A\x1b[999999B",
+        b"\x1b[999999G\x1b[999999d\x1b[999999;999999H\x1b[999999;999999f",
+    ] {
+        for _ in 0..20 {
+            bytes.extend_from_slice(seq);
+        }
+    }
+    bytes.extend_from_slice(b"\x1b[2;1Hstill here");
+    let started = std::time::Instant::now();
+    let screen = logview::render(&bytes);
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+    assert_eq!(screen.size(), (MAX_ROWS, MAX_COLS));
+    assert_eq!(
+        screen.plain_lines().get(1).map(String::as_str),
+        Some("still here")
+    );
+
+    // ICH at column 3 shifts the rest of the row off the screen, exactly
+    // as with the original count.
+    let screen = logview::render(b"hello world\x1b[1;3H\x1b[999999@");
+    assert_eq!(screen.plain_lines(), ["he"]);
+    // A control character inside the sequence still takes effect: the
+    // carriage return moves to column 1 first, so the whole row is shifted
+    // off.
+    let screen = logview::render(b"abc\x1b[99\r9999@");
+    assert!(screen.is_empty(), "{:?}", screen.plain_lines());
+}
+
+#[test]
+fn a_stream_of_nothing_but_expensive_sequences_is_bounded() {
+    // Each count is within the largest screen, so only the work budgets
+    // keep this short; unbounded it took minutes even in a release build.
+    let mut bytes = b"\x1b[300;600Hx".to_vec();
+    while bytes.len() < 512 * 1024 {
+        bytes.extend_from_slice(
+            b"\x1b[600@\x1b[300L\x1b[300T\x1b[12800b\x1b[?2J\x1b[J\x1b[?1049h\x1b[?1049l\x1bc",
+        );
+    }
+    let started = std::time::Instant::now();
+    let _ = logview::render(&bytes);
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+}
+
 // ---- fetch ---------------------------------------------------------------
 
 /// Serializes the fake-executable tests (ETXTBSY, see tests/cli.rs).
