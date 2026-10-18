@@ -1,6 +1,7 @@
 //! Background jobs: the CLI calls behind the app's [`Effect`]s that can take
 //! a while — dispatch (`claude --bg`, which may first start a supervisor),
-//! `stop`, `rm`, `logs` and the hand-off sequence — and the file work that
+//! the orchestrator's start, `stop`, `rm`, `logs` and the hand-off sequence
+//! — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
 //! reloads, the project scan — each run on its own short-lived worker
 //! thread so the UI never blocks (doc/0001, doc/0002, doc/0004, doc/0008,
@@ -33,12 +34,14 @@ use std::time::Duration;
 
 use crate::actions::{self, RemoveError, StopError};
 use crate::app::{
-    App, DispatchJob, Effect, HandoffJob, LogsTarget, ProjectScan, SessionAction, SidecarJob,
+    App, DispatchJob, Effect, HandoffJob, LogsTarget, OrchestratorJob, ProjectScan, SessionAction,
+    SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::logview::{self, LogScreen, LogsError};
+use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 
@@ -47,6 +50,9 @@ use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 pub enum JobResult {
     /// `claude --bg` from the dialog.
     Dispatch(DispatchJob, Result<Dispatched, DispatchError>),
+    /// The orchestrator's folder prepared and its `claude --bg` run
+    /// (doc/0010).
+    Orchestrator(OrchestratorJob, Result<Dispatched, StartError>),
     /// `stop <id>`.
     Stop(SessionAction, Result<(), StopError>),
     /// `rm <id>`.
@@ -70,6 +76,7 @@ impl JobResult {
     pub fn apply(self, app: &mut App) -> Vec<Effect> {
         match self {
             JobResult::Dispatch(job, result) => app.dispatch_finished(job, result),
+            JobResult::Orchestrator(job, result) => app.orchestrator_finished(job, result),
             JobResult::Stop(action, result) => app.stop_finished(action, result),
             JobResult::Remove(action, result) => app.remove_finished(action, result),
             JobResult::Logs(target, result) => app.logs_fetched(target, result),
@@ -170,6 +177,20 @@ impl Jobs {
         self.launch("dispatch", job, fail, |runner, _, job| {
             let result = dispatch::run(runner, &job.request);
             JobResult::Dispatch(job, result)
+        });
+    }
+
+    /// Starts the orchestrator of `job` (doc/0010): creates its folder and
+    /// instruction file when missing, naming the running `tower` binary in
+    /// it, then runs its dispatch.
+    pub fn orchestrator(&self, job: OrchestratorJob) {
+        let fail = |job, err: CliError| {
+            JobResult::Orchestrator(job, Err(StartError::Dispatch(err.into())))
+        };
+        self.launch("orchestrator", job, fail, |runner, _, job| {
+            let tower = orchestrator::current_tower();
+            let result = orchestrator::start(runner, &job.request, &tower);
+            JobResult::Orchestrator(job, result)
         });
     }
 

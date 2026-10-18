@@ -1,8 +1,8 @@
 //! Rendering: title, grouped session list, the logs panel, status line,
 //! footer, and the overlays: help, account picker, confirmations, the
-//! hand-off target picker and trust window (doc/0004), the new-session
-//! dialog ([`dialog`]) and the popup window (doc/0006, doc/0008, doc/0009,
-//! doc/0011). Pure drawing from [`App`] state; no I/O.
+//! hand-off target picker and trust window (doc/0004), the orchestrator's
+//! trust window (doc/0010), the new-session dialog ([`dialog`]) and the
+//! popup window (doc/0006, doc/0008, doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
 //!
 //! The logs panel sits to the right of the list when the terminal is at
 //! least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise below it, taking
@@ -25,6 +25,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
     Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
+    UntrustedOrchestrator,
 };
 use crate::groups::{self, Group};
 use crate::merge::MergedSession;
@@ -32,7 +33,7 @@ use crate::paths;
 
 /// Footer key hints of the session list (doc/0011).
 pub const FOOTER_KEYS: &str = "↑↓ move · Enter attach · n new · a hand-off · s stop · d remove · \
-     Space logs · ? help · q quit";
+     Space logs · o orchestrator · ? help · q quit";
 
 /// The detach hint, always shown at the right of the footer (doc/0005,
 /// doc/0011); the key hints are cut first when the terminal is narrow.
@@ -84,6 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
         Overlay::Confirm(c) => draw_confirm(frame, app, &c, area),
         Overlay::Target(p) => draw_target(frame, app, &p, area),
         Overlay::Untrusted(u) => draw_untrusted(frame, app, &u, area),
+        Overlay::OrchestratorUntrusted(u) => draw_orchestrator_untrusted(frame, app, &u, area),
     }
     if let Some(d) = app.dialog() {
         dialog::draw(frame, app, d, area);
@@ -566,6 +568,47 @@ fn draw_untrusted(frame: &mut Frame, app: &App, untrusted: &UntrustedHandoff, ar
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     let title = format!(" Not trusted by {} ", r.target.name);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
+        rect,
+    );
+}
+
+/// The window after the orchestrator's start failed with `Workspace not
+/// trusted` (doc/0008, doc/0010).
+fn draw_orchestrator_untrusted(
+    frame: &mut Frame,
+    app: &App,
+    untrusted: &UntrustedOrchestrator,
+    area: Rect,
+) {
+    let r = &untrusted.job.request;
+    let dir = paths::shorten_home(&r.project.to_string_lossy(), app.home());
+    let mut text: Vec<String> = untrusted.message.lines().map(str::to_owned).collect();
+    text.extend([
+        String::new(),
+        format!(
+            "The orchestrator was not started: {} has not trusted its folder.",
+            r.account.name
+        ),
+        format!(
+            "Ctrl+T: run `{}` in {dir} to accept Claude Code's trust prompt, then /exit; tower \
+             then retries the start once.",
+            r.account.command
+        ),
+        "Esc: do not start it.".to_owned(),
+    ]);
+    let w = area.width.saturating_sub(4).min(80);
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let lines: Vec<Line> = text
+        .iter()
+        .flat_map(|t| wrap(t, inner_w))
+        .map(|r| Line::from(format!(" {r}")))
+        .collect();
+    let h = lines.len() as u16 + 2;
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Not trusted by {} ", r.account.name);
     frame.render_widget(
         Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
         rect,

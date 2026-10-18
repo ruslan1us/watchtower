@@ -344,7 +344,7 @@ fn quit_help_refresh_and_reserved_keys() {
     assert_eq!(selected(&app), before);
 
     // Keys of later milestones (doc/0014) only say so.
-    for c in ['o', '/', 'p', 'i', 'm'] {
+    for c in ['/', 'p', 'i', 'm'] {
         assert!(press(&mut app, ch(c)).is_empty(), "{c}");
         assert!(message(&app).contains("not available yet"), "{c}");
     }

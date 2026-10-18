@@ -27,7 +27,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `Space` | Toggle the logs panel for the selected row ([0009](0009-stop-remove-and-logs.md)) |
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
 | `a` | Continue under another account ([0004](0004-account-hand-off.md)) |
-| `o` | Attach to the orchestrator, starting it if missing ([0010](0010-orchestrator.md)) |
+| `o` | Attach to the orchestrator as `Enter` on its row would, starting it if missing ([0010](0010-orchestrator.md)); after a `Workspace not trusted` start a window offers `Ctrl+T` (run the account's command in its folder, then retry once) and `Esc` |
 | `s` | Stop the session (confirm when working or blocked) |
 | `d` | Remove the session (confirm) |
 | `m` | Mark the highlighted session as seen ([0007](0007-visual-only-attention.md)) |
@@ -88,9 +88,9 @@ variant that works.
   (`in a session: Ctrl+Z returns to tower`).
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
-- A window that a background result opens (the hand-off trust window, the
-  full text of an `rm` refusal, the account picker after an attach's
-  refresh) never replaces or covers a window that is open: the open
+- A window that a background result opens (the hand-off and orchestrator
+  trust windows, the full text of an `rm` refusal, the account picker after
+  an attach's refresh) never replaces or covers a window that is open: the open
   confirmation, picker, help, target picker, popup, new-session dialog or
   quit question keeps the keys. The new window waits in a queue, the status
   line says `1 window is waiting; it opens when this one closes`, and queued

@@ -58,6 +58,7 @@ use crate::config::Config;
 use crate::dispatch::DispatchError;
 use crate::jobs::{self, JobResult, Jobs};
 use crate::merge::ProcEnviron;
+use crate::orchestrator::StartError;
 use crate::paths::{self, Dirs};
 use crate::poller::Poller;
 use crate::sidecar::Loaded;
@@ -292,6 +293,12 @@ pub fn polls_after(done: &JobResult) -> bool {
     matches!(
         done,
         JobResult::Dispatch(_, Err(DispatchError::Cli(CliError::Timeout { .. })))
+            | JobResult::Orchestrator(
+                _,
+                Err(StartError::Dispatch(DispatchError::Cli(
+                    CliError::Timeout { .. }
+                )))
+            )
     )
 }
 
@@ -418,6 +425,7 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
         loaded.sidecar,
         Box::new(ProcEnviron),
     );
+    app.set_config_dir(&dirs.config_dir);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     if let Some(warning) = loaded.warning {
         app.add_warning(warning);
@@ -636,6 +644,16 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 queue.extend(app.handoff_trust_finished(job, result));
             }
             Effect::Handoff(job) => rt.jobs.handoff(job),
+            Effect::StartOrchestrator(job) => rt.jobs.orchestrator(job),
+            Effect::OrchestratorTrust(job) => {
+                let req = &job.request;
+                let Some(result) =
+                    run_trust(rt, app, &req.account, &req.project, "orchestrator start")
+                else {
+                    return Ok(false);
+                };
+                queue.extend(app.orchestrator_trust_finished(job, result));
+            }
             Effect::EditTask(text) => {
                 let termination = rt.termination;
                 let result = editor::editor_from_env().and_then(|cmd| {

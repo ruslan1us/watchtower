@@ -1,8 +1,8 @@
-//! The TUI state machine (doc/0014 milestones 1–3): the merged session
+//! The TUI state machine (doc/0014 milestones 1–4): the merged session
 //! list, selection, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
-//! logs panel (doc/0009), the hand-off to another account (doc/0004), and
-//! the key table (doc/0011).
+//! logs panel (doc/0009), the hand-off to another account (doc/0004), the
+//! orchestrator key `o` (doc/0010), and the key table (doc/0011).
 //!
 //! Nothing here touches the terminal, spawns processes or does file I/O
 //! (apart from the `/proc` reads of ownership rule 1, and resolving the
@@ -37,6 +37,7 @@ use crate::logview::{LogScreen, LogsError};
 use crate::merge::{
     AccountListing, CanonCache, EnvironReader, KnownProcesses, MergedSession, Ownership, Resolver,
 };
+use crate::orchestrator::{self, StartError};
 use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
@@ -105,6 +106,36 @@ pub enum Effect {
     /// [`App::handoff_trust_finished`], which retries the hand-off once
     /// (doc/0004, doc/0008).
     HandoffTrust(HandoffJob),
+    /// Prepare the orchestrator's folder and instruction file and run its
+    /// `claude --bg` on a worker thread ([`orchestrator::start`]), then
+    /// call [`App::orchestrator_finished`] (doc/0010).
+    StartOrchestrator(OrchestratorJob),
+    /// Suspend tower like an attach and run the default account's
+    /// interactive command in the orchestrator's folder
+    /// ([`dispatch::trust_command`]), then call
+    /// [`App::orchestrator_trust_finished`], which retries the start once
+    /// (doc/0008, doc/0010).
+    OrchestratorTrust(OrchestratorJob),
+}
+
+/// The start of the orchestrator session (doc/0010).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrchestratorJob {
+    /// The request from [`orchestrator::request`]; its project is the
+    /// orchestrator's folder.
+    pub request: DispatchRequest,
+    /// This is the retry after the trust flow.
+    pub after_trust: bool,
+}
+
+/// An orchestrator start that failed with `Workspace not trusted`: `Ctrl+T`
+/// runs the trust flow and retries once (doc/0008, doc/0010).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedOrchestrator {
+    /// The start to retry.
+    pub job: OrchestratorJob,
+    /// The CLI's message.
+    pub message: String,
 }
 
 /// A hand-off of one session to another account (doc/0004).
@@ -341,6 +372,8 @@ pub enum Overlay {
     Target(TargetPicker),
     /// A hand-off stopped at `Workspace not trusted`.
     Untrusted(Box<UntrustedHandoff>),
+    /// The orchestrator's folder is not trusted by its account.
+    OrchestratorUntrusted(Box<UntrustedOrchestrator>),
 }
 
 /// A scrollable text window above everything else, e.g. the full text of
@@ -386,6 +419,30 @@ struct PendingAttach {
     /// One of them has finished.
     sidecar_done: bool,
 }
+
+/// The orchestrator as this tower started it (doc/0010).
+#[derive(Debug, Clone, Default)]
+struct OrchestratorState {
+    /// A start runs (or its trust flow); `o` waits for it.
+    starting: bool,
+    /// The session this tower just started, until a listing shows it: `o`
+    /// attaches to it instead of starting a second one. Dropped after
+    /// [`JUST_STARTED_POLLS`] good listings of its account without it.
+    started: Option<JustStarted>,
+}
+
+/// A just started orchestrator not listed yet.
+#[derive(Debug, Clone)]
+struct JustStarted {
+    account: Account,
+    id: String,
+    /// Good listings of `account` since, none of them showing `id`.
+    misses: u32,
+}
+
+/// How many good listings of its account may miss a just started
+/// orchestrator before `o` stops counting on it.
+const JUST_STARTED_POLLS: u32 = 3;
 
 /// Sidecar file jobs: one at a time, plus at most one queued save and one
 /// queued check (doc/0002).
@@ -519,6 +576,8 @@ pub enum Action {
     Remove,
     /// `a`: continue under another account (doc/0004).
     Handoff,
+    /// `o`: attach to the orchestrator, starting it if missing (doc/0010).
+    Orchestrator,
     ToggleLogs,
     /// `Esc`: close the logs panel.
     Close,
@@ -531,14 +590,17 @@ pub enum Action {
     NotYet(&'static str),
 }
 
-/// Keys of the session list (doc/0011, milestones 1–3).
+/// Keys of the session list (doc/0011, milestones 1–4).
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
-    ("PgUp/PgDn", "move one page"),
-    ("Home/End, g/G", "first / last row"),
+    (
+        "PgUp/PgDn",
+        "move one page; Home/End, g/G: first / last row",
+    ),
     ("Enter", "attach to the selected session"),
     ("n", "new session"),
     ("a", "continue under another account (hand-off)"),
+    ("o", "attach to the orchestrator, starting it if missing"),
     ("s", "stop the session (confirm when working or blocked)"),
     ("d", "remove the session (confirm)"),
     ("Space, Esc", "toggle / close the logs panel"),
@@ -559,7 +621,7 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
 ];
 
 /// Keys of later milestones, shown in the help as not yet available.
-pub const LATER_KEYS: &str = "o m / p i Tab";
+pub const LATER_KEYS: &str = "m / p i Tab";
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
 /// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
@@ -594,7 +656,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('?') => Action::Help,
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('a') => Action::Handoff,
-        KeyCode::Char('o') => Action::NotYet("orchestrator"),
+        KeyCode::Char('o') => Action::Orchestrator,
         KeyCode::Char('m') => Action::NotYet("mark seen"),
         KeyCode::Char('/') => Action::NotYet("filter"),
         KeyCode::Char('p') => Action::NotYet("group by project"),
@@ -648,6 +710,9 @@ pub struct App {
     scan: u64,
     /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
     root: bool,
+    /// The orchestrator's folder, `<config dir>/orchestrator` (doc/0010).
+    orchestrator_dir: PathBuf,
+    orchestrator: OrchestratorState,
     message: Option<Message>,
     handoff: Option<HandoffProgress>,
     /// Open while asking whether to quit during a hand-off; above
@@ -689,6 +754,7 @@ impl App {
             })
             .collect();
         let canon = CanonCache::for_accounts(&config.accounts, &home);
+        let orchestrator_dir = orchestrator::dir(&paths::Dirs::new(home.clone(), None).config_dir);
         App {
             config,
             home,
@@ -714,6 +780,8 @@ impl App {
             check_error: None,
             scan: 0,
             root: dispatch::is_root(),
+            orchestrator_dir,
+            orchestrator: OrchestratorState::default(),
             message: None,
             handoff: None,
             quit_prompt: None,
@@ -730,6 +798,17 @@ impl App {
     /// for root).
     pub fn set_root(&mut self, root: bool) {
         self.root = root;
+    }
+
+    /// Sets tower's config dir; the orchestrator runs in its
+    /// `orchestrator` folder (doc/0010). Without it, `~/.config/watchtower`.
+    pub fn set_config_dir(&mut self, config_dir: &std::path::Path) {
+        self.orchestrator_dir = orchestrator::dir(config_dir);
+    }
+
+    /// The orchestrator's folder (doc/0010).
+    pub fn orchestrator_dir(&self) -> &std::path::Path {
+        &self.orchestrator_dir
     }
 
     /// The new-session dialog, when open.
@@ -932,6 +1011,7 @@ impl App {
             p.listed.push((update.account.clone(), listed));
         }
         let mut changed = false;
+        let listed_ok = update.result.is_ok();
         match update.result {
             Ok(listing) => {
                 // Before the merge, so rule 3 finds the record (doc/0008).
@@ -947,6 +1027,7 @@ impl App {
             Err(err) => poll.error = Some(err),
         }
         changed |= self.rebuild();
+        self.track_started_orchestrator(&update.account, listed_ok);
         let mut effects = Vec::new();
         // A save that failed (e.g. the lock was busy) is retried.
         if changed || self.sidecar.retry_due() {
@@ -1362,6 +1443,7 @@ impl App {
             Overlay::Confirm(confirm) => self.confirm_key(key, confirm),
             Overlay::Target(picker) => self.target_key(key, picker),
             Overlay::Untrusted(untrusted) => self.untrusted_key(key, *untrusted),
+            Overlay::OrchestratorUntrusted(u) => self.orchestrator_untrusted_key(key, *u),
             Overlay::None => self.list_key(key),
         }
     }
@@ -1627,6 +1709,7 @@ impl App {
             Action::Stop => effects = self.request_action(Purpose::Stop),
             Action::Remove => effects = self.request_action(Purpose::Remove),
             Action::Handoff => effects = self.request_handoff(),
+            Action::Orchestrator => effects = self.request_orchestrator(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
                     self.logs = Some(LogsPanel {
@@ -1674,7 +1757,17 @@ impl App {
     /// owning account, or after asking for it when it is unknown (doc/0003,
     /// doc/0005, doc/0009).
     fn request_action(&mut self, purpose: Purpose) -> Vec<Effect> {
-        let Some(m) = self.selected_session() else {
+        let Some(&Entry::Row(index)) = self.selected_entry().and_then(|e| self.entries.get(e))
+        else {
+            return Vec::new();
+        };
+        self.request_action_on(index, purpose)
+    }
+
+    /// [`App::request_action`] on the session at `index` in
+    /// [`App::sessions`].
+    fn request_action_on(&mut self, index: usize, purpose: Purpose) -> Vec<Effect> {
+        let Some(m) = self.sessions.get(index) else {
             return Vec::new();
         };
         let name = m.session.display_name();
@@ -1754,6 +1847,221 @@ impl App {
                 });
                 Vec::new()
             }
+        }
+    }
+
+    // ---- the orchestrator (doc/0010) --------------------------------------
+
+    /// `o`: attaches to the background row named `orchestrator` exactly as
+    /// `Enter` would (owning account, refresh first, account picker for an
+    /// unknown owner, refused during its hand-off). With several such rows
+    /// a live one wins, then the most recent, and the status line says so.
+    /// Without one, the orchestrator is started under `default_account`
+    /// and attached once it runs. Nothing happens before every account has
+    /// been listed once, so a listing still loading never starts a second
+    /// orchestrator.
+    fn request_orchestrator(&mut self) -> Vec<Effect> {
+        if self.orchestrator.starting {
+            self.set_message(
+                "the orchestrator is starting; tower attaches when it runs",
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        if let Some(p) = self.polls.iter().find(|p| p.rows.is_none()) {
+            let text = format!(
+                "cannot look for the orchestrator yet: {} has not been listed",
+                p.name
+            );
+            self.set_message(text, Severity::Info);
+            return Vec::new();
+        }
+        if let Some((index, count)) = orchestrator::find(&self.sessions) {
+            if count > 1 {
+                let s = &self.sessions[index].session;
+                let which = if s.has_live_process() {
+                    "the most recent live one"
+                } else {
+                    "the most recent"
+                };
+                let text = format!(
+                    "{count} sessions are named {}; using {which} ({})",
+                    orchestrator::NAME,
+                    s.id.as_deref().unwrap_or("no id")
+                );
+                self.set_message(text, Severity::Warning);
+            }
+            return self.request_action_on(index, Purpose::Attach);
+        }
+        if let Some(started) = &self.orchestrator.started {
+            // Started by this tower and not listed yet: attach without a
+            // refresh, as dispatch-and-attach does (doc/0005).
+            if let Some(p) = &self.pending_attach {
+                let text = format!("still checking {} before attaching", p.request.name);
+                self.set_message(text, Severity::Info);
+                return Vec::new();
+            }
+            return vec![Effect::Attach(AttachRequest {
+                account: started.account.clone(),
+                id: started.id.clone(),
+                name: orchestrator::NAME.to_owned(),
+            })];
+        }
+        let request = orchestrator::request(&self.config, self.orchestrator_dir.clone());
+        self.orchestrator.starting = true;
+        self.set_message(
+            format!("starting the orchestrator under {}…", request.account.name),
+            Severity::Info,
+        );
+        vec![Effect::StartOrchestrator(OrchestratorJob {
+            request,
+            after_trust: false,
+        })]
+    }
+
+    /// Reports a finished orchestrator start (doc/0010). On success the
+    /// owner is recorded (`started`, as for any dispatch) and tower
+    /// attaches at once, without a refresh: the session is not listed yet.
+    /// When a window is open meanwhile it does not attach and says to
+    /// press `o`. `Workspace not trusted` opens the trust window.
+    pub fn orchestrator_finished(
+        &mut self,
+        job: OrchestratorJob,
+        result: Result<Dispatched, StartError>,
+    ) -> Vec<Effect> {
+        self.orchestrator.starting = false;
+        let account = job.request.account.clone();
+        match result {
+            Ok(started) => {
+                let mut effects = Vec::new();
+                if self.sidecar.record_started(&started.id, &account.name) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                self.orchestrator.started = Some(JustStarted {
+                    account: account.clone(),
+                    id: started.id.clone(),
+                    misses: 0,
+                });
+                let what = format!(
+                    "started the orchestrator ({}) under {}",
+                    started.id, account.name
+                );
+                if self.window_open() || self.pending_attach.is_some() {
+                    self.set_message(format!("{what}; press o to attach"), Severity::Info);
+                    effects.push(Effect::PollNow);
+                } else {
+                    self.set_message(what, Severity::Info);
+                    // attach_finished polls once tower is back.
+                    effects.push(Effect::Attach(AttachRequest {
+                        account,
+                        id: started.id,
+                        name: orchestrator::NAME.to_owned(),
+                    }));
+                }
+                effects
+            }
+            Err(StartError::Dispatch(DispatchError::Untrusted { message, .. })) => {
+                let mut message = message;
+                if job.after_trust {
+                    message.push_str(&format!(
+                        "\n(still not trusted after running {} there)",
+                        account.command
+                    ));
+                }
+                self.set_message(
+                    format!(
+                        "{} has not trusted the orchestrator's folder; Ctrl+T to trust it and \
+                         retry",
+                        account.name
+                    ),
+                    Severity::Warning,
+                );
+                self.open_orchestrator_untrusted(job, message);
+                Vec::new()
+            }
+            Err(err) => {
+                self.set_message(
+                    format!(
+                        "cannot start the orchestrator: {}",
+                        one_line(&err.to_string())
+                    ),
+                    Severity::Error,
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Reports the end of the orchestrator's trust flow: the interactive
+    /// account command exited, so the start is retried once. When it could
+    /// not run at all the trust window shows why.
+    pub fn orchestrator_trust_finished(
+        &mut self,
+        job: OrchestratorJob,
+        result: Result<Option<i32>, String>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(_) => {
+                self.orchestrator.starting = true;
+                self.set_message("starting the orchestrator again…", Severity::Info);
+                vec![Effect::StartOrchestrator(OrchestratorJob {
+                    after_trust: true,
+                    ..job
+                })]
+            }
+            Err(err) => {
+                self.orchestrator.starting = false;
+                self.open_orchestrator_untrusted(job, err);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The orchestrator's trust window, opened by a late result (doc/0011).
+    fn open_orchestrator_untrusted(&mut self, job: OrchestratorJob, message: String) {
+        let overlay =
+            Overlay::OrchestratorUntrusted(Box::new(UntrustedOrchestrator { job, message }));
+        self.open_late(Waiting::Overlay(Box::new(overlay)));
+    }
+
+    fn orchestrator_untrusted_key(
+        &mut self,
+        key: KeyEvent,
+        untrusted: UntrustedOrchestrator,
+    ) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => vec![Effect::Quit],
+            KeyCode::Char('t' | 'T') if ctrl => {
+                self.overlay = Overlay::None;
+                self.orchestrator.starting = true;
+                vec![Effect::OrchestratorTrust(untrusted.job)]
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') if !ctrl => {
+                self.overlay = Overlay::None;
+                self.set_message("the orchestrator was not started", Severity::Info);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// After a poll of `account`: forgets the just started orchestrator
+    /// once a listing shows it, or after [`JUST_STARTED_POLLS`] good
+    /// listings of its account without it.
+    fn track_started_orchestrator(&mut self, account: &str, listed_ok: bool) {
+        let Some(started) = self.orchestrator.started.as_mut() else {
+            return;
+        };
+        let listed = self
+            .sessions
+            .iter()
+            .any(|m| m.session.id.as_deref() == Some(started.id.as_str()));
+        if !listed && listed_ok && started.account.name == account {
+            started.misses += 1;
+        }
+        if listed || started.misses >= JUST_STARTED_POLLS {
+            self.orchestrator.started = None;
         }
     }
 

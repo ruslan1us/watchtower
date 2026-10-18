@@ -384,7 +384,8 @@ fn help_lists_milestone_two_keys() {
         "Ctrl+S",
         "Ctrl+G",
         "Ctrl+T",
-        "Not available yet: o m / p i Tab",
+        "Not available yet: m / p i Tab",
+        "attach to the orchestrator",
     ] {
         assert!(all.contains(needle), "{needle} missing\n{all}");
     }

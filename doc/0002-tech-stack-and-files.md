@@ -28,7 +28,8 @@ expose.
 
 **Subcommands.** `tower` starts the TUI. `tower status --json` prints the merged
 session list with account and tracked times for the orchestrator
-([0010](0010-orchestrator.md)).
+([0010](0010-orchestrator.md)); without `--json` it prints a short table. It
+only reads `state.json`, never writes it.
 
 **Config:** `$XDG_CONFIG_HOME/watchtower/config.toml`, default
 `~/.config/watchtower/config.toml`. Tower only reads it. A missing file means

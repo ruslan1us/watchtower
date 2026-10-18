@@ -950,7 +950,7 @@ fn help_and_footer_offer_the_handoff() {
         "{screen}"
     );
     assert!(
-        screen.contains("Not available yet: o m / p i Tab"),
+        screen.contains("Not available yet: m / p i Tab"),
         "{screen}"
     );
     assert!(screen.contains("Ctrl+Z"), "{screen}");

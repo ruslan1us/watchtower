@@ -40,6 +40,8 @@
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
 //! - [`tui`]: the terminal runtime and event loop.
 //! - [`args`]: command-line arguments.
+//! - [`status`]: `tower status [--json]`, one merged snapshot without the
+//!   TUI (doc/0010).
 
 #[macro_use]
 mod strenum;
@@ -59,9 +61,11 @@ pub mod jobs;
 pub mod listing;
 pub mod logview;
 pub mod merge;
+pub mod orchestrator;
 pub mod paths;
 pub mod poller;
 pub mod projects;
 pub mod sidecar;
+pub mod status;
 pub mod tui;
 pub mod ui;
