@@ -118,6 +118,7 @@ fn empty_and_loading_states() {
 
     app.apply_poll(watchtower::poller::PollUpdate {
         account: "main".into(),
+        cycle: 0,
         result: Ok(watchtower::listing::parse_listing("[]").unwrap()),
     });
     let lines = render(&mut app, 100, 10);

@@ -558,3 +558,23 @@ fn record_dispatch_writes_started_owner_and_recent_project() {
     );
     assert!(!sidecar.adopt_short_id_records([&row]));
 }
+
+#[test]
+fn a_timeout_says_the_session_may_have_started() {
+    // The timed-out `claude --bg` may have registered the session before it
+    // was killed; a blind retry would start a duplicate.
+    let err = DispatchError::Cli(watchtower::cli::CliError::Timeout {
+        program: "claude".into(),
+        timeout: std::time::Duration::from_secs(30),
+        stderr: String::new(),
+    });
+    let text = err.to_string();
+    assert!(text.contains("timed out"), "{text}");
+    assert!(text.contains("may have started — check the list"), "{text}");
+
+    let spawn = DispatchError::Cli(watchtower::cli::CliError::Spawn {
+        program: "claude".into(),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    });
+    assert!(!spawn.to_string().contains("may have started"));
+}

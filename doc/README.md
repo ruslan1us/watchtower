@@ -34,6 +34,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |
 | 0015 | [Testing strategy](0015-testing-strategy.md) | Accepted |
 | 0016 | [Never change Claude Code's own behaviour](0016-do-not-change-claude-code-defaults.md) | Accepted |
+| 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

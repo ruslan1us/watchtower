@@ -138,6 +138,61 @@ fn validation_errors() {
     assert!(invalid("poll_interval_secs = 0\n").contains("poll_interval_secs"));
 }
 
+/// Two accounts, `a` and `b`, with the given `config_dir` lines (or none).
+fn two_accounts(a_dir: Option<&str>, b_dir: Option<&str>) -> String {
+    let line = |d: Option<&str>| {
+        d.map(|d| format!("config_dir = \"{d}\"\n"))
+            .unwrap_or_default()
+    };
+    format!(
+        "[[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\n{}\
+         [[accounts]]\nname = \"main\"\ncommand = \"claude\"\n{}",
+        line(a_dir),
+        line(b_dir)
+    )
+}
+
+#[test]
+fn duplicate_config_dirs_are_rejected() {
+    // S4: `alt` forgot its config_dir, so both accounts are ~/.claude and a
+    // live process could never be told apart (doc/0017).
+    let msg = invalid(&two_accounts(None, None));
+    assert!(msg.contains("`alt` and `main`"), "{msg}");
+    assert!(msg.contains("same config dir"), "{msg}");
+    assert!(msg.contains("/home/user/.claude"), "{msg}");
+
+    // Paths that do not exist compare by expanded path: `~` and a trailing
+    // slash make no difference.
+    let msg = invalid(&two_accounts(Some("/home/user/.claude/"), None));
+    assert!(msg.contains("same config dir"), "{msg}");
+    assert!(
+        invalid(&two_accounts(
+            Some("~/.claude-alt"),
+            Some("/home/user/.claude-alt")
+        ))
+        .contains("same config dir")
+    );
+
+    // Distinct dirs are fine, whether they exist or not.
+    assert!(parse(&two_accounts(Some("~/.claude-alt"), None)).is_ok());
+}
+
+#[test]
+fn symlinked_duplicate_config_dirs_are_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(home.path().join(".claude"), home.path().join("alias")).unwrap();
+    let text = two_accounts(Some("~/alias"), None);
+    match Config::parse(&text, home.path()) {
+        Err(ConfigError::Invalid(msg)) => assert!(msg.contains("same config dir"), "{msg}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    // A real, separate dir next to it is accepted.
+    std::fs::create_dir(home.path().join(".claude-alt")).unwrap();
+    let text = two_accounts(Some("~/.claude-alt"), None);
+    assert!(Config::parse(&text, home.path()).is_ok());
+}
+
 #[test]
 fn parse_errors() {
     assert!(matches!(

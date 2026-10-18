@@ -54,23 +54,44 @@ then resumes.
    are installed once, on the first attach, as conditional defaults: a flag
    makes them a no-op while attached and emulate the default action otherwise.
 
-**While attached**, tower draws nothing. It waits for the child with
-`WUNTRACED`: if `claude attach` is stopped (for example `Ctrl+Z` reaching it as
-`SIGTSTP` while it is still in cooked mode during a slow wake), tower resumes it
-with `SIGCONT` instead of hanging on a stopped child; tower does no job control.
+**While attached**, tower draws nothing. The child stays in tower's own
+process group, the terminal's foreground group, so it reads the terminal and
+gets the terminal's signals itself. Tower waits for it with `WUNTRACED`: if
+`claude attach` is stopped (for example `Ctrl+Z` reaching it as `SIGTSTP` while
+it is still in cooked mode during a slow wake), tower sends `SIGCONT` to the
+child's whole process group instead of hanging on a stopped child. `Ctrl+Z`
+stops every process in the group, so an account command that is a wrapper
+script (one that does not `exec`) would otherwise wait forever on the real
+`claude` behind it. Tower does no job control.
 The poller may keep running so that transitions of other sessions are recorded
 and their highlights are visible on return
 ([0007](0007-visual-only-attention.md)). Every background command tower runs
 uses `stdin` = null and piped stdout/stderr, so nothing it spawns can write to,
-or read from, the terminal the attached session owns.
+or read from, the terminal the attached session owns. Each one also runs in a
+process group of its own ([0001](0001-thin-wrapper-over-claude-cli.md)), so
+`Ctrl+C` or `Ctrl+Z` typed into the attached session never reaches an
+in-flight poll, `stop`, `rm`, dispatch or hand-off.
+
+**Terminal settings.** Tower saves the terminal settings (`tcgetattr`) once,
+before it first enters raw mode, and puts them back (`tcsetattr`) right after
+every foreground child has been reaped and on exit. Crossterm saves whatever
+settings are current each time it enters raw mode, which after a hand-over can
+be the raw settings of a child that died; without tower's own copy, such a
+child would leave the user's shell in raw mode after tower exits. After a
+non-zero exit or a death by a signal, tower also writes
+`ESC[?1000l ESC[?1002l ESC[?1003l ESC[?1006l ESC[?2004l ESC[<u` (mouse
+tracking, bracketed paste and one level of keyboard enhancement off) before
+the prompt below, unless the terminal is gone.
 
 **After the child exits** with a non-zero code or by a signal, tower first
 prints `tower: attach exited with code N. Press any key to return to tower.` and
 waits for a key, so Claude Code's error text (stderr stays inherited, see open
-items) is readable before the alternate screen hides it. Then tower restores its
-handlers, re-enters the alternate screen and raw mode, re-applies the modes from
-step 2, clears, re-reads the terminal size, redraws and forces an immediate
-poll.
+items) is readable before the alternate screen hides it. Then tower re-enters
+the alternate screen and raw mode, re-applies the modes from step 2, clears,
+re-reads the terminal size, redraws and forces an immediate poll. The no-op
+handlers from step 6 stay in place until raw mode is back: until then the
+terminal is in cooked mode, and a second `Ctrl+C` typed during a slow wake
+would otherwise kill tower once the child has gone.
 
 **Detach keys.** `Ctrl+Z` is the documented way back to tower and is shown as a
 footer hint ("in a session: Ctrl+Z returns to tower"). `←` then `Esc` also works
@@ -96,6 +117,21 @@ terminal, so tower forwards nothing and keeps waiting: the signal takes effect
 only after `claude attach` exits (on an SSH hang-up the child loses the terminal
 too and gets its own `SIGHUP`). Tower then skips the key pause and the redraw
 and exits. The session is never stopped.
+
+**A terminal that is gone.** The `SIGHUP` may never come: when a tmux server
+or SSH connection goes away, only the session leader is sure to get it. The
+terminal's input then reports EOF, an error or `POLLHUP`, and crossterm's
+reader retries such a read forever without sleeping (tower at full CPU,
+ignoring `SIGTERM`). So tower waits for input with its own `poll(2)` and only
+calls crossterm when input is ready; any input EOF, error or hang-up, and a
+failed draw on a hung-up terminal, count as `SIGHUP`: tower ends the loop and
+exits with 129, writing nothing to the terminal. Every loop that waits for
+input (the event loop, the key pause) waits at most one tick at a time and
+checks the termination flag on every turn; none spins without a blocking wait
+or a sleep. As a last resort against the instant between `poll` and
+crossterm's read, a watchdog thread ends tower with 129 when it finds the
+main thread inside crossterm's input code on a hung-up terminal twice, a
+second apart.
 
 The same procedure is used by dispatch-and-attach in the new-session dialog
 ([0008](0008-new-session-dialog.md)) and by the orchestrator key

@@ -193,6 +193,7 @@ impl Config {
         if accounts.is_empty() {
             accounts.push(Account::new("main", "claude", None, home)?);
         }
+        check_distinct_config_dirs(&accounts)?;
         let default_account = raw
             .default_account
             .unwrap_or_else(|| accounts[0].name.clone());
@@ -240,4 +241,34 @@ impl Config {
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.poll_interval_secs)
     }
+}
+
+/// The path used to compare config dirs: symlinks resolved when the path
+/// exists, otherwise the `~`-expanded path as given (doc/0017).
+pub fn comparable_dir(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.components().collect())
+}
+
+/// Two accounts whose config dirs are the same directory cannot be told
+/// apart by `/proc` (doc/0003 rule 1): every session of one would be
+/// attributed to the other. Such a config is rejected (doc/0017).
+fn check_distinct_config_dirs(accounts: &[Account]) -> Result<(), ConfigError> {
+    let dirs: Vec<PathBuf> = accounts
+        .iter()
+        .map(|a| comparable_dir(&a.config_dir))
+        .collect();
+    for (i, a) in accounts.iter().enumerate() {
+        if let Some(j) = (0..i).find(|&j| dirs[j] == dirs[i]) {
+            let b = &accounts[j];
+            return Err(ConfigError::Invalid(format!(
+                "accounts `{}` and `{}` use the same config dir {} (config_dir defaults to \
+                 {DEFAULT_CLAUDE_CONFIG_DIR}); tower could not tell their sessions apart — give \
+                 each account its own config_dir",
+                b.name,
+                a.name,
+                dirs[i].display()
+            )));
+        }
+    }
+    Ok(())
 }

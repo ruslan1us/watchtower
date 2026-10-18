@@ -44,10 +44,27 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   the same account is still running, so calls never pile up. `attach` is the
   only call that runs in the foreground, because it takes over the terminal
   ([0005](0005-attach-and-detach.md)).
+- **Background calls in their own process group.** Every captured-output call
+  (polls, `stop`, `rm`, `logs`, dispatch, hand-off resume) runs in a new
+  process group, outside tower's foreground group, so `Ctrl+C` or `Ctrl+Z`
+  typed into an attached session or the editor cannot kill or stop it. On a
+  timeout tower kills the whole group with `SIGKILL` and then reaps the child,
+  so a wrapper's own children (the real `claude` behind a script) die with
+  it. A timed-out dispatch may still have started its session, so the error
+  says to check the list and tower polls at once. Foreground commands with
+  inherited stdio (attach, the trust flow, the editor) stay in tower's group.
+- **Output caps.** Each call keeps at most the last 4 MiB of stdout and of
+  stderr; older bytes are dropped. Once the result is taken, the pipes are
+  still drained (a supervisor that inherited them never blocks on a full
+  pipe) but the data is discarded.
 - **One exception.** For a running session, tower reads `/proc/<pid>/environ`
   of the listed `pid` to find its `CLAUDE_CONFIG_DIR`, and so its account. This
   is process information from the operating system, not a Claude Code file. It
   is the only thing tower reads outside the CLI and its own files.
+  [0017](0017-ownership-evidence-rules.md) widens it: tower also reads
+  `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and field 22 of `/proc/<pid>/stat`
+  (no `btime`), to check that the process is the listed session's and not a
+  reused pid.
 
 Tower has no PTY handling, no process supervision, no tmux, no Agent SDK and no
 direct API calls. It does not read, write or refresh credentials.

@@ -197,6 +197,7 @@ command = "claude"
 [[accounts]]
 name = "alt"
 command = "claude-alt"
+config_dir = "~/.claude-alt"
 "#,
         home,
     )

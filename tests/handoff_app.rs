@@ -44,8 +44,9 @@ fn app_two_owned() -> App {
     app
 }
 
-/// [`app_two_owned`] with `pid` → `CLAUDE_CONFIG_DIR` for some processes.
-fn app_two_environ(pids: &[(u32, &str)]) -> App {
+/// [`app_two_owned`] with `pid` → (`CLAUDE_CONFIG_DIR`, raw start ticks)
+/// for some Claude Code processes.
+fn app_two_environ(pids: &[(u32, &str, u64)]) -> App {
     let home = Path::new(HOME);
     let config = Config::parse(
         r#"
@@ -60,7 +61,11 @@ config_dir = "~/.claude-alt"
         home,
     )
     .unwrap();
-    let environ = Environ(pids.iter().map(|(p, d)| (*p, OsString::from(d))).collect());
+    let environ = Environ(
+        pids.iter()
+            .map(|(p, d, start)| (*p, (OsString::from(d), *start)))
+            .collect(),
+    );
     let mut app = App::new(config, home.into(), owned_by_main(), Box::new(environ));
     poll_both(&mut app, "after-stop-all.json");
     app
@@ -193,6 +198,7 @@ fn interactive_rows_and_rows_without_session_id_are_refused() {
     for a in ["main", "alt"] {
         app.apply_poll(PollUpdate {
             account: a.into(),
+            cycle: 0,
             result: Ok(parse_listing(rows).unwrap()),
         });
     }
@@ -466,7 +472,7 @@ fn an_idle_wake_is_a_warning() {
 #[test]
 fn a_copy_warns_and_is_recorded_under_its_own_session_id_on_the_next_poll() {
     // The copy runs under alt (pid 5001); every other pid is unreadable.
-    let mut app = app_two_environ(&[(5001, "/home/user/.claude-alt")]);
+    let mut app = app_two_environ(&[(5001, "/home/user/.claude-alt", 900_000)]);
     select(&mut app, "say-ok");
     let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
     let copy = Resumed {
@@ -508,6 +514,7 @@ fn a_copy_warns_and_is_recorded_under_its_own_session_id_on_the_next_poll() {
     for a in ["main", "alt"] {
         effects.extend(app.apply_poll(PollUpdate {
             account: a.into(),
+            cycle: 0,
             result: Ok(rows.clone()),
         }));
     }
@@ -635,24 +642,49 @@ fn a_trust_flow_that_cannot_run_shows_why() {
 
 // ---- ownership agrees after the wake ---------------------------------------
 
-/// `pid` → `CLAUDE_CONFIG_DIR`; other pids are unreadable.
-struct Environ(HashMap<u32, OsString>);
+/// `pid` → `CLAUDE_CONFIG_DIR` and raw start ticks of a Claude Code
+/// process; other pids are unreadable.
+struct Environ(HashMap<u32, (OsString, u64)>);
+
+fn unreadable() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::NotFound)
+}
 
 impl EnvironReader for Environ {
     fn config_dir_var(&self, pid: u32) -> std::io::Result<Option<OsString>> {
         self.0
             .get(&pid)
-            .cloned()
-            .map(Some)
+            .map(|(dir, _)| Some(dir.clone()))
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+    }
+
+    fn cmdline(&self, pid: u32) -> std::io::Result<Vec<u8>> {
+        self.0
+            .get(&pid)
+            .map(|_| b"claude\0--bg\0".to_vec())
+            .ok_or_else(unreadable)
+    }
+
+    fn exe(&self, pid: u32) -> std::io::Result<std::path::PathBuf> {
+        self.0
+            .get(&pid)
+            .map(|_| "/home/user/.local/share/claude/versions/1.0.0".into())
+            .ok_or_else(unreadable)
+    }
+
+    fn start_ticks(&self, pid: u32) -> std::io::Result<u64> {
+        self.0
+            .get(&pid)
+            .map(|(_, ticks)| *ticks)
+            .ok_or_else(unreadable)
     }
 }
 
 #[test]
 fn proc_detection_after_the_wake_agrees_with_the_handoff() {
-    // The woken process (pid 5000) runs under alt's config dir. The old
-    // process (4290) is gone: unreadable.
-    let mut app = app_two_environ(&[(5000, "/home/user/.claude-alt")]);
+    // The woken process (pid 5000) is Claude Code under alt's config dir.
+    // The old process (4290) is gone: unreadable.
+    let mut app = app_two_environ(&[(5000, "/home/user/.claude-alt", 815_195)]);
     select(&mut app, "print-date");
     assert_eq!(owner_of(&app, PRINT_DATE).account(), Some("main"));
     let job = handoff_of(&app.handle_key(ch('a'))).unwrap();
@@ -669,6 +701,7 @@ fn proc_detection_after_the_wake_agrees_with_the_handoff() {
     for a in ["main", "alt"] {
         effects.extend(app.apply_poll(PollUpdate {
             account: a.into(),
+            cycle: 0,
             result: Ok(parse_listing(&woke).unwrap()),
         }));
     }

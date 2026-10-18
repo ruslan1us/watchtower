@@ -10,18 +10,28 @@
 //! (a panic hook) and on SIGTERM or SIGHUP: their handlers only set a flag
 //! ([`attach::Termination`]), and the event loop checks it every tick and
 //! ends, so tower exits with 128 + signal. After SIGHUP the terminal may be
-//! gone, so only raw mode is turned off and no escape sequences are written.
-//! During an attach the flag waits until the child has exited (doc/0005).
+//! gone, so only the terminal settings are put back and no escape sequences
+//! are written. A terminal whose input reaches EOF, fails or hangs up counts
+//! as SIGHUP, whether or not the signal arrives ([`wait_input`]); every loop
+//! that waits for input checks the flag on each turn. During an attach the
+//! flag waits until the child has exited (doc/0005).
+//!
+//! The terminal settings from before the first raw mode are saved once and
+//! put back after every foreground child and on exit, so a child that died
+//! in raw mode cannot leave the user's shell in it.
 //! Tower never writes BEL or OSC notifications (doc/0007). It enables no
 //! mouse capture or bracketed paste; where the terminal supports the
 //! keyboard-enhancement protocol it pushes `DISAMBIGUATE_ESCAPE_CODES`, so
 //! `Ctrl+Enter` is reported distinctly in the new-session dialog (doc/0011),
 //! and pops it again before every hand-over and on exit.
 
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Stdout, Write};
+use std::os::fd::RawFd;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
@@ -39,9 +49,10 @@ use ratatui::crossterm::terminal::{
 
 use crate::app::{App, Effect, Severity};
 use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
-use crate::cli::CliRunner;
+use crate::cli::{CliError, CliRunner};
 use crate::config::Config;
-use crate::jobs::Jobs;
+use crate::dispatch::DispatchError;
+use crate::jobs::{JobResult, Jobs};
 use crate::merge::ProcEnviron;
 use crate::paths::{self, Dirs};
 use crate::poller::Poller;
@@ -79,6 +90,205 @@ fn pop_enhancement() -> bool {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
     was
+}
+
+/// The file descriptor crossterm reads input from: stdin, which [`run`]
+/// requires to be a terminal.
+const INPUT_FD: RawFd = libc::STDIN_FILENO;
+
+/// What [`wait_input`] saw on an input descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    /// Input is waiting to be read.
+    Ready,
+    /// Nothing arrived within the timeout, or a signal interrupted the
+    /// wait (so the caller checks the termination flag at once).
+    Idle,
+    /// The terminal is gone: hang-up, error, closed or invalid descriptor,
+    /// or a failed `poll`.
+    HangUp,
+}
+
+/// Waits up to `timeout` for input on `fd` with `poll(2)`, without reading.
+///
+/// This exists because crossterm's reader retries forever, without
+/// sleeping, when a read returns EOF or an error, which is what a terminal
+/// does once it has hung up (e.g. its tmux server or SSH connection is
+/// gone): tower would spin at full CPU and never see a SIGTERM. Tower
+/// therefore only calls crossterm once `poll` says input is ready, and treats
+/// `POLLHUP`, `POLLERR` and `POLLNVAL` as a hang-up (doc/0005).
+pub fn wait_input(fd: RawFd, timeout: Duration) -> Input {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: one valid, initialised pollfd that outlives the call.
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    if rc < 0 {
+        return if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            Input::Idle
+        } else {
+            Input::HangUp
+        };
+    }
+    if rc == 0 {
+        Input::Idle
+    } else if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        Input::HangUp
+    } else if pfd.revents & libc::POLLIN != 0 {
+        Input::Ready
+    } else {
+        Input::Idle
+    }
+}
+
+/// The terminal's input is gone (EOF, an error or a hang-up). Tower then
+/// ends as after SIGHUP: no more writes to the terminal, exit 129.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HungUp;
+
+/// Turns one input wait into events, or into a hang-up recorded on
+/// `termination` as SIGHUP (doc/0005): `None` means the caller must stop
+/// waiting and let tower exit. Every input-waiting loop goes through this,
+/// and checks `termination` on each turn.
+pub fn take_input(
+    termination: &Termination,
+    waited: Result<Vec<Event>, HungUp>,
+) -> Option<Vec<Event>> {
+    match waited {
+        Ok(events) => Some(events),
+        Err(HungUp) => {
+            termination.request(signal_hook::consts::SIGHUP);
+            None
+        }
+    }
+}
+
+/// Waits for a key press, a pending termination or a hang-up. `next` waits
+/// up to the given time for input events (the real one is [`next_events`]),
+/// so a SIGTERM or SIGHUP is seen within one [`TICK`]. A hang-up is recorded
+/// on `termination` and returned as `Err`.
+pub fn wait_key(
+    termination: &Termination,
+    mut next: impl FnMut(Duration) -> Result<Vec<Event>, HungUp>,
+) -> Result<(), HungUp> {
+    while termination.pending().is_none() {
+        let events = take_input(termination, next(TICK)).ok_or(HungUp)?;
+        if events
+            .iter()
+            .any(|e| matches!(e, Event::Key(key) if key.kind == KeyEventKind::Press))
+        {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Set while the main thread is inside crossterm's input code (see
+/// [`start_hangup_watchdog`]).
+static IN_CROSSTERM_INPUT: AtomicBool = AtomicBool::new(false);
+
+/// Runs `f`, a call into crossterm's input code, marked for the watchdog.
+fn in_crossterm_input<T>(f: impl FnOnce() -> T) -> T {
+    IN_CROSSTERM_INPUT.store(true, Ordering::SeqCst);
+    let out = f();
+    IN_CROSSTERM_INPUT.store(false, Ordering::SeqCst);
+    out
+}
+
+/// Waits up to `timeout` for input and returns the events it carries: none
+/// on a timeout or a signal, `Err` once the terminal is gone. crossterm is
+/// only called when `poll` says input is ready ([`wait_input`]), and then
+/// only with a zero timeout, to read that input and any events it has
+/// already parsed.
+fn next_events(timeout: Duration) -> Result<Vec<Event>, HungUp> {
+    match wait_input(INPUT_FD, timeout) {
+        Input::HangUp => Err(HungUp),
+        Input::Idle => Ok(Vec::new()),
+        Input::Ready => in_crossterm_input(|| {
+            let mut events = Vec::new();
+            while event::poll(Duration::ZERO).map_err(|_| HungUp)? {
+                events.push(event::read().map_err(|_| HungUp)?);
+            }
+            Ok(events)
+        }),
+    }
+}
+
+/// A last resort against crossterm's spinning reader ([`wait_input`]): the
+/// terminal could hang up in the instant between `poll` saying input is
+/// ready and crossterm reading it. A thread checks once a second; if the
+/// main thread is inside crossterm's input code and the terminal has hung
+/// up, twice in a row, tower exits at once with the SIGHUP status (129),
+/// writing nothing. The main thread is then only reading input, so no
+/// sidecar write is cut short. Normally the hang-up is seen before crossterm
+/// is called and this never fires.
+fn start_hangup_watchdog() {
+    let _ = thread::Builder::new()
+        .name("hangup-watchdog".into())
+        .spawn(|| {
+            let mut strikes = 0;
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                let stuck = IN_CROSSTERM_INPUT.load(Ordering::SeqCst)
+                    && wait_input(INPUT_FD, Duration::ZERO) == Input::HangUp;
+                strikes = if stuck { strikes + 1 } else { 0 };
+                if strikes >= 2 {
+                    let status = attach::signal_exit_status(signal_hook::consts::SIGHUP);
+                    // SAFETY: ends the process without running any more
+                    // Rust code; nothing is left in an inconsistent state.
+                    unsafe { libc::_exit(i32::from(status)) };
+                }
+            }
+        });
+}
+
+/// Whether the terminal is gone: SIGHUP is pending or the input has hung up.
+fn terminal_gone(termination: &Termination) -> bool {
+    termination.pending() == Some(signal_hook::consts::SIGHUP)
+        || wait_input(INPUT_FD, Duration::ZERO) == Input::HangUp
+}
+
+/// The terminal settings tower started with, saved once before it first
+/// enters raw mode ([`save_original_termios`]).
+static ORIGINAL_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
+
+/// Saves the current terminal settings as the ones to put back. Only the
+/// first call counts: crossterm's own `enable_raw_mode` saves whatever is
+/// current each time, which after a hand-over can be the raw settings of a
+/// child that died, so tower keeps its own copy (doc/0005).
+fn save_original_termios() {
+    // SAFETY: termios is plain data; tcgetattr fills it on success.
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(INPUT_FD, &mut saved) } == 0 {
+        let _ = ORIGINAL_TERMIOS.set(saved);
+    }
+}
+
+/// Puts back the settings saved by [`save_original_termios`], if any. An
+/// `ioctl`, not a write: safe on a terminal that is gone.
+fn restore_original_termios() {
+    if let Some(saved) = ORIGINAL_TERMIOS.get() {
+        // SAFETY: plain syscall with a valid termios.
+        unsafe { libc::tcsetattr(INPUT_FD, libc::TCSANOW, saved) };
+    }
+}
+
+/// Switches off what a child that died abnormally may have left on: mouse
+/// tracking (normal, button, any-motion, SGR), bracketed paste, and one
+/// level of keyboard enhancement.
+pub const MODE_RESETS: &str = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u";
+
+/// Whether a finished background job calls for an immediate poll on top of
+/// what the app asks for: a dispatch that timed out may have started its
+/// session anyway, so the list is refreshed at once (doc/0008).
+pub fn polls_after(done: &JobResult) -> bool {
+    matches!(
+        done,
+        JobResult::Dispatch(_, Err(DispatchError::Cli(CliError::Timeout { .. })))
+    )
 }
 
 /// How the TUI ended.
@@ -141,6 +351,8 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     });
 
     install_panic_hook();
+    save_original_termios();
+    start_hangup_watchdog();
     let mut restore = RestoreGuard { write: true };
     let (mut terminal, enhanced) = enter()?;
     app.keyboard_enhanced = enhanced;
@@ -158,11 +370,16 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
         state_file: &state_file,
         termination: &termination,
         enhanced,
+        pending: VecDeque::new(),
     };
     let result = event_loop(&mut rt, &mut app);
     let exit = exit_for(result, termination.pending());
     if let Ok(exit) = exit {
         restore.write = exit.may_write_to_terminal();
+    }
+    if !restore.write {
+        // Dropping the ratatui terminal would write "show cursor".
+        std::mem::forget(terminal);
     }
     exit
 }
@@ -177,6 +394,8 @@ struct Runtime<'a> {
     /// Whether the terminal supports keyboard enhancement (re-pushed after
     /// every hand-over).
     enhanced: bool,
+    /// Events read but not handled yet (one read can carry several keys).
+    pending: VecDeque<Event>,
 }
 
 impl Runtime<'_> {
@@ -185,33 +404,54 @@ impl Runtime<'_> {
             terminal: self.terminal,
             termination: self.termination,
             enhanced: self.enhanced,
+            pending: &mut self.pending,
         }
     }
 }
 
 /// Runs until the user quits or `termination` is pending; the flag is checked
-/// before every draw, so tower stops within one [`TICK`].
+/// before every draw, so tower stops within one [`TICK`]. When the terminal
+/// is gone (input EOF, error or hang-up, or a failed draw on a hung-up
+/// terminal) a SIGHUP is recorded and the loop ends, so tower exits as after
+/// SIGHUP, writing nothing more (doc/0005).
 fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
     loop {
         if rt.termination.pending().is_some() {
             return Ok(());
         }
-        rt.terminal
-            .draw(|frame| crate::ui::draw(frame, app, Instant::now()))?;
-        let mut effects = Vec::new();
-        if event::poll(TICK)? {
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    effects.extend(app.handle_key(key));
-                }
-                // Resize: the next draw picks up the new size.
-                _ => {}
+        if let Err(err) = rt
+            .terminal
+            .draw(|frame| crate::ui::draw(frame, app, Instant::now()))
+        {
+            if terminal_gone(rt.termination) {
+                rt.termination.request(signal_hook::consts::SIGHUP);
+                return Ok(());
             }
+            return Err(err);
+        }
+        let mut effects = Vec::new();
+        // One event per turn, as before: effects (e.g. an attach, whose
+        // release drops the queue) run before the next key is handled.
+        if rt.pending.is_empty() {
+            let Some(events) = take_input(rt.termination, next_events(TICK)) else {
+                return Ok(());
+            };
+            rt.pending.extend(events);
+        }
+        match rt.pending.pop_front() {
+            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
+                effects.extend(app.handle_key(key));
+            }
+            // Resize: the next draw picks up the new size.
+            _ => {}
         }
         while let Some(update) = rt.poller.try_recv() {
             effects.extend(app.apply_poll(update));
         }
         while let Some(done) = rt.jobs.try_recv() {
+            if polls_after(&done) {
+                effects.push(Effect::PollNow);
+            }
             effects.extend(done.apply(app));
         }
         if !run_effects(rt, app, effects)? {
@@ -332,24 +572,28 @@ fn run_trust(
 fn enter() -> io::Result<(Term, bool)> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, Hide)?;
-    let supported = supports_keyboard_enhancement().unwrap_or(false);
+    // The support query reads the terminal's answer through crossterm.
+    let supported = in_crossterm_input(|| supports_keyboard_enhancement().unwrap_or(false));
     push_enhancement(supported);
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
     Ok((terminal, supported))
 }
 
-/// Undoes [`enter`]; safe to call more than once and in any state.
+/// Undoes [`enter`]; safe to call more than once and in any state. The
+/// terminal settings go back to those saved at startup, not to whatever
+/// crossterm saved last (doc/0005).
 pub fn restore_terminal() {
     pop_enhancement();
     let _ = disable_raw_mode();
+    restore_original_termios();
     let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
     let _ = io::stdout().flush();
 }
 
 /// Restores the terminal when dropped (normal exit, signal or `?` error).
-/// With `write` false (after SIGHUP) it only turns raw mode off, which is a
-/// `tcsetattr` call and writes nothing.
+/// With `write` false (after SIGHUP or a hang-up) it only puts the terminal
+/// settings back, which is a `tcsetattr` call and writes nothing.
 struct RestoreGuard {
     write: bool,
 }
@@ -360,6 +604,7 @@ impl Drop for RestoreGuard {
             restore_terminal();
         } else {
             let _ = disable_raw_mode();
+            restore_original_termios();
         }
     }
 }
@@ -373,10 +618,13 @@ fn install_panic_hook() {
 }
 
 /// Discards input events that arrived before the attach, so no buffered key
-/// reaches the child (doc/0005 step 4).
-fn drain_events() {
-    while let Ok(true) = event::poll(Duration::ZERO) {
-        if event::read().is_err() {
+/// reaches the child (doc/0005 step 4): the queue of read events and
+/// whatever input is waiting. Stops at the first turn that reads nothing,
+/// and at a hang-up.
+fn drain_events(pending: &mut VecDeque<Event>) {
+    pending.clear();
+    while let Ok(events) = next_events(Duration::ZERO) {
+        if events.is_empty() {
             break;
         }
     }
@@ -388,6 +636,8 @@ struct TermHandover<'a> {
     termination: &'a Termination,
     /// Re-push keyboard enhancement on reclaim.
     enhanced: bool,
+    /// The event loop's queue of read events, dropped on release.
+    pending: &'a mut VecDeque<Event>,
 }
 
 impl Handover for TermHandover<'_> {
@@ -395,13 +645,25 @@ impl Handover for TermHandover<'_> {
         // Step 1: the event loop is paused simply because this thread is
         // here; no other thread reads stdin. Step 2: pop keyboard
         // enhancement (no mouse capture or bracketed paste is enabled).
-        drain_events();
+        drain_events(self.pending);
         pop_enhancement();
         execute!(io::stdout(), Show, LeaveAlternateScreen)?;
         disable_raw_mode()?;
         io::stdout().flush()?;
-        drain_events();
+        drain_events(self.pending);
         Ok(())
+    }
+
+    fn child_exited(&mut self, failed: bool) {
+        // The settings from before tower started, not crossterm's last
+        // saved copy, so a child that died in raw mode leaves nothing
+        // behind; crossterm's next enable_raw_mode then saves these.
+        restore_original_termios();
+        if failed && !terminal_gone(self.termination) {
+            let mut out = io::stdout();
+            let _ = out.write_all(MODE_RESETS.as_bytes());
+            let _ = out.flush();
+        }
     }
 
     fn announce(&mut self, line: &str) -> io::Result<()> {
@@ -415,17 +677,11 @@ impl Handover for TermHandover<'_> {
         writeln!(out, "{prompt}")?;
         out.flush()?;
         enable_raw_mode()?;
-        drain_events();
-        // Polled, not a blocking read, so a SIGTERM/SIGHUP ends the wait.
-        while self.termination.pending().is_none() {
-            if event::poll(TICK)?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                return Ok(());
-            }
-        }
-        Ok(())
+        drain_events(self.pending);
+        // Polled, not a blocking read, so a SIGTERM/SIGHUP ends the wait; a
+        // hang-up is recorded as SIGHUP and ends it too.
+        wait_key(self.termination, next_events)
+            .map_err(|HungUp| io::Error::other("the terminal is gone"))
     }
 
     fn reclaim(&mut self) -> io::Result<()> {

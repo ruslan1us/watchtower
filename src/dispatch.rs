@@ -323,8 +323,10 @@ pub enum DispatchError {
     /// The request failed [`DispatchRequest::validate`]; nothing was run.
     #[error(transparent)]
     Invalid(#[from] ValidationError),
-    /// The command could not be run or timed out.
-    #[error(transparent)]
+    /// The command could not be run or timed out. A timeout says that the
+    /// session may have started anyway: `claude --bg` may have registered it
+    /// before it was killed, so retrying blindly could start a duplicate.
+    #[error("{}", cli_message(.0))]
     Cli(#[from] CliError),
     /// The account has not trusted the folder (exit 1, `Workspace not
     /// trusted…`). Offer [`trust_command`] for `dir`, then retry.
@@ -351,6 +353,16 @@ pub enum DispatchError {
         /// stderr, trimmed.
         stderr: String,
     },
+}
+
+/// The text of [`DispatchError::Cli`].
+fn cli_message(err: &CliError) -> String {
+    match err {
+        CliError::Timeout { .. } => {
+            format!("{err}; the session may have started — check the list before retrying")
+        }
+        other => other.to_string(),
+    }
 }
 
 /// The stderr prefix of the untrusted-folder failure (reference doc).

@@ -1,7 +1,8 @@
 //! Handing the terminal to `<account command> attach <id>` and taking it back
 //! (doc/0005). The same procedure ([`run_foreground`]) runs the editor for
 //! the task field and the interactive trust flow of the new-session dialog
-//! (doc/0008).
+//! (doc/0008). These foreground children stay in tower's own process group;
+//! background CLI calls each get a group of their own (`cli`).
 //!
 //! The procedure is written against two small traits so it can be tested
 //! without a TTY: [`Handover`] releases and reclaims the terminal (the real
@@ -23,6 +24,15 @@ pub trait Handover {
     fn release(&mut self) -> io::Result<()>;
     /// Prints one plain line on the normal screen.
     fn announce(&mut self, line: &str) -> io::Result<()>;
+    /// Called once the foreground child has been reaped, before any key
+    /// pause: puts back the terminal settings saved when tower started, which
+    /// a child that died abnormally may have left in raw mode, and after a
+    /// failure (`failed`: non-zero exit or a signal) also switches off the
+    /// mouse, paste and keyboard modes it may have left on, unless the
+    /// terminal is gone (doc/0005). The default does nothing.
+    fn child_exited(&mut self, failed: bool) {
+        let _ = failed;
+    }
     /// Shows `prompt` and waits for any key, so an error printed by the
     /// child stays readable before tower redraws.
     fn wait_for_key(&mut self, prompt: &str) -> io::Result<()>;
@@ -39,6 +49,9 @@ pub trait Spawner {
 
 /// Runs the child with inherited stdin/stdout/stderr and waits for it.
 ///
+/// The child stays in tower's own (foreground) process group, so it can read
+/// the terminal and gets the terminal's signals itself.
+///
 /// If the child is stopped by a job-control signal (e.g. `Ctrl+Z` reaching it
 /// as SIGTSTP while `claude attach` is still in cooked mode during a slow
 /// wake), it is resumed with SIGCONT: tower does no job control, and a plain
@@ -53,8 +66,13 @@ impl Spawner for InheritSpawner {
     }
 }
 
-/// Waits for `pid` to exit, sending SIGCONT whenever it is stopped.
-fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
+/// Waits for `pid` (a child of tower) to exit. Whenever it is stopped, the
+/// whole process group of the child gets SIGCONT, not just the child: `Ctrl+Z`
+/// stops every process in the foreground group, and an account command that
+/// is a wrapper (a script that does not `exec`) would otherwise wait forever
+/// on a real `claude` that stays stopped (doc/0005). For a child in tower's
+/// own group that includes tower, which is harmless.
+pub fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     let pid = libc::pid_t::try_from(pid).map_err(io::Error::other)?;
     loop {
@@ -69,8 +87,15 @@ fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
             return Err(err);
         }
         if libc::WIFSTOPPED(status) {
-            // SAFETY: signalling our own (stopped, not yet reaped) child.
-            unsafe { libc::kill(pid, libc::SIGCONT) };
+            // SAFETY: plain syscalls on our own (stopped, not yet reaped)
+            // child and its process group; the pid cannot be reused yet.
+            unsafe {
+                let pgid = libc::getpgid(pid);
+                if pgid > 0 {
+                    libc::kill(-pgid, libc::SIGCONT);
+                }
+                libc::kill(pid, libc::SIGCONT);
+            }
             continue;
         }
         return Ok(ExitStatus::from_raw(status));
@@ -103,8 +128,9 @@ pub struct Foreground<'a> {
 
 /// Runs `fg` in the foreground: release the terminal, announce, run the
 /// child with inherited stdio and no-op handlers for SIGINT, SIGQUIT and
-/// SIGTSTP in place, then reclaim the terminal (doc/0005). Returns the exit
-/// code (`None` for a signal) or a message when it could not run.
+/// SIGTSTP in place, put back the saved terminal settings, then reclaim the
+/// terminal; the handlers stay until the reclaim is done (doc/0005). Returns
+/// the exit code (`None` for a signal) or a message when it could not run.
 ///
 /// A SIGTERM or SIGHUP that arrives while the child runs is not forwarded:
 /// the child owns the terminal and keeps running until it exits on its own.
@@ -124,15 +150,19 @@ pub fn run_foreground(
         let _ = handover.announce(line);
     }
 
-    let status = {
-        // A failure to install the handlers is not a reason to refuse to
-        // run; tower is then merely as exposed as without them.
-        let _guard = SignalGuard::install().ok();
-        spawner.run(fg.line.to_command())
-    };
+    // A failure to install the handlers is not a reason to refuse to run;
+    // tower is then merely as exposed as without them. The guard stays alive
+    // until raw mode is back (after the key pause and the reclaim): until
+    // then the terminal is in cooked mode, and a second `Ctrl+C` typed during
+    // a slow wake would otherwise kill tower once the child has exited.
+    let guard = SignalGuard::install().ok();
+    let status = spawner.run(fg.line.to_command());
 
     let result = match status {
-        Ok(status) => Ok(status.code()),
+        Ok(status) => {
+            handover.child_exited(!status.success());
+            Ok(status.code())
+        }
         Err(err) => Err(format!("cannot run `{}`: {err}", fg.line.program)),
     };
     let ending = || termination.pending().is_some();
@@ -156,7 +186,9 @@ pub fn run_foreground(
         // Tower is about to exit and the terminal is already released.
         return result;
     }
-    if let Err(err) = handover.reclaim() {
+    let reclaimed = handover.reclaim();
+    drop(guard);
+    if let Err(err) = reclaimed {
         return Err(format!("cannot restore the terminal: {err}"));
     }
     result

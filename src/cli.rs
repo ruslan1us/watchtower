@@ -5,6 +5,13 @@
 //! any call may first start a supervisor (doc/0001). The calls block; the UI
 //! runs them on worker threads.
 //!
+//! Each background call runs in a process group of its own, outside tower's
+//! foreground group, so `Ctrl+C` or `Ctrl+Z` typed into an attached session or
+//! the editor never reaches an in-flight poll, `stop`, `rm`, dispatch or
+//! hand-off. On a timeout the whole group is killed, so a wrapper's own
+//! children (e.g. the real `claude` behind a script) die with it. The output
+//! kept from each pipe is capped ([`OUTPUT_CAP`]).
+//!
 //! `attach` is the exception: it takes over the terminal, so this module only
 //! builds its command line ([`attach_command`]) and the caller runs it with
 //! inherited stdio. The same goes for the interactive trust flow of doc/0008
@@ -32,6 +39,11 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the pipes to close after the child has exited.
 const EOF_GRACE: Duration = Duration::from_millis(500);
+
+/// The most output kept from one pipe of a background call. Beyond it the
+/// oldest bytes are dropped, so the last [`OUTPUT_CAP`] bytes remain (for
+/// `logs`, the end of the stream is what the screen shows).
+pub const OUTPUT_CAP: usize = 4 * 1024 * 1024;
 
 /// A program plus arguments, ready to turn into a [`Command`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,12 +228,14 @@ impl CliRunner {
     }
 
     /// Runs a prepared command line with stdin null and captured output, in
-    /// [`CommandLine::cwd`] when set.
+    /// [`CommandLine::cwd`] when set, in a new process group of its own.
     pub fn run_line(&self, line: &CommandLine) -> Result<CliOutput, CliError> {
+        use std::os::unix::process::CommandExt;
         let mut cmd = line.to_command();
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .process_group(0);
         if let Some(path) = &self.path {
             cmd.env("PATH", path);
         }
@@ -237,7 +251,7 @@ impl CliRunner {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
+                    kill_group(&mut child);
                     let _ = child.wait();
                     return Err(CliError::Timeout {
                         program: line.program.clone(),
@@ -247,7 +261,7 @@ impl CliRunner {
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 Err(source) => {
-                    let _ = child.kill();
+                    kill_group(&mut child);
                     let _ = child.wait();
                     return Err(CliError::Wait {
                         program: line.program.clone(),
@@ -300,39 +314,91 @@ pub enum ListError {
     Parse(#[from] listing::ParseError),
 }
 
+/// Kills the process group of `child` (its own, see
+/// [`CliRunner::run_line`]) with SIGKILL, then the child itself in case the
+/// group could not be signalled. The caller reaps it with `wait`.
+fn kill_group(child: &mut std::process::Child) {
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain syscall; the child is not reaped yet, so its pid
+        // (which is also its group id) cannot have been reused.
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
+
+/// What a [`Collector`] has read so far.
+#[derive(Default)]
+struct Captured {
+    bytes: Vec<u8>,
+    /// The result was taken: keep draining the pipe, but discard the data.
+    taken: bool,
+}
+
+impl Captured {
+    /// Appends `chunk`, keeping at most the last `cap` bytes (amortised:
+    /// the front is cut only once the buffer reaches twice the cap).
+    fn push(&mut self, chunk: &[u8], cap: usize) {
+        if self.taken {
+            return;
+        }
+        self.bytes.extend_from_slice(chunk);
+        if self.bytes.len() >= cap.saturating_mul(2) {
+            self.trim(cap);
+        }
+    }
+
+    fn trim(&mut self, cap: usize) {
+        let excess = self.bytes.len().saturating_sub(cap);
+        self.bytes.drain(..excess);
+    }
+}
+
 /// Reads a pipe on its own thread into a shared buffer, so the output read so
-/// far is available even if EOF never comes.
+/// far is available even if EOF never comes. At most the last `cap` bytes are
+/// kept; after [`Collector::take`] the pipe is still drained (so the writer
+/// never blocks on a full pipe) but nothing more is stored.
 struct Collector {
-    buf: Arc<Mutex<Vec<u8>>>,
+    buf: Arc<Mutex<Captured>>,
     done: Receiver<()>,
+    cap: usize,
 }
 
 impl Collector {
-    fn start(mut pipe: impl Read + Send + 'static) -> Collector {
-        let buf = Arc::new(Mutex::new(Vec::new()));
+    fn start(pipe: impl Read + Send + 'static) -> Collector {
+        Collector::with_cap(pipe, OUTPUT_CAP)
+    }
+
+    fn with_cap(mut pipe: impl Read + Send + 'static, cap: usize) -> Collector {
+        let buf = Arc::new(Mutex::new(Captured::default()));
         let (tx, done) = mpsc::channel();
         let shared = Arc::clone(&buf);
         thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             loop {
                 match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
                     Ok(n) => shared
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .extend_from_slice(&chunk[..n]),
+                        .push(&chunk[..n], cap),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
                 }
             }
             let _ = tx.send(());
         });
-        Collector { buf, done }
+        Collector { buf, done, cap }
     }
 
     fn wait(&self, timeout: Duration) {
         let _ = self.done.recv_timeout(timeout);
     }
 
+    /// The output read so far (at most the cap); later output is discarded.
     fn take(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.buf.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut captured = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        captured.trim(self.cap);
+        captured.taken = true;
+        std::mem::take(&mut captured.bytes)
     }
 }

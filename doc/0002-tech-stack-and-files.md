@@ -1,7 +1,7 @@
 # 0002. Tech stack, config and state files
 
 - Status: Accepted · 2026-10-18
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md)
 
 ## Context
 
@@ -84,6 +84,10 @@ CLI does not expose:
   - `acknowledged`, the tuple the user last acknowledged (by attaching or with
     `m`), or absent
     ([0007](0007-visual-only-attention.md));
+  - `updated_ms`, when tower last changed `account` / `account_source`, and
+    `last_seen_ms`, when a successful listing last showed the session (to the
+    hour), both Unix ms
+    ([0017](0017-ownership-evidence-rules.md));
 - `recent_projects`, most-recently-used projects for the new-session dialog
   ([0008](0008-new-session-dialog.md)), newest first, paths in the `~/…` form,
   capped at 50 entries.
@@ -97,7 +101,9 @@ CLI does not expose:
       "account_source": "handoff",
       "last_state": { "state": "blocked", "status": "waiting", "waitingFor": "permission prompt" },
       "last_change_ms": 1790000000000,
-      "acknowledged": { "state": "blocked", "status": "waiting", "waitingFor": "permission prompt" }
+      "acknowledged": { "state": "blocked", "status": "waiting", "waitingFor": "permission prompt" },
+      "updated_ms": 1790000000000,
+      "last_seen_ms": 1790000000000
     }
   },
   "recent_projects": [
@@ -106,17 +112,24 @@ CLI does not expose:
 }
 ```
 
-- Writes are atomic: write `state.json.tmp` in the same directory, fsync,
-  rename over `state.json`.
+- Writes are atomic: write a temp file named with the pid and a per-save
+  counter (`state.json.tmp.<pid>.<n>`) in the same directory, fsync, rename
+  over `state.json`, fsync the directory.
+- Several tower instances may share the file. A save holds an exclusive
+  `flock` on `state.json.lock`, waiting up to 2 s; on timeout it is skipped
+  with a warning and retried later. Under the lock tower re-reads the file
+  and applies only its own changes since its last load or save (merge on
+  save, rules in [0017](0017-ownership-evidence-rules.md)).
 - Writes happen only when something changed, not on every poll.
 - On a missing file tower starts empty. On an unreadable or corrupt one it
   moves it aside as `state.json.corrupt`, starts fresh and shows a warning. It
   never refuses to start.
 - Unknown fields are kept where practical. The `version` field allows
   migration.
-- Entries for sessions that are no longer listed, even with `--all` (for
-  example after `claude rm`), are pruned
-  ([0006](0006-session-states-and-grouping.md)).
+- Entries are pruned when no successful listing showed them for 14 days,
+  and a short-id `started` entry when its row did not appear within 1 hour.
+  Nothing is pruned while any account's poll fails or is partial
+  ([0017](0017-ownership-evidence-rules.md)).
 
 **Orchestrator working directory:** under the config dir, e.g.
 `~/.config/watchtower/orchestrator/`, holding its instruction file. Details are
@@ -145,5 +158,4 @@ in [0010](0010-orchestrator.md).
 
 ## Open items
 
-- How long a session must be missing from the listing before its entry is
-  pruned, so that a failed or partial poll never drops records.
+None.

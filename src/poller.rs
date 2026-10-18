@@ -10,6 +10,12 @@
 //! `r` and after returning from an attach) that finds a poll still running
 //! marks it for one re-run as soon as it finishes, so the UI is guaranteed a
 //! result that started after the request.
+//!
+//! Every trigger (tick or forced) is one poll cycle with an increasing
+//! number, carried by each [`PollUpdate`]. Ownership rule 2 compares the
+//! accounts' listings only when all of them come from the same cycle
+//! (doc/0017): listings taken at different times can disagree just because
+//! a session started, stopped or moved in between.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -37,6 +43,10 @@ impl ListSource for CliRunner {
 pub struct PollUpdate {
     /// Account name, as in the config.
     pub account: String,
+    /// The poll cycle this listing belongs to (see the module docs). A poll
+    /// skipped because the previous one was still running leaves the
+    /// account a cycle behind; a re-run carries the cycle that asked for it.
+    pub cycle: u64,
     /// The parsed listing, or the error message.
     pub result: Result<Listing, String>,
 }
@@ -49,6 +59,8 @@ enum Command {
 struct Slot {
     running: bool,
     rerun: bool,
+    /// The cycle of the requested re-run, when `rerun` is set.
+    rerun_cycle: u64,
 }
 
 /// Handle to the polling threads. Dropping it stops the coordinator; polls
@@ -75,9 +87,11 @@ impl Poller {
         thread::Builder::new()
             .name("tower-poller".into())
             .spawn(move || {
-                let trigger = |forced: bool| {
+                let mut cycle = 0u64;
+                let mut trigger = |forced: bool| {
+                    cycle += 1;
                     for (account, slot) in accounts.iter().zip(&slots) {
-                        start_poll(account, slot, &source, &result_tx, forced);
+                        start_poll(account, slot, &source, &result_tx, forced, cycle);
                     }
                 };
                 trigger(true);
@@ -118,19 +132,24 @@ fn lock(slot: &Mutex<Slot>) -> std::sync::MutexGuard<'_, Slot> {
     slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Starts a poll of one account unless one is running; a forced request
-/// against a running poll is remembered as one re-run.
+/// Starts a poll of one account for `cycle` unless one is running; a
+/// forced request against a running poll is remembered as one re-run, which
+/// then reports the latest forced cycle.
 fn start_poll(
     account: &Account,
     slot: &Arc<Mutex<Slot>>,
     source: &Arc<dyn ListSource>,
     results: &Sender<PollUpdate>,
     forced: bool,
+    cycle: u64,
 ) {
     {
         let mut s = lock(slot);
         if s.running {
-            s.rerun |= forced;
+            if forced {
+                s.rerun = true;
+                s.rerun_cycle = cycle;
+            }
             return;
         }
         s.running = true;
@@ -143,15 +162,18 @@ fn start_poll(
     let spawned = thread::Builder::new()
         .name(format!("tower-poll-{}", account.name))
         .spawn(move || {
+            let mut cycle = cycle;
             loop {
                 let result = source.list(&account);
                 let sent = results.send(PollUpdate {
                     account: account.name.clone(),
+                    cycle,
                     result,
                 });
                 let mut s = lock(&worker_slot);
                 if s.rerun && sent.is_ok() {
                     s.rerun = false;
+                    cycle = s.rerun_cycle;
                     continue;
                 }
                 s.running = false;

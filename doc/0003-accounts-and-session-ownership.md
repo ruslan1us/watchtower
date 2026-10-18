@@ -1,6 +1,6 @@
 # 0003. Multiple accounts and session ownership
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · ownership rules refined by [0017](0017-ownership-evidence-rules.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -45,7 +45,7 @@ config_dir = "~/.claude-alt"
 
 **Listing.** Each poll runs `<command> agents --json --all` for every account and merges the results, de-duplicating by `sessionId`, falling back to the short `id` (a defensive rule; background rows always carry `id`) and, for rows with neither, to `pid` ([0001](0001-thin-wrapper-over-claude-cli.md)). This works whether or not the lists are shared.
 
-**Ownership resolution**, first match wins:
+**Ownership resolution**, first match wins (when each rule applies, the pid-reuse guard and the sidecar overwrite rules are refined by [0017](0017-ownership-evidence-rules.md)):
 
 1. **Running session** (`pid` present): read `CLAUDE_CONFIG_DIR` from `/proc/<pid>/environ`; a missing variable means `~/.claude`. Map it to the configured account by comparing canonical paths (`~` expanded, symlinks resolved). The parent pid is an intermediate host process, not the supervisor, so tower reads the session's own environment rather than walking to the parent. This is the only OS-level read tower does ([0001](0001-thin-wrapper-over-claude-cli.md)).
 2. **Seen in exactly one account's list** (lists not shared): that account.

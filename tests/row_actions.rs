@@ -60,12 +60,19 @@ fn action(app: &App, name: &str, id: &str) -> SessionAction {
     }
 }
 
-/// Two accounts with separate lists: `main` lists everything, `alt`
-/// nothing, so every row's owner is `main` by rule 2.
+/// Two accounts: `main` lists everything, `alt` nothing. An empty listing
+/// is no evidence (doc/0017), so every row's owner is `main` from its
+/// `started` record (rule 3).
 fn app_two_separate(fixture: &str) -> App {
     let mut app = app_two();
+    for s in common::listing(fixture).sessions {
+        if let Some(key) = s.key() {
+            app.sidecar.record_started(key, "main");
+        }
+    }
     app.apply_poll(PollUpdate {
         account: "alt".into(),
+        cycle: 0,
         result: Ok(parse_listing("[]").unwrap()),
     });
     app.apply_poll(poll("main", fixture));
@@ -381,6 +388,7 @@ fn every_poll_of_the_owner_refreshes_the_panel() {
     app.logs_fetched(target.clone(), Ok(screen("done")));
     let effects = app.apply_poll(PollUpdate {
         account: "alt".into(),
+        cycle: 0,
         result: Ok(Listing::default()),
     });
     assert_eq!(fetch_of(&effects), None);

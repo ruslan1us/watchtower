@@ -69,16 +69,22 @@ fn polls_all_accounts_immediately_and_on_ticks() {
     while seen.len() < 2 {
         let u = poller.recv_timeout(Duration::from_secs(5)).expect("result");
         assert!(u.result.is_ok());
+        // The immediate first poll is cycle 1 for every account.
+        assert_eq!(u.cycle, 1, "{}", u.account);
         seen.push(u.account);
     }
     seen.sort();
     assert_eq!(seen, ["alt", "main"]);
-    // Ticks keep polling.
+    // Ticks keep polling, each tick a later cycle.
+    let mut last = 1;
     for _ in 0..4 {
-        poller
+        let u = poller
             .recv_timeout(Duration::from_secs(5))
             .expect("tick result");
+        assert!(u.cycle >= last, "cycles never go back");
+        last = u.cycle;
     }
+    assert!(last > 1);
     assert!(source.calls("main") >= 2);
 }
 
@@ -91,10 +97,13 @@ fn slow_account_is_skipped_not_piled_up() {
         Duration::from_millis(20),
     );
     // main keeps reporting while slow is stuck.
+    let mut main_cycle = 0;
     for _ in 0..5 {
         let u = poller.recv_timeout(Duration::from_secs(5)).expect("result");
         assert_eq!(u.account, "main");
+        main_cycle = u.cycle;
     }
+    assert!(main_cycle > 1);
     assert_eq!(source.calls("slow"), 1, "no new poll while one is running");
     assert_eq!(source.max_in_flight.load(Ordering::SeqCst), 1);
 
@@ -103,19 +112,27 @@ fn slow_account_is_skipped_not_piled_up() {
     poller.poll_now();
     std::thread::sleep(Duration::from_millis(50));
     source.release();
-    let mut slow_results = 0;
+    let mut slow_cycles = Vec::new();
     for _ in 0..50 {
         match poller.recv_timeout(Duration::from_millis(200)) {
             Some(u) if u.account == "slow" => {
                 assert_eq!(u.result, Err("slow account failed".to_owned()));
-                slow_results += 1;
-                if slow_results == 2 {
+                slow_cycles.push(u.cycle);
+                if slow_cycles.len() == 2 {
                     break;
                 }
             }
             _ => {}
         }
     }
-    assert!(slow_results >= 2, "re-run after the forced poll");
+    assert!(slow_cycles.len() >= 2, "re-run after the forced poll");
+    // The stuck poll reports the cycle it started in; the re-run reports
+    // the forced cycle that asked for it, which is newer than main's
+    // earlier ticks.
+    assert_eq!(slow_cycles[0], 1);
+    assert!(
+        slow_cycles[1] > main_cycle,
+        "{slow_cycles:?} vs {main_cycle}"
+    );
     assert_eq!(source.max_in_flight.load(Ordering::SeqCst), 1);
 }

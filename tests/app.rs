@@ -329,6 +329,7 @@ fn failed_account_is_not_rule_two_evidence() {
         .partition(|s| s.name.as_deref() == Some("say-ok"));
     let update = |account: &str, rows| watchtower::poller::PollUpdate {
         account: account.into(),
+        cycle: 0,
         result: Ok(watchtower::listing::Listing {
             sessions: rows,
             warnings: vec![],
@@ -356,14 +357,23 @@ fn failed_account_is_not_rule_two_evidence() {
 #[test]
 fn detections_are_saved_only_on_change() {
     let mut app = app_two();
-    // Separate lists: alt lists nothing, so main's rows resolve by rule 2.
-    app.apply_poll(watchtower::poller::PollUpdate {
-        account: "alt".into(),
-        result: Ok(watchtower::listing::parse_listing("[]").unwrap()),
-    });
-    let effects = app.apply_poll(poll("main", "mixed-states.json"));
+    // Separate, non-empty lists from one poll cycle: rows resolve by rule 2.
+    let all = common::listing("mixed-states.json").sessions;
+    let (main_rows, alt_rows): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .partition(|s| s.name.as_deref() != Some("print-date"));
+    let update = |account: &str, rows: &Vec<_>| watchtower::poller::PollUpdate {
+        account: account.into(),
+        cycle: 1,
+        result: Ok(watchtower::listing::Listing {
+            sessions: rows.clone(),
+            warnings: vec![],
+        }),
+    };
+    assert!(app.apply_poll(update("alt", &alt_rows)).is_empty());
+    let effects = app.apply_poll(update("main", &main_rows));
     assert_eq!(effects, [Effect::SaveSidecar]);
-    assert!(app.apply_poll(poll("main", "mixed-states.json")).is_empty());
+    assert!(app.apply_poll(update("main", &main_rows)).is_empty());
 }
 
 #[test]
@@ -405,6 +415,7 @@ fn listing_warnings_and_fixture_home_shortening() {
     let mut app = app_single();
     app.apply_poll(watchtower::poller::PollUpdate {
         account: "main".into(),
+        cycle: 0,
         result: Ok(watchtower::listing::parse_listing(
             r#"[{"kind":"background","id":"1a2b3c4d","cwd":"/home/user/workspace/api","state":"done"}, 7]"#,
         )

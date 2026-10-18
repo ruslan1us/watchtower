@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use watchtower::cli::{CliError, CliRunner, CommandLine, ListError, attach_command};
+use watchtower::cli::{CliError, CliRunner, CommandLine, ListError, OUTPUT_CAP, attach_command};
 use watchtower::config::Account;
 use watchtower::listing::State;
 
@@ -294,4 +294,69 @@ fn run_in_sets_the_working_directory() {
         None,
         "no cwd unless asked"
     );
+}
+
+#[test]
+fn background_call_runs_in_its_own_process_group() {
+    let _g = lock();
+    // Field 5 of /proc/<pid>/stat is the process group: the call leads a
+    // group of its own, so Ctrl+C or Ctrl+Z typed into an attached session
+    // (tower's foreground group) never reaches it.
+    let fake = Fake::new("claude", "echo $$; cut -d' ' -f5 /proc/$$/stat");
+    let out = CliRunner::new()
+        .run(&fake.account("claude"), ["x"])
+        .unwrap();
+    let text = out.stdout_text();
+    let ids: Vec<i64> = text.lines().map(|l| l.trim().parse().unwrap()).collect();
+    assert_eq!(ids.len(), 2, "{text}");
+    assert_eq!(ids[0], ids[1], "the call leads its own group");
+    assert_ne!(ids[1], i64::from(unsafe { libc::getpgrp() }));
+}
+
+#[test]
+fn timeout_kills_the_whole_process_group() {
+    let _g = lock();
+    // A wrapper that does not exec: its child must die with it, or a timed
+    // out dispatch could still start a (duplicate) session.
+    let fake = Fake::new(
+        "claude",
+        "sleep 30 &\necho $! > \"$(dirname \"$0\")/grandchild\"\nsleep 30",
+    );
+    let err = CliRunner::new()
+        .with_timeout(Duration::from_millis(500))
+        .run(&fake.account("claude"), ["--bg", "x"])
+        .unwrap_err();
+    assert!(matches!(err, CliError::Timeout { .. }), "{err:?}");
+    let pid: libc::pid_t = std::fs::read_to_string(fake.path("grandchild"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Killed, then reaped by whoever adopted it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let alive = |pid: libc::pid_t| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('Z')
+        })
+    };
+    while alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!alive(pid), "grandchild {pid} survived the timeout");
+}
+
+#[test]
+fn output_is_capped_keeping_the_end() {
+    let _g = lock();
+    let fake = Fake::new("claude", "head -c 6000000 /dev/zero; printf END");
+    let out = CliRunner::new()
+        .run(&fake.account("claude"), ["logs", "x"])
+        .unwrap();
+    assert_eq!(out.stdout.len(), OUTPUT_CAP);
+    assert!(out.stdout.ends_with(b"END"));
 }

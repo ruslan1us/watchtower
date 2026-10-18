@@ -58,6 +58,18 @@ impl EnvironReader for NoEnviron {
     fn config_dir_var(&self, _pid: u32) -> std::io::Result<Option<OsString>> {
         Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
     }
+
+    fn cmdline(&self, _pid: u32) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn exe(&self, _pid: u32) -> std::io::Result<std::path::PathBuf> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn start_ticks(&self, _pid: u32) -> std::io::Result<u64> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
 }
 
 /// An app with the built-in single account `main`.
@@ -102,6 +114,7 @@ config_dir = "~/.claude-alt"
 pub fn poll(account: &str, fixture_name: &str) -> PollUpdate {
     PollUpdate {
         account: account.into(),
+        cycle: 0,
         result: Ok(listing(fixture_name)),
     }
 }
@@ -110,6 +123,7 @@ pub fn poll(account: &str, fixture_name: &str) -> PollUpdate {
 pub fn poll_err(account: &str, err: &str) -> PollUpdate {
     PollUpdate {
         account: account.into(),
+        cycle: 0,
         result: Err(err.into()),
     }
 }

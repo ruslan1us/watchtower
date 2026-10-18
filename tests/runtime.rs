@@ -53,11 +53,18 @@ config_dir = "~/.claude-alt"
     App::new(config, home.into(), Sidecar::default(), Box::new(NoEnviron))
 }
 
-/// Separate lists: `alt` lists the fixture, `main` nothing, so every row is
-/// owned by `alt` (doc/0003 rule 2).
+/// `alt` lists the fixture, `main` nothing, and every row has a `started`
+/// record for `alt`, so `alt` owns it (rule 3; an empty listing is no
+/// rule-2 evidence, doc/0017).
 fn owned_by_alt(app: &mut App, fixture: &str) {
+    for s in common::listing(fixture).sessions {
+        if let Some(key) = s.key() {
+            app.sidecar.record_started(key, "alt");
+        }
+    }
     app.apply_poll(PollUpdate {
         account: "main".into(),
+        cycle: 0,
         result: Ok(parse_listing("[]").unwrap()),
     });
     app.apply_poll(common::poll("alt", fixture));

@@ -27,7 +27,9 @@ use crate::groups::{self, Group};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
 use crate::listing::Session;
 use crate::logview::{LogScreen, LogsError};
-use crate::merge::{AccountListing, EnvironReader, MergedSession, Ownership, Resolver};
+use crate::merge::{
+    AccountListing, EnvironReader, KnownProcesses, MergedSession, Ownership, Resolver,
+};
 use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
@@ -349,6 +351,10 @@ struct AccountPoll {
     error: Option<String>,
     /// Warnings of the latest successful listing (skipped rows, …).
     warnings: Vec<String>,
+    /// Poll cycle of the last good rows ([`PollUpdate::cycle`]).
+    cycle: u64,
+    /// When the last good rows arrived, as [`App::received`] numbered them.
+    received: u64,
 }
 
 /// List actions, looked up from keys through [`list_action`] (doc/0011:
@@ -458,9 +464,15 @@ pub struct App {
     config: Config,
     home: PathBuf,
     environ: Box<dyn EnvironReader>,
+    /// Processes rule 1 accepted on earlier polls, in memory only
+    /// (doc/0017).
+    known: KnownProcesses,
     /// Tower's sidecar state; the runtime saves it on [`Effect::SaveSidecar`].
     pub sidecar: Sidecar,
     polls: Vec<AccountPoll>,
+    /// Number of successful listings received so far: orders the accounts'
+    /// last good rows by arrival (doc/0017).
+    received: u64,
     sessions: Vec<MergedSession>,
     entries: Vec<Entry>,
     /// Indices into `entries` of the selectable (session) lines.
@@ -507,14 +519,18 @@ impl App {
                 rows: None,
                 error: None,
                 warnings: Vec::new(),
+                cycle: 0,
+                received: 0,
             })
             .collect();
         App {
             config,
             home,
             environ,
+            known: KnownProcesses::default(),
             sidecar,
             polls,
+            received: 0,
             sessions: Vec::new(),
             entries: Vec::new(),
             rows: Vec::new(),
@@ -683,8 +699,10 @@ impl App {
     }
 
     /// Applies one finished poll: moves `started` records keyed by a short
-    /// id to their `sessionId`, merges all accounts, records detections in
-    /// the sidecar and rebuilds the list. Returns [`Effect::SaveSidecar`]
+    /// id to their `sessionId`, merges all accounts (each with the cycle and
+    /// arrival order of its last good rows, doc/0017; the processes rule 1
+    /// accepted carry over between polls), records detections
+    /// in the sidecar and rebuilds the list. Returns [`Effect::SaveSidecar`]
     /// when the sidecar changed, and a logs fetch when the panel is open and
     /// this was the poll of the shown session's account (one refresh per
     /// poll, doc/0009).
@@ -700,6 +718,9 @@ impl App {
                 poll.rows = Some(listing.sessions);
                 poll.warnings = listing.warnings;
                 poll.error = None;
+                poll.cycle = update.cycle;
+                self.received += 1;
+                poll.received = self.received;
                 self.last_refresh = Some(Instant::now());
             }
             Err(err) => poll.error = Some(err),
@@ -707,18 +728,43 @@ impl App {
         let listings: Vec<AccountListing> = self
             .polls
             .iter()
-            .map(|p| match (&p.rows, &p.error) {
-                (Some(rows), None) => AccountListing::fresh(&p.name, rows.clone()),
-                (Some(rows), Some(_)) => AccountListing::stale(&p.name, rows.clone()),
-                (None, _) => AccountListing::missing(&p.name),
+            .map(|p| {
+                let listing = match (&p.rows, &p.error) {
+                    (Some(rows), None) => AccountListing::fresh(&p.name, rows.clone()),
+                    (Some(rows), Some(_)) => AccountListing::stale(&p.name, rows.clone()),
+                    (None, _) => AccountListing::missing(&p.name),
+                };
+                listing
+                    .with_cycle(p.cycle)
+                    .with_received(p.received)
+                    .with_partial(!p.warnings.is_empty())
             })
             .collect();
-        let merged = Resolver::new(&self.config.accounts, &self.home, self.environ.as_ref())
-            .merge(&listings, &self.sidecar);
+        let mut resolver = Resolver::new(&self.config.accounts, &self.home, self.environ.as_ref())
+            .with_known(std::mem::take(&mut self.known));
+        let merged = resolver.merge(&listings, &self.sidecar);
+        self.known = resolver.into_known();
         changed |= self.sidecar.record_detections(&merged);
+        // Last-seen times and pruning (doc/0017 section 9): rows of every
+        // good listing count as seen; pruning only while every account's
+        // latest poll succeeded with a full listing.
+        let complete = self
+            .polls
+            .iter()
+            .all(|p| p.rows.is_some() && p.error.is_none() && p.warnings.is_empty());
+        let seen = self
+            .polls
+            .iter()
+            .filter(|p| p.error.is_none())
+            .flat_map(|p| p.rows.iter().flatten())
+            .filter_map(Session::key);
+        changed |= self
+            .sidecar
+            .observe_listing(seen, complete, sidecar::now_ms());
         self.set_sessions(merged);
         let mut effects = Vec::new();
-        if changed {
+        // A save that failed (e.g. the lock was busy) is retried.
+        if changed || self.sidecar.retry_due() {
             effects.push(Effect::SaveSidecar);
         }
         let refresh = self
