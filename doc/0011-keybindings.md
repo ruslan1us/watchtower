@@ -39,7 +39,8 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open |
 | `Esc` | Close the topmost panel, overlay or filter |
 
-**Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel.
+**Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
+`Enter` cancels too.
 
 **New-session dialog** (field layout is defined in [0008](0008-new-session-dialog.md))
 
@@ -51,7 +52,13 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `Ctrl+G` | Edit the task in `$VISUAL`, else `$EDITOR` |
 | `Ctrl+S` | Dispatch to the background |
 | `Ctrl+Enter`, fallback `Alt+Enter` | Dispatch and attach immediately |
+| `Ctrl+T` | After a `Workspace not trusted` error: suspend tower and run the account's interactive command in the project to accept trust, then retry the dispatch ([0008](0008-new-session-dialog.md)) |
 | `Esc` | Cancel (confirm if the task is not empty) |
+
+In the project field, typed characters filter the list and `↑` / `↓` choose
+a project; in the model field `↑` / `↓` step through the presets and typing
+gives a free-text model name. A line feed (`Ctrl+J`, which some terminals send
+for `Ctrl+Enter`) is a new line in the task field and never dispatches.
 
 Many terminals do not report `Ctrl+Enter` distinctly, especially over SSH.
 Tower enables the keyboard-enhancement protocol where the terminal supports it
@@ -93,4 +100,4 @@ variant that works.
 - Final review of the whole table by the owner.
 - Confirm which of `Ctrl+Enter` / `Alt+Enter` are reported over SSH in the
   terminals the project is tested with.
-- Whether `Ctrl+S` / `Ctrl+G` clash with anything in common terminal setups.
+- Whether `Ctrl+S` / `Ctrl+G` / `Ctrl+T` clash with anything in common terminal setups.

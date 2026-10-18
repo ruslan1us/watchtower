@@ -17,7 +17,7 @@ glibc, so a binary built on the development machine may fail on the target with
 - The toolchain is installed with rustup in the user's home directory, plus
   `rustup target add x86_64-unknown-linux-musl`. No system packages are changed.
 - Dependencies stay pure Rust (`ratatui`, `crossterm`, `serde`, `serde_json`, `toml`,
-  `vt100`, `tui-term`), so the musl build needs no C toolchain or cross-compiled C libraries.
+  `vt100`), so the musl build needs no C toolchain or cross-compiled C libraries.
   A new dependency with C code needs a justification.
 - Release profile:
 

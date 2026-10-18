@@ -1,11 +1,15 @@
-//! The TUI state machine for milestone 1 (doc/0014): the merged session list,
-//! selection, the help overlay and the account picker, and the key table
-//! (doc/0011).
+//! The TUI state machine (doc/0014 milestones 1 and 2): the merged session
+//! list, selection, the help overlay, the account picker, confirmations, the
+//! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
+//! logs panel (doc/0009), and the key table (doc/0011).
 //!
 //! Nothing here touches the terminal, spawns processes or does file I/O. Key
-//! presses, poll results and attach outcomes go in; [`Effect`]s come out and
-//! the runtime (`tui`) carries them out. That keeps the whole flow testable
-//! without a terminal (doc/0015).
+//! presses, poll results and the outcomes of background jobs go in;
+//! [`Effect`]s come out and the runtime (`tui`, `jobs`) carries them out.
+//! Every CLI call that can take a while (dispatch, stop, remove, logs) is an
+//! effect the runtime runs on a worker thread, reporting back through the
+//! `*_finished` / [`App::logs_fetched`] methods. That keeps the whole flow
+//! testable without a terminal (doc/0015).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,12 +17,17 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
+use crate::actions::{RemoveError, StopError};
 use crate::config::{Account, Config};
+use crate::dialog::{Dialog, DialogAction, DialogStatus, Field};
+use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group};
 use crate::listing::Session;
+use crate::logview::{LogScreen, LogsError};
 use crate::merge::{AccountListing, EnvironReader, MergedSession, Ownership, Resolver};
 use crate::poller::PollUpdate;
-use crate::sidecar::{AccountSource, Sidecar};
+use crate::projects::ProjectList;
+use crate::sidecar::{self, AccountSource, Sidecar};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
@@ -34,6 +43,58 @@ pub enum Effect {
     SaveSidecar,
     /// Hand the terminal to `<account command> attach <id>` (doc/0005).
     Attach(AttachRequest),
+    /// Scan for candidate projects and call [`App::open_dialog`] (doc/0008).
+    OpenDialog,
+    /// Run `claude --bg` on a worker thread, then call
+    /// [`App::dispatch_finished`] (doc/0008).
+    Dispatch(DispatchJob),
+    /// Suspend tower like an attach and run the interactive account command
+    /// in the untrusted folder ([`dispatch::trust_command`]), then call
+    /// [`App::trust_finished`], which retries the dispatch once (doc/0008).
+    Trust(DispatchJob),
+    /// Suspend tower like an attach and edit this task text in `$VISUAL`,
+    /// else `$EDITOR`, then call [`App::editor_finished`] (doc/0008).
+    EditTask(String),
+    /// Run `<owning account command> stop <id>` on a worker thread, then
+    /// call [`App::stop_finished`] (doc/0009).
+    Stop(SessionAction),
+    /// Run `<owning account command> rm <id>` on a worker thread, then call
+    /// [`App::remove_finished`] (doc/0009).
+    Remove(SessionAction),
+    /// Run `<owning account command> logs <id>` and replay it on a worker
+    /// thread, then call [`App::logs_fetched`] (doc/0009).
+    FetchLogs(LogsTarget),
+}
+
+/// A dispatch from the new-session dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchJob {
+    /// The validated request.
+    pub request: DispatchRequest,
+    /// Attach to the new session once it has started (`Ctrl+Enter`).
+    pub attach: bool,
+    /// This is the automatic retry after the trust flow.
+    pub after_trust: bool,
+}
+
+/// A stop or remove of one session, with the owning account (doc/0009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionAction {
+    /// The owning account (doc/0003).
+    pub account: Account,
+    /// The short id; never the name.
+    pub id: String,
+    /// Display name, for messages.
+    pub name: String,
+}
+
+/// Whose logs the panel shows: the owning account and the short id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogsTarget {
+    /// The owning account; `logs` only works with it (doc/0009).
+    pub account: Account,
+    /// The short id.
+    pub id: String,
 }
 
 /// What to attach to, and with which account's command.
@@ -82,6 +143,42 @@ pub struct Picker {
     pub config_dir: Option<PathBuf>,
     /// Index into the configured accounts.
     pub selected: usize,
+    /// What happens with the chosen account.
+    pub purpose: Purpose,
+}
+
+/// What a row action asks the account picker for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Attach (doc/0005).
+    Attach,
+    /// Stop (doc/0009).
+    Stop,
+    /// Remove (doc/0009).
+    Remove,
+}
+
+impl Purpose {
+    /// The verb for messages: `attach`, `stop`, `remove`.
+    pub fn verb(self) -> &'static str {
+        match self {
+            Purpose::Attach => "attach",
+            Purpose::Stop => "stop",
+            Purpose::Remove => "remove",
+        }
+    }
+}
+
+/// A destructive action waiting for `y` (doc/0009, doc/0011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Confirm {
+    /// Stop a working or blocked session; `detail` is its state label.
+    Stop {
+        action: SessionAction,
+        detail: String,
+    },
+    /// Remove a session from the list.
+    Remove { action: SessionAction },
 }
 
 /// What is drawn on top of the list.
@@ -93,7 +190,69 @@ pub enum Overlay {
     Help,
     /// The account picker.
     Picker(Picker),
+    /// A yes/no confirmation.
+    Confirm(Confirm),
 }
+
+/// A scrollable text window above everything else, e.g. the full text of
+/// an `rm` refusal (doc/0009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Popup {
+    /// Window title.
+    pub title: String,
+    /// The text, one entry per line (the renderer wraps long lines).
+    pub lines: Vec<String>,
+    /// First visible (wrapped) line; the renderer clamps it.
+    pub scroll: usize,
+}
+
+/// What the logs panel shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogsView {
+    /// A short note instead of output (stopped, interactive, unknown owner…).
+    Note(String),
+    /// The first fetch for this row is running.
+    Loading,
+    /// The replayed screen of the latest fetch.
+    Screen(LogScreen),
+    /// The latest fetch failed.
+    Error(String),
+}
+
+/// The logs panel of the selected row (doc/0009).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogsPanel {
+    /// Name and account of the row, for the panel title.
+    pub title: String,
+    /// What to draw.
+    pub view: LogsView,
+    /// The row the panel shows, when it has fetchable logs.
+    target: Option<LogsTarget>,
+    /// The fetch currently running, if any (at most one at a time).
+    in_flight: Option<LogsTarget>,
+    /// Fetch again as soon as the running fetch reports back.
+    pending: bool,
+}
+
+impl LogsPanel {
+    /// The row whose logs are fetched, if any.
+    pub fn target(&self) -> Option<&LogsTarget> {
+        self.target.as_ref()
+    }
+
+    /// The fetch currently running, if any.
+    pub fn in_flight(&self) -> Option<&LogsTarget> {
+        self.in_flight.as_ref()
+    }
+}
+
+/// The note for a row without a live process (doc/0009).
+pub const NOTE_STOPPED: &str = "no live output — session stopped; attach to view it";
+/// The note for an interactive row.
+pub const NOTE_INTERACTIVE: &str =
+    "interactive session in another terminal — tower shows no logs for it";
+/// The note for a row whose owning account is unknown (doc/0009).
+pub const NOTE_UNKNOWN_OWNER: &str = "owning account unknown (?) — logs need the account that hosts the session; attach once to choose it";
 
 /// Severity of a status-line segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +299,12 @@ pub enum Action {
     First,
     Last,
     Attach,
+    NewSession,
+    Stop,
+    Remove,
+    ToggleLogs,
+    /// `Esc`: close the logs panel.
+    Close,
     Refresh,
     Help,
     Quit,
@@ -149,20 +314,34 @@ pub enum Action {
     NotYet(&'static str),
 }
 
-/// Keys of the session list (doc/0011, milestone 1 subset).
+/// Keys of the session list (doc/0011, milestones 1 and 2).
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
     ("PgUp/PgDn", "move one page"),
     ("Home/End, g/G", "first / last row"),
     ("Enter", "attach to the selected session"),
+    ("n", "new session"),
+    ("s", "stop the session (confirm when working or blocked)"),
+    ("d", "remove the session (confirm)"),
+    ("Space, Esc", "toggle / close the logs panel"),
     ("r", "refresh now"),
     ("?", "this help"),
     ("q, Ctrl+C", "quit"),
     ("Ctrl+Z", "inside a session: return to tower"),
 ];
 
+/// Keys of the new-session dialog, for the help (doc/0011).
+pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
+    ("Tab/Shift+Tab", "next / previous field"),
+    ("Ctrl+S", "start in the background"),
+    ("Ctrl+Enter, Alt+Enter", "start and attach"),
+    ("Ctrl+G", "edit the task in $VISUAL / $EDITOR"),
+    ("Ctrl+T", "after \"not trusted\": open claude there"),
+    ("Esc", "cancel"),
+];
+
 /// Keys of later milestones, shown in the help as not yet available.
-pub const LATER_KEYS: &str = "n a o s d m Space / p i Tab";
+pub const LATER_KEYS: &str = "a o m / p i Tab";
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
 /// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
@@ -188,16 +367,17 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Home | KeyCode::Char('g') => Action::First,
         KeyCode::End | KeyCode::Char('G') => Action::Last,
         KeyCode::Enter => Action::Attach,
+        KeyCode::Esc => Action::Close,
+        KeyCode::Char('n') => Action::NewSession,
+        KeyCode::Char('s') => Action::Stop,
+        KeyCode::Char('d') => Action::Remove,
+        KeyCode::Char(' ') => Action::ToggleLogs,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('?') => Action::Help,
         KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('n') => Action::NotYet("new session"),
         KeyCode::Char('a') => Action::NotYet("continue under another account"),
         KeyCode::Char('o') => Action::NotYet("orchestrator"),
-        KeyCode::Char('s') => Action::NotYet("stop"),
-        KeyCode::Char('d') => Action::NotYet("remove"),
         KeyCode::Char('m') => Action::NotYet("mark seen"),
-        KeyCode::Char(' ') => Action::NotYet("logs panel (Space)"),
         KeyCode::Char('/') => Action::NotYet("filter"),
         KeyCode::Char('p') => Action::NotYet("group by project"),
         KeyCode::Char('i') => Action::NotYet("show/hide interactive"),
@@ -223,6 +403,11 @@ pub struct App {
     selected: usize,
     selected_key: Option<String>,
     overlay: Overlay,
+    dialog: Option<Dialog>,
+    logs: Option<LogsPanel>,
+    popup: Option<Popup>,
+    /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
+    root: bool,
     message: Option<Message>,
     warnings: Vec<String>,
     last_refresh: Option<Instant>,
@@ -232,6 +417,10 @@ pub struct App {
     pub list_state: ListState,
     /// Whether colours may be used (`NO_COLOR` unset).
     pub color: bool,
+    /// Whether the terminal reports `Ctrl+Enter` distinctly (keyboard
+    /// enhancement is on); the dialog footer then shows it instead of
+    /// `Alt+Enter` (doc/0011).
+    pub keyboard_enhanced: bool,
 }
 
 impl App {
@@ -265,13 +454,44 @@ impl App {
             selected: 0,
             selected_key: None,
             overlay: Overlay::None,
+            dialog: None,
+            logs: None,
+            popup: None,
+            root: dispatch::is_root(),
             message: None,
             warnings: Vec::new(),
             last_refresh: None,
             page_size: 10,
             list_state: ListState::default(),
             color: true,
+            keyboard_enhanced: false,
         }
+    }
+
+    /// Overrides the root check (tests; doc/0008 hides `bypassPermissions`
+    /// for root).
+    pub fn set_root(&mut self, root: bool) {
+        self.root = root;
+    }
+
+    /// The new-session dialog, when open.
+    pub fn dialog(&self) -> Option<&Dialog> {
+        self.dialog.as_ref()
+    }
+
+    /// The logs panel, when open.
+    pub fn logs(&self) -> Option<&LogsPanel> {
+        self.logs.as_ref()
+    }
+
+    /// The popup window, when open.
+    pub fn popup(&self) -> Option<&Popup> {
+        self.popup.as_ref()
+    }
+
+    /// The popup, for the renderer to clamp its scroll offset.
+    pub fn popup_mut(&mut self) -> Option<&mut Popup> {
+        self.popup.as_mut()
     }
 
     /// The configuration.
@@ -386,15 +606,21 @@ impl App {
         out
     }
 
-    /// Applies one finished poll: merges all accounts, records detections in
-    /// the sidecar and rebuilds the list. Returns [`Effect::SaveSidecar`] when
-    /// the sidecar changed.
+    /// Applies one finished poll: moves `started` records keyed by a short
+    /// id to their `sessionId`, merges all accounts, records detections in
+    /// the sidecar and rebuilds the list. Returns [`Effect::SaveSidecar`]
+    /// when the sidecar changed, and a logs fetch when the panel is open and
+    /// this was the poll of the shown session's account (one refresh per
+    /// poll, doc/0009).
     pub fn apply_poll(&mut self, update: PollUpdate) -> Vec<Effect> {
         let Some(poll) = self.polls.iter_mut().find(|p| p.name == update.account) else {
             return Vec::new();
         };
+        let mut changed = false;
         match update.result {
             Ok(listing) => {
+                // Before the merge, so rule 3 finds the record (doc/0008).
+                changed |= self.sidecar.adopt_short_id_records(&listing.sessions);
                 poll.rows = Some(listing.sessions);
                 poll.warnings = listing.warnings;
                 poll.error = None;
@@ -413,13 +639,19 @@ impl App {
             .collect();
         let merged = Resolver::new(&self.config.accounts, &self.home, self.environ.as_ref())
             .merge(&listings, &self.sidecar);
-        let changed = self.sidecar.record_detections(&merged);
+        changed |= self.sidecar.record_detections(&merged);
         self.set_sessions(merged);
+        let mut effects = Vec::new();
         if changed {
-            vec![Effect::SaveSidecar]
-        } else {
-            Vec::new()
+            effects.push(Effect::SaveSidecar);
         }
+        let refresh = self
+            .logs
+            .as_ref()
+            .and_then(|l| l.target.as_ref())
+            .is_some_and(|t| t.account.name == update.account);
+        effects.extend(self.logs_follow(refresh));
+        effects
     }
 
     /// Reports how an attach ended and asks for an immediate poll.
@@ -443,15 +675,341 @@ impl App {
         vec![Effect::PollNow]
     }
 
+    /// Opens the new-session dialog with the scanned projects (doc/0008).
+    pub fn open_dialog(&mut self, projects: ProjectList) {
+        self.overlay = Overlay::None;
+        self.dialog = Some(Dialog::new(&self.config, projects, self.root));
+    }
+
+    /// Reports a finished dispatch (doc/0008). On success: record the
+    /// `started` owner and the recent project, close the dialog, report,
+    /// poll, and attach for dispatch-and-attach. On failure the dialog keeps
+    /// its contents and shows the error; `Workspace not trusted` offers
+    /// `Ctrl+T`.
+    pub fn dispatch_finished(
+        &mut self,
+        job: DispatchJob,
+        result: Result<Dispatched, DispatchError>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(started) => {
+                let mut effects = Vec::new();
+                if dispatch::record_dispatch(
+                    &mut self.sidecar,
+                    &job.request,
+                    &started,
+                    &self.home,
+                    sidecar::now_ms(),
+                ) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                self.dialog = None;
+                let name = started
+                    .name
+                    .clone()
+                    .or_else(|| job.request.name_arg().map(str::to_owned))
+                    .unwrap_or_else(|| started.id.clone());
+                let account = job.request.account.clone();
+                self.set_message(
+                    format!("started {name} ({}) under {}", started.id, account.name),
+                    Severity::Info,
+                );
+                if job.attach {
+                    // attach_finished polls once tower is back.
+                    effects.push(Effect::Attach(AttachRequest {
+                        account,
+                        id: started.id,
+                        name,
+                    }));
+                } else {
+                    effects.push(Effect::PollNow);
+                }
+                effects
+            }
+            Err(err) => {
+                let Some(dialog) = self.dialog.as_mut() else {
+                    self.set_message(
+                        format!("new session failed: {}", one_line(&err.to_string())),
+                        Severity::Error,
+                    );
+                    return Vec::new();
+                };
+                match err {
+                    DispatchError::Untrusted { dir, message } => {
+                        let mut text = message;
+                        if job.after_trust {
+                            text.push_str("\n(still not trusted after running claude there)");
+                        }
+                        dialog.error = Some(text);
+                        dialog.status = DialogStatus::Untrusted {
+                            dir,
+                            attach: job.attach,
+                        };
+                    }
+                    DispatchError::Invalid(v) => {
+                        dialog.field = Field::of_error(&v);
+                        dialog.error = Some(v.to_string());
+                        dialog.status = DialogStatus::Editing;
+                    }
+                    other => {
+                        dialog.error = Some(other.to_string());
+                        dialog.status = DialogStatus::Editing;
+                    }
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Reports the end of the trust flow (doc/0008): the interactive account
+    /// command exited, so the same dispatch is retried once. When it could
+    /// not run at all the dialog shows why and nothing is retried.
+    pub fn trust_finished(
+        &mut self,
+        job: DispatchJob,
+        result: Result<Option<i32>, String>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(_) => {
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.status = DialogStatus::Starting { attach: job.attach };
+                    dialog.error = None;
+                }
+                vec![Effect::Dispatch(DispatchJob {
+                    after_trust: true,
+                    ..job
+                })]
+            }
+            Err(err) => {
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.error = Some(err);
+                    dialog.status = DialogStatus::Untrusted {
+                        dir: job.request.project.clone(),
+                        attach: job.attach,
+                    };
+                } else {
+                    self.set_message(one_line(&err), Severity::Error);
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Takes the task text back from the editor (doc/0008); an error leaves
+    /// the task unchanged and is shown in the dialog.
+    pub fn editor_finished(&mut self, result: Result<String, String>) {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(text) => {
+                dialog.set_task(&text);
+                dialog.error = None;
+            }
+            Err(err) => dialog.error = Some(err),
+        }
+    }
+
+    /// Reports a finished stop and polls (doc/0009).
+    pub fn stop_finished(
+        &mut self,
+        action: SessionAction,
+        result: Result<(), StopError>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(()) => self.set_message(
+                format!("stopped {} ({})", action.name, action.id),
+                Severity::Info,
+            ),
+            Err(err) => self.set_message(
+                format!(
+                    "cannot stop {}: {}",
+                    action.name,
+                    one_line(&err.to_string())
+                ),
+                Severity::Error,
+            ),
+        }
+        vec![Effect::PollNow]
+    }
+
+    /// Reports a finished remove and polls (doc/0009). A refusal opens a
+    /// scrollable window with the CLI's full text; tower never retries and
+    /// never passes the flags it suggests.
+    pub fn remove_finished(
+        &mut self,
+        action: SessionAction,
+        result: Result<(), RemoveError>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(()) => self.set_message(
+                format!("removed {} ({})", action.name, action.id),
+                Severity::Info,
+            ),
+            Err(RemoveError::Refused { code, message }) => {
+                let code = code.map_or("a signal".to_owned(), |c| format!("code {c}"));
+                let mut lines = vec![
+                    format!(
+                        "`rm {}` did not remove {} (exit {code}). Claude Code says:",
+                        action.id, action.name
+                    ),
+                    String::new(),
+                ];
+                lines.extend(message.lines().map(str::to_owned));
+                lines.extend([
+                    String::new(),
+                    "Tower never passes --discard-unpushed or --force-remove-worktree: they \
+                     destroy work. Attach and commit or push, or run the suggested command \
+                     yourself."
+                        .to_owned(),
+                ]);
+                self.popup = Some(Popup {
+                    title: format!("{} was not removed", action.name),
+                    lines,
+                    scroll: 0,
+                });
+                self.set_message(
+                    format!("{} was not removed", action.name),
+                    Severity::Warning,
+                );
+            }
+            Err(err) => self.set_message(
+                format!(
+                    "cannot remove {}: {}",
+                    action.name,
+                    one_line(&err.to_string())
+                ),
+                Severity::Error,
+            ),
+        }
+        vec![Effect::PollNow]
+    }
+
+    /// Takes a finished logs fetch (doc/0009). A result for a row the panel
+    /// no longer shows is dropped, and the current row is fetched instead.
+    pub fn logs_fetched(
+        &mut self,
+        target: LogsTarget,
+        result: Result<LogScreen, LogsError>,
+    ) -> Vec<Effect> {
+        let Some(panel) = self.logs.as_mut() else {
+            return Vec::new();
+        };
+        if panel.in_flight.as_ref() == Some(&target) {
+            panel.in_flight = None;
+        }
+        let current = panel.target.as_ref() == Some(&target);
+        if current {
+            panel.view = match result {
+                Ok(screen) => LogsView::Screen(screen),
+                Err(LogsError::NotRunning) => LogsView::Note(NOTE_STOPPED.to_owned()),
+                Err(LogsError::UnknownSession) => LogsView::Note(format!(
+                    "account {} does not host this session (it may run under another \
+                     account, or was removed)",
+                    target.account.name
+                )),
+                Err(err) => LogsView::Error(one_line(&err.to_string())),
+            };
+        }
+        if panel.in_flight.is_none() && (panel.pending || !current) {
+            panel.pending = false;
+            if let Some(next) = panel.target.clone() {
+                panel.in_flight = Some(next.clone());
+                return vec![Effect::FetchLogs(next)];
+            }
+        }
+        Vec::new()
+    }
+
     /// Handles one key press.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
+        if self.popup.is_some() {
+            return self.popup_key(key);
+        }
+        if self.dialog.is_some() {
+            return self.dialog_key(key);
+        }
         match self.overlay.clone() {
             Overlay::Help => self.help_key(key),
             Overlay::Picker(picker) => self.picker_key(key, picker),
+            Overlay::Confirm(confirm) => self.confirm_key(key, confirm),
             Overlay::None => self.list_key(key),
+        }
+    }
+
+    fn popup_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let page = self.page_size.max(1);
+        let Some(popup) = self.popup.as_mut() else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Char('c') if ctrl => return vec![Effect::Quit],
+            _ if ctrl => {}
+            KeyCode::Up | KeyCode::Char('k') => popup.scroll = popup.scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => popup.scroll += 1,
+            KeyCode::PageUp => popup.scroll = popup.scroll.saturating_sub(page),
+            KeyCode::PageDown => popup.scroll += page,
+            KeyCode::Home | KeyCode::Char('g') => popup.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => popup.scroll = usize::MAX / 2,
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.popup = None,
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn dialog_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return Vec::new();
+        };
+        match dialog.handle_key(key) {
+            DialogAction::None => Vec::new(),
+            DialogAction::Cancel => {
+                self.dialog = None;
+                self.set_message("new session cancelled", Severity::Info);
+                Vec::new()
+            }
+            DialogAction::Quit => vec![Effect::Quit],
+            DialogAction::EditTask => vec![Effect::EditTask(dialog.task.text())],
+            DialogAction::Dispatch { attach } => self.start_dispatch(attach, false),
+            DialogAction::Trust => {
+                let attach = match dialog.status {
+                    DialogStatus::Untrusted { attach, .. } => attach,
+                    _ => false,
+                };
+                self.start_dispatch(attach, true)
+            }
+        }
+    }
+
+    /// Validates the dialog and starts a dispatch, or (`trust`) the trust
+    /// flow that is followed by one. Validation errors stay in the dialog.
+    fn start_dispatch(&mut self, attach: bool, trust: bool) -> Vec<Effect> {
+        let root = self.root;
+        let Some(dialog) = self.dialog.as_mut() else {
+            return Vec::new();
+        };
+        let request = dialog.request(&self.config.accounts);
+        if let Err(err) = request.validate_for(root) {
+            dialog.field = Field::of_error(&err);
+            dialog.error = Some(err.to_string());
+            dialog.status = DialogStatus::Editing;
+            return Vec::new();
+        }
+        dialog.error = None;
+        dialog.status = DialogStatus::Starting { attach };
+        let job = DispatchJob {
+            request,
+            attach,
+            after_trust: false,
+        };
+        if trust {
+            vec![Effect::Trust(job)]
+        } else {
+            vec![Effect::Dispatch(job)]
         }
     }
 
@@ -475,7 +1033,10 @@ impl App {
             _ if ctrl => {}
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.overlay = Overlay::None;
-                self.set_message("attach cancelled", Severity::Info);
+                self.set_message(
+                    format!("{} cancelled", picker.purpose.verb()),
+                    Severity::Info,
+                );
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 picker.selected = picker.selected.saturating_sub(1);
@@ -499,7 +1060,8 @@ impl App {
         Vec::new()
     }
 
-    /// Records the picked account (`asked`, doc/0003) and attaches with it.
+    /// Records the picked account (`asked`, doc/0003) and carries on with
+    /// the action the picker was opened for.
     fn pick_account(&mut self, picker: Picker) -> Vec<Effect> {
         self.overlay = Overlay::None;
         let Some(account) = self.config.accounts.get(picker.selected).cloned() else {
@@ -509,26 +1071,66 @@ impl App {
         if self.sidecar.record_answer(&picker.key, &account.name) {
             effects.push(Effect::SaveSidecar);
         }
+        let mut confirm_stop = None;
         for m in &mut self.sessions {
             if m.session.key() == Some(picker.key.as_str()) {
                 m.owner = Ownership::Known {
                     account: account.name.clone(),
                     source: AccountSource::Asked,
                 };
+                confirm_stop = Some(stop_needs_confirmation(&m.session));
             }
         }
-        effects.push(Effect::Attach(AttachRequest {
+        let action = SessionAction {
             account,
             id: picker.id,
             name: picker.name,
-        }));
+        };
+        match picker.purpose {
+            Purpose::Attach => effects.push(Effect::Attach(AttachRequest {
+                account: action.account,
+                id: action.id,
+                name: action.name,
+            })),
+            Purpose::Stop => effects.extend(self.stop_or_confirm(action, confirm_stop)),
+            Purpose::Remove => self.confirm_remove(action),
+        }
+        effects.extend(self.logs_follow(false));
         effects
+    }
+
+    fn confirm_key(&mut self, key: KeyEvent, confirm: Confirm) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('c') if ctrl => vec![Effect::Quit],
+            _ if ctrl || alt => Vec::new(),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.overlay = Overlay::None;
+                match confirm {
+                    Confirm::Stop { action, .. } => self.run_stop(action),
+                    Confirm::Remove { action } => self.run_remove(action),
+                }
+            }
+            // The default is cancel (doc/0011), so Enter cancels too.
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => {
+                self.overlay = Overlay::None;
+                let verb = match confirm {
+                    Confirm::Stop { .. } => "stop",
+                    Confirm::Remove { .. } => "remove",
+                };
+                self.set_message(format!("{verb} cancelled"), Severity::Info);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn list_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(action) = list_action(&key) else {
             return Vec::new();
         };
+        let mut effects = Vec::new();
         match action {
             Action::Up => self.move_by(-1),
             Action::Down => self.move_by(1),
@@ -536,7 +1138,28 @@ impl App {
             Action::PageDown => self.move_by(self.page_size.max(1) as isize),
             Action::First => self.select(0),
             Action::Last => self.select(self.rows.len().saturating_sub(1)),
-            Action::Attach => return self.request_attach(),
+            Action::Attach => effects = self.request_action(Purpose::Attach),
+            Action::NewSession => return vec![Effect::OpenDialog],
+            Action::Stop => effects = self.request_action(Purpose::Stop),
+            Action::Remove => effects = self.request_action(Purpose::Remove),
+            Action::ToggleLogs => {
+                if self.logs.take().is_none() {
+                    self.logs = Some(LogsPanel {
+                        title: String::new(),
+                        view: LogsView::Loading,
+                        target: None,
+                        in_flight: None,
+                        pending: false,
+                    });
+                    // Force the first fetch even if the target is unchanged.
+                    return self.logs_follow(true);
+                }
+                return Vec::new();
+            }
+            Action::Close => {
+                self.logs = None;
+                return Vec::new();
+            }
             Action::Refresh => {
                 self.set_message("refreshing…", Severity::Info);
                 return vec![Effect::PollNow];
@@ -551,40 +1174,62 @@ impl App {
                 self.set_message(format!("{what}: not available yet"), Severity::Info)
             }
         }
-        Vec::new()
+        effects.extend(self.logs_follow(false));
+        effects
     }
 
-    /// Enter on a row: attach with the owning account, or ask for the
-    /// account first when it is unknown (doc/0003, doc/0005).
-    fn request_attach(&mut self) -> Vec<Effect> {
+    /// A row action (attach, stop, remove) on the selected row: with the
+    /// owning account, or after asking for it when it is unknown (doc/0003,
+    /// doc/0005, doc/0009).
+    fn request_action(&mut self, purpose: Purpose) -> Vec<Effect> {
         let Some(m) = self.selected_session() else {
             return Vec::new();
         };
         let name = m.session.display_name();
-        let (Some(id), true) = (m.session.id.clone(), m.session.is_attachable()) else {
-            self.set_message(
-                format!(
+        let verb = purpose.verb();
+        if m.session.is_interactive() {
+            let text = match purpose {
+                Purpose::Attach => format!(
                     "{name} is an interactive session in another terminal; it cannot be attached"
                 ),
+                _ => format!(
+                    "{name} is an interactive session in another terminal; tower cannot {verb} it"
+                ),
+            };
+            self.set_message(text, Severity::Info);
+            return Vec::new();
+        }
+        let Some(id) = m.session.id.clone() else {
+            self.set_message(
+                format!("{name} has no short id; tower cannot {verb} it"),
                 Severity::Info,
             );
             return Vec::new();
         };
+        let confirm_stop = stop_needs_confirmation(&m.session);
         match &m.owner {
-            Ownership::Known { account, .. } => match self.config.account(account) {
-                Some(account) => vec![Effect::Attach(AttachRequest {
-                    account: account.clone(),
-                    id,
-                    name,
-                })],
-                None => {
+            Ownership::Known { account, .. } => {
+                let Some(account) = self.config.account(account).cloned() else {
                     self.set_message(
                         format!("account `{account}` is not configured"),
                         Severity::Error,
                     );
-                    Vec::new()
+                    return Vec::new();
+                };
+                let action = SessionAction { account, id, name };
+                match purpose {
+                    Purpose::Attach => vec![Effect::Attach(AttachRequest {
+                        account: action.account,
+                        id: action.id,
+                        name: action.name,
+                    })],
+                    Purpose::Stop => self.stop_or_confirm(action, Some(confirm_stop)),
+                    Purpose::Remove => {
+                        self.confirm_remove(action);
+                        Vec::new()
+                    }
                 }
-            },
+            }
             Ownership::Unknown { config_dir } => {
                 let key = m.session.key().unwrap_or(&id).to_owned();
                 let selected = self
@@ -599,8 +1244,110 @@ impl App {
                     name,
                     config_dir: config_dir.clone(),
                     selected,
+                    purpose,
                 });
                 Vec::new()
+            }
+        }
+    }
+
+    /// Working and blocked sessions ask first; others stop directly
+    /// (doc/0009). `confirm` is `None` when the row is no longer listed.
+    fn stop_or_confirm(&mut self, action: SessionAction, confirm: Option<bool>) -> Vec<Effect> {
+        if confirm.unwrap_or(true) {
+            let detail = self
+                .sessions
+                .iter()
+                .find(|m| m.session.id.as_deref() == Some(action.id.as_str()))
+                .map(|m| groups::detail(&m.session))
+                .unwrap_or_else(|| "active".to_owned());
+            self.overlay = Overlay::Confirm(Confirm::Stop { action, detail });
+            return Vec::new();
+        }
+        self.run_stop(action)
+    }
+
+    fn confirm_remove(&mut self, action: SessionAction) {
+        self.overlay = Overlay::Confirm(Confirm::Remove { action });
+    }
+
+    fn run_stop(&mut self, action: SessionAction) -> Vec<Effect> {
+        self.set_message(format!("stopping {}…", action.name), Severity::Info);
+        vec![Effect::Stop(action)]
+    }
+
+    fn run_remove(&mut self, action: SessionAction) -> Vec<Effect> {
+        self.set_message(format!("removing {}…", action.name), Severity::Info);
+        vec![Effect::Remove(action)]
+    }
+
+    /// What the logs panel should show for the selected row: a fetchable
+    /// target, or a note (doc/0009).
+    fn logs_wanted(&self) -> (String, Result<LogsTarget, String>) {
+        let Some(m) = self.selected_session() else {
+            return (String::new(), Err("no session selected".to_owned()));
+        };
+        let title = format!("{} ({})", m.session.display_name(), m.owner.label());
+        let s = &m.session;
+        if s.is_interactive() {
+            return (title, Err(NOTE_INTERACTIVE.to_owned()));
+        }
+        let Some(id) = s.id.clone() else {
+            return (title, Err("this row has no short id — no logs".to_owned()));
+        };
+        if !s.has_live_process() {
+            return (title, Err(NOTE_STOPPED.to_owned()));
+        }
+        match &m.owner {
+            Ownership::Unknown { .. } => (title, Err(NOTE_UNKNOWN_OWNER.to_owned())),
+            Ownership::Known { account, .. } => match self.config.account(account) {
+                Some(account) => (
+                    title,
+                    Ok(LogsTarget {
+                        account: account.clone(),
+                        id,
+                    }),
+                ),
+                None => (title, Err(format!("account `{account}` is not configured"))),
+            },
+        }
+    }
+
+    /// Points the open logs panel at the selected row: a note for rows
+    /// without fetchable logs, otherwise a fetch when the row changed or
+    /// `refresh` is set. At most one fetch runs at a time; a request while
+    /// one runs is remembered and issued when it reports back.
+    fn logs_follow(&mut self, refresh: bool) -> Vec<Effect> {
+        if self.logs.is_none() {
+            return Vec::new();
+        }
+        let (title, wanted) = self.logs_wanted();
+        let Some(panel) = self.logs.as_mut() else {
+            return Vec::new();
+        };
+        panel.title = title;
+        match wanted {
+            Err(note) => {
+                panel.target = None;
+                panel.pending = false;
+                panel.view = LogsView::Note(note);
+                Vec::new()
+            }
+            Ok(target) => {
+                let changed = panel.target.as_ref() != Some(&target);
+                if changed {
+                    panel.target = Some(target.clone());
+                    panel.view = LogsView::Loading;
+                } else if !refresh {
+                    return Vec::new();
+                }
+                if panel.in_flight.is_some() {
+                    panel.pending = true;
+                    return Vec::new();
+                }
+                panel.pending = false;
+                panel.in_flight = Some(target.clone());
+                vec![Effect::FetchLogs(target)]
             }
         }
     }
@@ -663,6 +1410,13 @@ impl App {
             self.set_message("session no longer listed", Severity::Info);
         }
     }
+}
+
+/// Whether `stop` asks first: rows that are working or blocked, i.e. in the
+/// Needs me or Working group (doc/0009). Rows without a live process are
+/// shown as stopped and stop directly.
+pub fn stop_needs_confirmation(s: &Session) -> bool {
+    matches!(groups::classify(s), Group::NeedsMe | Group::Working)
 }
 
 /// Identity of a row for keeping the selection across polls.

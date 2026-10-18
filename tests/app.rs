@@ -263,7 +263,8 @@ fn quit_help_refresh_and_reserved_keys() {
     assert!(press(&mut app, key(KeyCode::Left)).is_empty());
     assert_eq!(selected(&app), before);
 
-    for c in ['n', 'a', 'o', 's', 'd', ' ', '/', 'p', 'i', 'm'] {
+    // Keys of later milestones (doc/0014) only say so.
+    for c in ['a', 'o', '/', 'p', 'i', 'm'] {
         assert!(press(&mut app, ch(c)).is_empty(), "{c}");
         assert!(message(&app).contains("not available yet"), "{c}");
     }

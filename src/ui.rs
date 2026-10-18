@@ -1,6 +1,16 @@
-//! Rendering of the milestone 1 screen: title, grouped session list, status
-//! line, footer, and the help and account-picker overlays (doc/0006,
-//! doc/0011). Pure drawing from [`App`] state; no I/O.
+//! Rendering: title, grouped session list, the logs panel, status line,
+//! footer, and the overlays: help, account picker, confirmations, the
+//! new-session dialog ([`dialog`]) and the popup window (doc/0006, doc/0008,
+//! doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
+//!
+//! The logs panel sits to the right of the list when the terminal is at
+//! least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise below it, taking
+//! half the space either way. Its lines are never wrapped: a narrow panel
+//! clips the right-hand side (doc/0009).
+
+mod dialog;
+
+pub use dialog::wrap;
 
 use std::time::Instant;
 
@@ -11,13 +21,25 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Entry, KEY_TABLE, LATER_KEYS, Overlay, Picker, Severity};
+use crate::app::{
+    App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
+    Picker, Popup, Purpose, Severity,
+};
 use crate::groups::{self, Group};
 use crate::merge::MergedSession;
 use crate::paths;
 
-/// Footer hints; the detach hint is always shown (doc/0005, doc/0011).
-pub const FOOTER: &str = "↑↓/jk move · Enter attach · r refresh · ? help · q quit   │   in a session: Ctrl+Z returns to tower";
+/// Footer key hints of the session list (doc/0011).
+pub const FOOTER_KEYS: &str =
+    "↑↓ move · Enter attach · n new · s stop · d remove · Space logs · ? help · q quit";
+
+/// The detach hint, always shown at the right of the footer (doc/0005,
+/// doc/0011); the key hints are cut first when the terminal is narrow.
+pub const DETACH_HINT: &str = "in a session: Ctrl+Z returns to tower";
+
+/// From this width on, the logs panel is a side panel; below it, a bottom
+/// panel.
+pub const SIDE_PANEL_MIN_WIDTH: u16 = 150;
 
 const NAME_MAX: usize = 32;
 const PROJECT_MAX: usize = 40;
@@ -36,18 +58,111 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
     .areas(frame.area());
 
     draw_title(frame, app, title);
-    draw_list(frame, app, list);
+    match app.logs().cloned() {
+        None => draw_list(frame, app, list),
+        Some(panel) => {
+            let [list_area, panel_area] = if list.width >= SIDE_PANEL_MIN_WIDTH {
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(list)
+            } else {
+                Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(list)
+            };
+            draw_list(frame, app, list_area);
+            draw_logs(frame, app, &panel, panel_area);
+        }
+    }
     draw_status(frame, app, status, now);
-    frame.render_widget(
-        Paragraph::new(FOOTER).style(Style::new().add_modifier(Modifier::DIM)),
-        footer,
-    );
+    draw_footer(frame, footer);
 
+    let area = frame.area();
     match app.overlay().clone() {
         Overlay::None => {}
-        Overlay::Help => draw_help(frame, frame.area()),
-        Overlay::Picker(p) => draw_picker(frame, app, &p, frame.area()),
+        Overlay::Help => draw_help(frame, app, area),
+        Overlay::Picker(p) => draw_picker(frame, app, &p, area),
+        Overlay::Confirm(c) => draw_confirm(frame, app, &c, area),
     }
+    if let Some(d) = app.dialog() {
+        dialog::draw(frame, app, d, area);
+    }
+    if let Some(popup) = app.popup_mut() {
+        draw_popup(frame, popup, area);
+    }
+}
+
+/// The footer: key hints on the left, the detach hint on the right.
+fn draw_footer(frame: &mut Frame, area: Rect) {
+    let w = usize::from(area.width);
+    let hint = DETACH_HINT.width();
+    let sep = "  │  ";
+    let text = if w >= hint + sep.width() + 8 {
+        // Key hints padded or cut to the space left of the detach hint.
+        let keys_w = w - hint - sep.width();
+        format!("{}{sep}{DETACH_HINT}", fit(FOOTER_KEYS, keys_w))
+    } else {
+        fit(DETACH_HINT, w)
+    };
+    frame.render_widget(
+        Paragraph::new(text).style(Style::new().add_modifier(Modifier::DIM)),
+        area,
+    );
+}
+
+/// The logs panel: the replayed screen's last rows, unwrapped (doc/0009).
+fn draw_logs(frame: &mut Frame, app: &App, panel: &LogsPanel, area: Rect) {
+    let title = if panel.title.is_empty() {
+        " logs ".to_owned()
+    } else {
+        format!(" logs · {} ", panel.title)
+    };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_bottom(Line::styled(
+            " Space/Esc close ",
+            Style::new().add_modifier(Modifier::DIM),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let note = |text: &str| -> Vec<Line<'static>> {
+        wrap(text, usize::from(inner.width).saturating_sub(1))
+            .into_iter()
+            .map(|r| Line::styled(format!(" {r}"), Style::new().add_modifier(Modifier::DIM)))
+            .collect()
+    };
+    let lines: Vec<Line> = match &panel.view {
+        LogsView::Note(text) => note(text),
+        LogsView::Loading => note("loading…"),
+        LogsView::Error(text) => {
+            let style = if app.color {
+                Style::new().fg(Color::Red)
+            } else {
+                Style::new().add_modifier(Modifier::BOLD)
+            };
+            wrap(text, usize::from(inner.width).saturating_sub(1))
+                .into_iter()
+                .map(|r| Line::styled(format!(" {r}"), style))
+                .collect()
+        }
+        LogsView::Screen(screen) if screen.is_empty() => note("(no output yet)"),
+        LogsView::Screen(screen) => {
+            let mut lines = screen.tail(usize::from(inner.height));
+            if !app.color {
+                for line in &mut lines {
+                    for span in &mut line.spans {
+                        span.style.fg = None;
+                        span.style.bg = None;
+                    }
+                }
+            }
+            lines
+        }
+    };
+    // No wrapping: a narrow panel clips the right-hand side.
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
@@ -173,7 +288,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant) {
 }
 
 /// A rectangle of at most `w` × `h`, centred in `area`.
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
+pub(crate) fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
     Rect {
@@ -184,32 +299,148 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = KEY_TABLE
         .iter()
         .map(|(key, what)| Line::from(format!(" {key:<16} {what}")))
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::from(format!(" Not available yet: {LATER_KEYS}")));
-    lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " Esc or ? closes this help",
-        Style::new().add_modifier(Modifier::DIM),
+        " New-session dialog",
+        Style::new().add_modifier(Modifier::BOLD),
     ));
+    for (key, what) in DIALOG_KEY_TABLE {
+        let key = if key.starts_with("Ctrl+Enter") && !app.keyboard_enhanced {
+            "Alt+Enter"
+        } else {
+            key
+        };
+        lines.push(Line::from(format!(" {key:<22} {what}")));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(format!(" Not available yet: {LATER_KEYS}")));
     let h = lines.len() as u16 + 2;
-    let rect = centered(area, 62, h);
+    let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(" Keys ")),
+        Paragraph::new(lines).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(" Keys ")
+                .title_bottom(Line::styled(
+                    " Esc or ? closes this help ",
+                    Style::new().add_modifier(Modifier::DIM),
+                )),
+        ),
+        rect,
+    );
+}
+
+fn draw_confirm(frame: &mut Frame, app: &App, confirm: &Confirm, area: Rect) {
+    let (title, mut text) = match confirm {
+        Confirm::Stop { action, detail } => (
+            " Stop session? ",
+            vec![
+                format!(
+                    "Stop {} ({}, account {})? It is {detail}.",
+                    action.name, action.id, action.account.name
+                ),
+                "The conversation is kept; attaching wakes the session again.".to_owned(),
+            ],
+        ),
+        Confirm::Remove { action } => (
+            " Remove session? ",
+            vec![
+                format!(
+                    "Remove {} ({}, account {}) from the list?",
+                    action.name, action.id, action.account.name
+                ),
+                "The transcript stays on disk and can still be resumed with claude --resume."
+                    .to_owned(),
+                "`claude rm` may also delete the session's worktree when that is safe; it \
+                 refuses if there is uncommitted or unpushed work."
+                    .to_owned(),
+            ],
+        ),
+    };
+    text.push(String::new());
+    let w = area.width.saturating_sub(4).min(76);
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let mut lines: Vec<Line> = text
+        .iter()
+        .flat_map(|t| wrap(t, inner_w))
+        .map(|r| Line::from(format!(" {r}")))
+        .collect();
+    let key_style = if app.color {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" y", key_style),
+        Span::raw(" yes   "),
+        Span::styled("n", key_style),
+        Span::raw("/"),
+        Span::styled("Esc", key_style),
+        Span::raw(" no (default)"),
+    ]));
+    let h = lines.len() as u16 + 2;
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
+        rect,
+    );
+}
+
+/// The popup window: wrapped text, scrolled; the scroll offset is clamped
+/// here because only the renderer knows the visible height.
+fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
+    let w = if area.width > 104 {
+        100
+    } else {
+        area.width.saturating_sub(2).max(1)
+    };
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let rows: Vec<String> = popup.lines.iter().flat_map(|l| wrap(l, inner_w)).collect();
+    let max_h = area.height.saturating_sub(2).max(3);
+    let h = (rows.len() as u16 + 2).min(max_h);
+    let rect = centered(area, w, h);
+    let visible = usize::from(h.saturating_sub(2)).max(1);
+    popup.scroll = popup.scroll.min(rows.len().saturating_sub(visible));
+    let more = rows.len() > visible;
+    let lines: Vec<Line> = rows
+        .iter()
+        .skip(popup.scroll)
+        .take(visible)
+        .map(|r| Line::from(format!(" {r}")))
+        .collect();
+    let hint = if more {
+        " ↑↓/PgUp/PgDn scroll · Esc close "
+    } else {
+        " Esc close "
+    };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", popup.title))
+                .title_bottom(Line::styled(hint, Style::new().add_modifier(Modifier::DIM))),
+        ),
         rect,
     );
 }
 
 fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect) {
-    let mut lines = vec![
-        Line::from(" The account that owns this session is unknown."),
-        Line::from(" Attaching with another account moves the session to it."),
-    ];
+    let mut lines = vec![Line::from(
+        " The account that owns this session is unknown.",
+    )];
+    if picker.purpose == Purpose::Attach {
+        lines.push(Line::from(
+            " Attaching with another account moves the session to it.",
+        ));
+    }
     if let Some(dir) = &picker.config_dir {
         lines.push(Line::from(format!(
             " Its process uses CLAUDE_CONFIG_DIR={}, which matches no account.",
@@ -233,7 +464,10 @@ fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " Enter attach with this account · Esc cancel",
+        format!(
+            " Enter {} with this account · Esc cancel",
+            picker.purpose.verb()
+        ),
         Style::new().add_modifier(Modifier::DIM),
     ));
     let h = lines.len() as u16 + 2;

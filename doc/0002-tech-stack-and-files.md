@@ -133,9 +133,9 @@ in [0010](0010-orchestrator.md).
 
 ## Alternatives considered
 
-- **Go, or Python with Textual.** Workable, but Rust with ratatui has
-  maintained `vt100`/`tui-term` crates for the logs panel and builds a fully
-  static binary easily.
+- **Go, or Python with Textual.** Workable, but Rust with ratatui has a
+  maintained `vt100` crate for the logs panel and builds a fully static binary
+  easily.
 - **tokio.** Not needed for a few child processes and a 2 s tick.
 - **State under `$XDG_STATE_HOME`.** Arguably more correct, but keeping it next
   to the config gives the user one directory to inspect or back up. This can

@@ -113,3 +113,49 @@ pub fn poll_err(account: &str, err: &str) -> PollUpdate {
         result: Err(err.into()),
     }
 }
+
+// ---- milestone 2 helpers ------------------------------------------------
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use watchtower::projects::{self, ProjectList};
+
+/// Creates git clones `names` (folders holding `.git`) under `root` and
+/// discovers them like the dialog does (doc/0008).
+pub fn project_list(root: &Path, names: &[&str]) -> ProjectList {
+    for name in names {
+        std::fs::create_dir_all(root.join(name).join(".git")).unwrap();
+    }
+    projects::discover(&[root.to_path_buf()], &[], &[], Path::new(HOME))
+}
+
+/// A key without modifiers.
+pub fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// A character key.
+pub fn ch(c: char) -> KeyEvent {
+    key(KeyCode::Char(c))
+}
+
+/// `Ctrl+<c>`.
+pub fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// Types `text` key by key.
+pub fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        let effects = app.handle_key(ch(c));
+        assert!(effects.is_empty(), "typing {c:?} gave {effects:?}");
+    }
+}
+
+/// The status line as one string.
+pub fn status_text(app: &App) -> String {
+    app.status_segments(std::time::Instant::now())
+        .into_iter()
+        .map(|s| s.text)
+        .collect::<Vec<_>>()
+        .join(" | ")
+}

@@ -1,5 +1,7 @@
 //! Handing the terminal to `<account command> attach <id>` and taking it back
-//! (doc/0005).
+//! (doc/0005). The same procedure ([`run_foreground`]) runs the editor for
+//! the task field and the interactive trust flow of the new-session dialog
+//! (doc/0008).
 //!
 //! The procedure is written against two small traits so it can be tested
 //! without a TTY: [`Handover`] releases and reclaims the terminal (the real
@@ -12,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::app::{AttachOutcome, AttachRequest};
-use crate::cli;
+use crate::cli::{self, CommandLine};
 
 /// Releases and reclaims the terminal around an attach.
 pub trait Handover {
@@ -83,69 +85,105 @@ pub fn announcement(req: &AttachRequest) -> String {
     )
 }
 
-/// Attaches to `req`: release the terminal, announce, run
-/// `<owning account command> attach <id>` with no-op handlers for SIGINT,
-/// SIGQUIT and SIGTSTP in place, then reclaim the terminal. On a non-zero exit
-/// it waits for a key first, so Claude Code's error text can be read (doc/0005
-/// open item: stderr stays inherited).
+/// A command to run in the foreground with the terminal handed over: an
+/// attach, the editor for the task field, or the interactive trust flow of
+/// the new-session dialog (doc/0005, doc/0008).
+#[derive(Debug, Clone)]
+pub struct Foreground<'a> {
+    /// What to run, with its working directory.
+    pub line: &'a CommandLine,
+    /// The plain line printed before the child takes over, if any.
+    pub announce: Option<String>,
+    /// Names the child in the key-pause prompt, e.g. `attach`.
+    pub label: &'a str,
+    /// Whether a non-zero exit or a signal waits for a key before tower
+    /// redraws, so the child's error text stays readable (doc/0005).
+    pub pause_on_failure: bool,
+}
+
+/// Runs `fg` in the foreground: release the terminal, announce, run the
+/// child with inherited stdio and no-op handlers for SIGINT, SIGQUIT and
+/// SIGTSTP in place, then reclaim the terminal (doc/0005). Returns the exit
+/// code (`None` for a signal) or a message when it could not run.
 ///
 /// A SIGTERM or SIGHUP that arrives while the child runs is not forwarded:
 /// the child owns the terminal and keeps running until it exits on its own.
 /// Afterwards, if `termination` is pending, tower neither waits for a key nor
 /// reclaims the terminal, so the caller can exit straight away (doc/0005).
+pub fn run_foreground(
+    handover: &mut dyn Handover,
+    spawner: &mut dyn Spawner,
+    fg: &Foreground<'_>,
+    termination: &Termination,
+) -> Result<Option<i32>, String> {
+    if let Err(err) = handover.release() {
+        let _ = handover.reclaim();
+        return Err(format!("cannot release the terminal: {err}"));
+    }
+    if let Some(line) = &fg.announce {
+        let _ = handover.announce(line);
+    }
+
+    let status = {
+        // A failure to install the handlers is not a reason to refuse to
+        // run; tower is then merely as exposed as without them.
+        let _guard = SignalGuard::install().ok();
+        spawner.run(fg.line.to_command())
+    };
+
+    let result = match status {
+        Ok(status) => Ok(status.code()),
+        Err(err) => Err(format!("cannot run `{}`: {err}", fg.line.program)),
+    };
+    let ending = || termination.pending().is_some();
+    if !ending() && fg.pause_on_failure {
+        let label = fg.label;
+        match &result {
+            Ok(Some(0)) | Err(_) => {}
+            Ok(Some(code)) => {
+                let _ = handover.wait_for_key(&format!(
+                    "tower: {label} exited with code {code}. Press any key to return to tower."
+                ));
+            }
+            Ok(None) => {
+                let _ = handover.wait_for_key(&format!(
+                    "tower: {label} was ended by a signal. Press any key to return to tower."
+                ));
+            }
+        }
+    }
+    if ending() {
+        // Tower is about to exit and the terminal is already released.
+        return result;
+    }
+    if let Err(err) = handover.reclaim() {
+        return Err(format!("cannot restore the terminal: {err}"));
+    }
+    result
+}
+
+/// Attaches to `req`: runs `<owning account command> attach <id>` through
+/// [`run_foreground`]. On a non-zero exit it waits for a key first, so Claude
+/// Code's error text can be read (doc/0005 open item: stderr stays
+/// inherited).
 pub fn attach(
     handover: &mut dyn Handover,
     spawner: &mut dyn Spawner,
     req: &AttachRequest,
     termination: &Termination,
 ) -> AttachOutcome {
-    let outcome = |result| AttachOutcome {
+    let line = cli::attach_command(&req.account, &req.id);
+    let fg = Foreground {
+        line: &line,
+        announce: Some(announcement(req)),
+        label: "attach",
+        pause_on_failure: true,
+    };
+    AttachOutcome {
         name: req.name.clone(),
         account: req.account.name.clone(),
-        result,
-    };
-    if let Err(err) = handover.release() {
-        let _ = handover.reclaim();
-        return outcome(Err(format!("cannot release the terminal: {err}")));
+        result: run_foreground(handover, spawner, &fg, termination),
     }
-    let _ = handover.announce(&announcement(req));
-
-    let line = cli::attach_command(&req.account, &req.id);
-    let status = {
-        // A failure to install the handlers is not a reason to refuse the
-        // attach; tower is then merely as exposed as without them.
-        let _guard = SignalGuard::install().ok();
-        spawner.run(line.to_command())
-    };
-
-    let result = match status {
-        Ok(status) => Ok(status.code()),
-        Err(err) => Err(format!("cannot run `{}`: {err}", line.program)),
-    };
-    let ending = || termination.pending().is_some();
-    if !ending() {
-        match &result {
-            Ok(Some(0)) | Err(_) => {}
-            Ok(Some(code)) => {
-                let _ = handover.wait_for_key(&format!(
-                    "tower: attach exited with code {code}. Press any key to return to tower."
-                ));
-            }
-            Ok(None) => {
-                let _ = handover.wait_for_key(
-                    "tower: attach was ended by a signal. Press any key to return to tower.",
-                );
-            }
-        }
-    }
-    if ending() {
-        // Tower is about to exit and the terminal is already released.
-        return outcome(result);
-    }
-    if let Err(err) = handover.reclaim() {
-        return outcome(Err(format!("cannot restore the terminal: {err}")));
-    }
-    outcome(result)
 }
 
 /// The signals tower must survive while a session is attached (doc/0005).

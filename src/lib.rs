@@ -24,12 +24,17 @@
 //!   option lists and the trust flow command (doc/0008).
 //! - [`actions`]: `stop` and `rm` of a session (doc/0009).
 //!
-//! The TUI (milestone 1, doc/0014):
+//! The TUI (milestones 1 and 2, doc/0014):
 //!
-//! - [`app`]: the state machine (list, selection, overlays, keys); no I/O.
+//! - [`app`]: the state machine (list, selection, overlays, logs panel,
+//!   stop and remove, keys); no I/O.
+//! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
-//! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005).
+//! - [`jobs`]: runs dispatch, stop, remove and logs on worker threads.
+//! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
+//!   also used for the editor and the trust flow.
+//! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
 //! - [`tui`]: the terminal runtime and event loop.
 //! - [`args`]: command-line arguments.
 
@@ -42,8 +47,11 @@ pub mod args;
 pub mod attach;
 pub mod cli;
 pub mod config;
+pub mod dialog;
 pub mod dispatch;
+pub mod editor;
 pub mod groups;
+pub mod jobs;
 pub mod listing;
 pub mod logview;
 pub mod merge;

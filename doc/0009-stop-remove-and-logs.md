@@ -36,7 +36,8 @@ refusal text and leaves resolution to the user: attach and commit or push, or ru
 suggested command manually. These flags destroy work.
 
 **Logs panel.** `Space` toggles a side panel for the selected row
-([0011](0011-keybindings.md)):
+([0011](0011-keybindings.md)); on terminals narrower than 150 columns it sits below
+the list instead, since the replayed screen is wide:
 
 - Run `<owning account command> logs <id>` and read **stdout only**; the
   `Session <id> · <name>` banner arrives on another stream and is ignored.
