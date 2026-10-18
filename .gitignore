@@ -1,5 +1,6 @@
-# Private working notes (contain personal environment details)
+# Private working notes and agent instructions (contain personal environment details)
 SPEC.md
+CLAUDE.md
 
 # Rust build output
 /target/
