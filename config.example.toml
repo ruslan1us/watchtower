@@ -1,0 +1,73 @@
+# Watchtower (tower) example config.
+#
+# Copy to $XDG_CONFIG_HOME/watchtower/config.toml (by default
+# ~/.config/watchtower/config.toml). Tower only reads this file; it never
+# writes it. Every key is optional: a missing file, or a missing key, means
+# the built-in default given in the comment. Unknown keys are ignored.
+# `~` is expanded in all paths. See doc/0002-tech-stack-and-files.md.
+
+# Account used for new sessions and the orchestrator. Must name one of the
+# [[accounts]] below.
+# Default: the first account listed.
+default_account = "main"
+
+# Seconds between polls of `<command> agents --json --all`, per account.
+# At least 1.
+# Default: 2
+poll_interval_secs = 2
+
+# Folders scanned (one level deep) for git clones in the new-session dialog
+# (doc/0008).
+# Default: [] (none)
+project_roots = ["~/workspace"]
+
+# Folders listed in the new-session dialog even though they are not under a
+# root or not git clones.
+# Default: [] (none)
+extra_projects = ["~/notes"]
+
+# New-session dialog defaults. "default" means the flag is not passed, so
+# Claude Code's own default applies.
+#
+# default | fable | opus | sonnet | haiku | a full model name.
+# Default: "default"
+default_model = "default"
+# default | low | medium | high | xhigh | max
+# Default: "default"
+default_effort = "default"
+# auto | acceptEdits | manual | plan | dontAsk | bypassPermissions
+# (--permission-mode is always passed.)
+# Default: "auto"
+default_permission_mode = "auto"
+
+# Prompt sent when a session continues under another account (key `a`,
+# doc/0004). Without a prompt a woken session would sit idle.
+# Default: "continue"
+handoff_prompt = "continue"
+
+# Accounts (doc/0003). Each one is a Claude Code config dir with its own
+# login and background-session supervisor.
+#
+#   name        Shown in the UI and stored in state.json. Required, unique.
+#   command     Run as-is for every call on this account's sessions. Required.
+#               Split like a shell would (quotes allowed), but with no `~` or
+#               variable expansion. Tower never sets CLAUDE_CONFIG_DIR itself
+#               and removes an inherited one, so for a second account use a
+#               wrapper that sets it, e.g. a `claude-alt` script containing
+#                 #!/bin/sh
+#                 CLAUDE_CONFIG_DIR="$HOME/.claude-alt" exec claude "$@"
+#   config_dir  The account's CLAUDE_CONFIG_DIR. Used only to recognise which
+#               account hosts a running session. Every account needs its own.
+#               Default: "~/.claude"
+#
+# Default: one account, name = "main", command = "claude".
+
+[[accounts]]
+name = "main"
+command = "claude"
+config_dir = "~/.claude"
+
+[[accounts]]
+name = "alt"
+command = "claude-alt"               # wrapper that sets CLAUDE_CONFIG_DIR=~/.claude-alt
+config_dir = "~/.claude-alt"

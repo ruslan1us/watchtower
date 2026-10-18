@@ -1,6 +1,8 @@
-# Private working notes and agent instructions (contain personal environment details)
-SPEC.md
-CLAUDE.md
+# Private working notes and agent instructions at the repo root only
+# (they contain personal environment details). Anchored with "/" so files
+# with the same name elsewhere, such as assets/orchestrator/CLAUDE.md, are kept.
+/SPEC.md
+/CLAUDE.md
 
 # Rust build output
 /target/

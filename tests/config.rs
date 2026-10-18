@@ -222,3 +222,68 @@ fn load_reports_the_file_path() {
     std::fs::write(dirs.config_file(), "poll_interval_secs = 7\n").unwrap();
     assert_eq!(Config::load(&dirs).unwrap().poll_interval_secs, 7);
 }
+
+/// `config.example.toml` at the repository root parses, documents every key
+/// of doc/0002, and keeps the built-in defaults where it shows them, so the
+/// public example cannot drift from the code.
+#[test]
+fn example_config_is_valid_and_complete() {
+    let text = include_str!("../config.example.toml");
+    let c = parse(text).unwrap();
+    let defaults = Config::defaults(Path::new(HOME));
+
+    assert_eq!(c.default_account, "main");
+    assert_eq!(c.poll_interval_secs, defaults.poll_interval_secs);
+    assert_eq!(c.default_model, defaults.default_model);
+    assert_eq!(c.default_effort, defaults.default_effort);
+    assert_eq!(c.default_permission_mode, defaults.default_permission_mode);
+    assert_eq!(c.handoff_prompt, defaults.handoff_prompt);
+    assert_eq!(c.project_roots, [PathBuf::from("/home/user/workspace")]);
+    assert_eq!(c.extra_projects, [PathBuf::from("/home/user/notes")]);
+
+    let accounts: Vec<(&str, &str, PathBuf)> = c
+        .accounts
+        .iter()
+        .map(|a| (a.name.as_str(), a.command.as_str(), a.config_dir.clone()))
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            ("main", "claude", PathBuf::from("/home/user/.claude")),
+            ("alt", "claude-alt", PathBuf::from("/home/user/.claude-alt")),
+        ]
+    );
+    // The default `main` account is the example's first one.
+    assert_eq!(defaults.accounts[0].name, c.accounts[0].name);
+    assert_eq!(defaults.accounts[0].command, c.accounts[0].command);
+
+    // Every documented key appears, and nothing else: a new config key
+    // must be added to the example (and to this list).
+    let table: toml::Table = toml::from_str(text).unwrap();
+    let mut keys: Vec<&str> = table.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "accounts",
+            "default_account",
+            "default_effort",
+            "default_model",
+            "default_permission_mode",
+            "extra_projects",
+            "handoff_prompt",
+            "poll_interval_secs",
+            "project_roots",
+        ]
+    );
+    for account in table["accounts"].as_array().unwrap() {
+        let mut keys: Vec<&str> = account
+            .as_table()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["command", "config_dir", "name"]);
+    }
+}

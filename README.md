@@ -1,0 +1,218 @@
+# Watchtower
+
+Watchtower (`tower`) is a terminal UI for keeping track of many parallel Claude Code
+background sessions. It is a thin front end over Claude Code's own commands: sessions are
+started with `claude --bg`, listed with `claude agents --json --all`, and entered,
+inspected, stopped and removed with `claude attach`, `logs`, `stop` and `rm`. Sessions keep
+running when tower exits; tower holds nothing they depend on.
+
+What it adds on top:
+
+- **Several accounts in one view.** Every configured Claude Code account (each its own
+  `CLAUDE_CONFIG_DIR`) is polled and merged into one list, grouped by state (Needs me,
+  Failed, Ready for review, Working, Stopped & finished, Interactive) or by project.
+- **Hand-off between accounts.** When one account hits its limits, `a` stops a session and
+  continues it under another account with the same history.
+- **An orchestrator session.** `o` opens an ordinary background session named
+  `orchestrator` that you can ask what your sessions are doing.
+- **Visual-only attention.** A session that starts waiting for you or fails gets a `●`
+  marker and bold text until you attach or mark it seen. No bell, sound or desktop
+  notifications.
+- A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
+
+## What it does not do
+
+Tower never runs, supervises or reconfigures agents. It has no PTY handling, no tmux, no
+Agent SDK and no direct API calls, and it does not read Claude Code's internal files or
+credentials ([0001](doc/0001-thin-wrapper-over-claude-cli.md)). It never changes Claude
+Code's settings, keybindings or defaults ([0016](doc/0016-do-not-change-claude-code-defaults.md)).
+There is no quick reply without attaching, no usage or limit display, no automatic
+hand-off, no pinning and no chat or diff views. The full list of non-goals is in
+[0014](doc/0014-v1-scope.md).
+
+## Requirements
+
+- Linux x86_64 (account detection reads `/proc`).
+- Claude Code 2.1.300 or newer, with background sessions and agent view (`claude --bg`,
+  `claude agents`); see [doc/reference/claude-code-cli.md](doc/reference/claude-code-cli.md).
+- Rust 1.88 or newer (via rustup), only to build it.
+
+## Build and install
+
+`cargo build --release` builds `target/release/tower` for the local machine. For a fully
+static binary that runs on any x86_64 Linux whatever its glibc
+([0012](doc/0012-build-and-distribution.md)):
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+install -m 755 target/x86_64-unknown-linux-musl/release/tower ~/.local/bin/
+```
+
+For another host, copy that one file into its `~/.local/bin` (e.g. with `scp`).
+
+## Quick start
+
+1. Copy [`config.example.toml`](config.example.toml) to `~/.config/watchtower/config.toml`,
+   list your accounts and set `project_roots` to the folders that hold your git clones
+   (e.g. `~/workspace`). Without a config file tower uses one account, `main`, running
+   `claude`, and the new-session dialog has no projects to offer.
+2. Run `tower`. Existing background sessions of every account appear in the list.
+3. Press `n`, pick a project, type a task and press `Ctrl+S` to start it in the background
+   (or `Ctrl+Enter` / `Alt+Enter` to start and attach). If the account does not trust the
+   folder yet, `Ctrl+T` opens `claude` there so you can accept, then retries.
+4. Press `Enter` on a session to attach. Inside it, `Ctrl+Z` returns to tower.
+5. Press `?` for all keys, `q` to quit.
+
+## Configuration
+
+The config is `$XDG_CONFIG_HOME/watchtower/config.toml` (default
+`~/.config/watchtower/config.toml`). Tower only reads it. Every key is optional; see
+[`config.example.toml`](config.example.toml) for each key with its default, and
+[0002](doc/0002-tech-stack-and-files.md) for the details. The example defines two
+accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt`).
+
+- **Accounts.** Each account has a `name`, the `command` tower runs for it, and its
+  `config_dir`. `default_account` is used for new sessions and the orchestrator; the
+  new-session dialog lets you pick another one per session.
+- **Wrappers.** `command` is run as-is. Tower never sets `CLAUDE_CONFIG_DIR` itself and
+  removes an inherited one from every command it runs (and warns when started with one set),
+  so a second account needs a wrapper that sets it, e.g. a `claude-alt` script on `PATH`:
+
+  ```sh
+  #!/bin/sh
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alt" exec claude "$@"
+  ```
+
+- **`config_dir`** (default `~/.claude`) is how tower recognises which account hosts a
+  running session: it reads `CLAUDE_CONFIG_DIR` from the session process's
+  `/proc/<pid>/environ` and compares paths. Every account needs its own `config_dir`;
+  two accounts on the same directory are rejected.
+- **Shared lists.** Accounts whose config dirs share session storage through symlinks list
+  the same sessions. Tower merges them by session id and tracks the owner itself
+  ([0003](doc/0003-accounts-and-session-ownership.md)).
+
+## Keys
+
+Session list ([0011](doc/0011-keybindings.md)):
+
+| Key | Action |
+|---|---|
+| `↑` / `↓`, `k` / `j` | Move the selection (rows and group headers) |
+| `PgUp` / `PgDn`, `Home` / `End`, `g` / `G` | One page; first / last line |
+| `Enter` | Attach to the session (after a refresh); on a group header, collapse / expand |
+| `Tab` | Collapse / expand the group of the selected line |
+| `Space` | Toggle the logs panel for the selected session |
+| `n` | New-session dialog |
+| `a` | Continue under another account (hand-off) |
+| `o` | Attach to the orchestrator, starting it if missing |
+| `s` | Stop the session (asks first when it is working or blocked) |
+| `d` | Remove the session (asks first) |
+| `m` | Mark a highlighted session as seen |
+| `/` | Text filter on name, project and account; `Esc` clears it |
+| `p` | Group by state / by project |
+| `i` | Show / hide interactive sessions |
+| `r` | Refresh now |
+| `?` | Help |
+| `q`, `Ctrl+C` | Quit |
+| `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |
+
+Confirmations take `y`; `n`, `Esc` and `Enter` cancel. Tower never binds `←` and treats
+`Ctrl+Z` as a no-op, because inside an attached session those are Claude Code's keys
+(`←` on an empty prompt opens agent view, `Ctrl+Z` returns to tower).
+
+New-session dialog ([0008](doc/0008-new-session-dialog.md)):
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Next / previous field |
+| `←` / `→`, `↑` / `↓` | Move the cursor or change a choice |
+| `Enter` | New line in the task field; next field elsewhere |
+| `Ctrl+G` | Edit the task in `$VISUAL`, else `$EDITOR` |
+| `Ctrl+S` | Start in the background |
+| `Ctrl+Enter`, `Alt+Enter` | Start and attach |
+| `Ctrl+T` | After `Workspace not trusted`: run the account's command in the folder to accept trust, then retry |
+| `Esc` | Cancel (asks first if the task is not empty) |
+
+## `tower status`
+
+`tower status` polls every account once and prints the merged sessions as a short table;
+`tower status --json` prints them as JSON with `sessions` (id, name, folder, state, group,
+owning account and its command, last change time) and `errors` (accounts whose listing
+failed). It reads `state.json` but never writes it, so it is safe to run next to a running
+tower. Exit code 0 when at least one account was listed, 1 when every listing failed, 2 for
+a config error. The format is in [0010](doc/0010-orchestrator.md).
+
+## The orchestrator
+
+`o` attaches to the background session named `orchestrator`. If there is none, tower starts
+one under `default_account` in `~/.config/watchtower/orchestrator/` with permission mode
+`auto`, then attaches. It is started only when you press `o`, so it costs nothing until
+then. It reports and relays: it runs `tower status --json` and `claude logs`, and uses
+Claude Code's cross-session messaging to ask other sessions questions. It does not answer
+prompts, approve permissions, or start, stop or remove sessions
+([0010](doc/0010-orchestrator.md)).
+
+Its instructions are `~/.config/watchtower/orchestrator/CLAUDE.md`, written from the
+template [`assets/orchestrator/CLAUDE.md`](assets/orchestrator/CLAUDE.md) (built into the
+binary) when the file is missing. Tower never overwrites it, so your edits stay; changes
+take effect on the session's next wake. To get a newer template, delete the file and press
+`o` while no orchestrator is listed (remove the old one with `d` first).
+
+## Where state lives
+
+Next to the config, in `~/.config/watchtower/`:
+
+- `state.json`: what the CLI does not expose: each session's owning account, tracked
+  state-change times, acknowledged highlights, recent projects. Written atomically; losing
+  it loses only conveniences, and a corrupt one is moved aside as `state.json.corrupt`.
+- `state.json.lock`: the lock that lets several tower instances share `state.json`.
+- `orchestrator/`: the orchestrator's folder.
+
+## Safety notes
+
+- **Wrong-account wakes.** Attaching to or resuming a stopped session with another
+  account's `claude` silently moves it to that account, with its limits and login, and the
+  listing does not say which account hosts a session. So tower tracks ownership (from
+  `/proc`, the per-account lists, its own dispatches and hand-offs) and runs every command
+  with the owning account's command. When the owner is unknown the row shows `?`, and tower
+  asks which account to use before it wakes anything
+  ([0003](doc/0003-accounts-and-session-ownership.md),
+  [0017](doc/0017-ownership-evidence-rules.md)).
+- **Removing never destroys work.** `d` runs plain `claude rm <id>`. When `rm` refuses
+  because of uncommitted or unpushed work, tower shows its message and never passes
+  `--discard-unpushed` or `--force-remove-worktree`
+  ([0009](doc/0009-stop-remove-and-logs.md)). Transcripts stay on disk.
+- **Claude Code is left as it is.** Tower writes no Claude Code file, passes no
+  `--settings` and never `--dangerously-skip-permissions`, and does not accept workspace
+  trust for you ([0016](doc/0016-do-not-change-claude-code-defaults.md)).
+
+## Known limitations
+
+- Linux x86_64 only.
+- Cross-account messaging is unverified: the orchestrator may only reach sessions hosted
+  by its own account ([0010](doc/0010-orchestrator.md)).
+- Claude Code stops idle sessions (the orchestrator too) after about an hour; they wake,
+  more slowly, on the next attach.
+- `Ctrl+Enter` is not reported by many terminals, especially over SSH; use `Alt+Enter`.
+- Keys are fixed. Open questions are listed in each decision in [`doc/`](doc/README.md).
+
+## Development
+
+Design decisions are in [`doc/`](doc/README.md); read the relevant one before changing
+behaviour. Every change must pass:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+The tests need no Claude Code account: they use sanitized fixtures under `tests/fixtures/`
+and a fake `claude` placed on `PATH` ([0015](doc/0015-testing-strategy.md)). Nothing
+committed may contain personal details ([0013](doc/0013-privacy-and-repository-hygiene.md)).
+
+## License
+
+MIT, see [LICENSE](LICENSE).

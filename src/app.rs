@@ -1001,6 +1001,38 @@ impl App {
             .count()
     }
 
+    /// The line the list shows when it has nothing to draw after the first
+    /// poll: no sessions at all, or every row hidden by the filter or the
+    /// `i` toggle (doc/0006). Collapsed groups keep their headers, so they
+    /// never empty the list on their own.
+    pub fn empty_list_text(&self) -> String {
+        if self.sessions.is_empty() {
+            return "No sessions. Press n to start one.".to_owned();
+        }
+        let mut reasons = Vec::new();
+        if self.filter_active() {
+            reasons.push(format!(
+                "no match for filter \"{}\" (Esc clears)",
+                self.filter.text.trim()
+            ));
+        }
+        if !self.show_interactive {
+            let hidden = self
+                .sessions
+                .iter()
+                .filter(|m| m.session.is_interactive())
+                .count();
+            if hidden > 0 {
+                reasons.push(format!("{hidden} interactive hidden (i shows)"));
+            }
+        }
+        if reasons.is_empty() {
+            "Nothing to show.".to_owned()
+        } else {
+            format!("Nothing to show: {}", reasons.join("; "))
+        }
+    }
+
     /// Number of highlighted sessions the filter hides: the attention
     /// counter still counts them and says "(filtered)" (doc/0006, doc/0007).
     pub fn attention_filtered(&self) -> usize {

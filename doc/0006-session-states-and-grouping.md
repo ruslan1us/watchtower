@@ -86,6 +86,11 @@ sidecar ([0002](0002-tech-stack-and-files.md)) holds no view settings.
 dimmed, by default. While it is hidden, the status bar says how many
 interactive rows are hidden.
 
+**Empty list.** With no sessions at all the list says `No sessions. Press n
+to start one.` When sessions exist but the filter or the `i` toggle hides
+every row, it names the reason instead, e.g. `Nothing to show: 1 interactive
+hidden (i shows)`.
+
 **Filter.** `/` opens a text filter that matches, case-insensitively, against
 name, `cwd` and account. Group counts reflect the filter; the attention counter
 does not ([0007](0007-visual-only-attention.md)).

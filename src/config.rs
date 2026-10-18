@@ -272,3 +272,46 @@ fn check_distinct_config_dirs(accounts: &[Account]) -> Result<(), ConfigError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every key `RawConfig` accepts must be documented in
+    /// `config.example.toml`. The exhaustive patterns stop compiling when a
+    /// key is added, as a reminder; `tests/config.rs` then checks that the
+    /// example lists exactly these keys.
+    #[test]
+    fn example_config_sets_every_accepted_key() {
+        let raw: RawConfig = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let RawConfig {
+            default_account,
+            poll_interval_secs,
+            project_roots,
+            extra_projects,
+            default_model,
+            default_effort,
+            default_permission_mode,
+            handoff_prompt,
+            accounts,
+        } = raw;
+        assert!(default_account.is_some());
+        assert!(poll_interval_secs.is_some());
+        assert!(!project_roots.is_empty());
+        assert!(!extra_projects.is_empty());
+        assert!(default_model.is_some());
+        assert!(default_effort.is_some());
+        assert!(default_permission_mode.is_some());
+        assert!(handoff_prompt.is_some());
+        assert!(!accounts.is_empty());
+        for RawAccount {
+            name,
+            command,
+            config_dir,
+        } in accounts
+        {
+            assert!(!name.is_empty() && !command.is_empty());
+            assert!(config_dir.is_some());
+        }
+    }
+}

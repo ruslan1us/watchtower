@@ -2,8 +2,13 @@
 name = "watchtower"
 version = "0.1.0"
 edition = "2024"
-description = "A terminal UI over Claude Code background sessions"
+rust-version = "1.88"
+description = "A terminal UI over Claude Code background sessions, across several accounts"
 license = "MIT"
+repository = "https://github.com/ruslan1us/watchtower"
+readme = "README.md"
+keywords = ["claude", "claude-code", "tui", "terminal", "agents"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [lib]

@@ -363,9 +363,9 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
     app.page_size = usize::from(area.height).max(1);
     if app.entries().is_empty() {
         let text = if app.has_polled() {
-            "No sessions. Start one with `claude --bg \"<task>\"`; it will show up here."
+            app.empty_list_text()
         } else {
-            "Loading sessions…"
+            "Loading sessions…".to_owned()
         };
         frame.render_widget(Paragraph::new(format!("  {text}")), area);
         return;

@@ -129,10 +129,49 @@ fn empty_and_loading_states() {
     });
     let lines = render(&mut app, 100, 10);
     assert!(
-        lines.iter().any(|l| l.contains("No sessions")),
+        lines
+            .iter()
+            .any(|l| l.contains("No sessions. Press n to start one.")),
         "{lines:#?}"
     );
+    assert!(!lines.iter().any(|l| l.contains("claude --bg")));
     assert!(lines[0].contains("0 sessions"));
+}
+
+/// One interactive row and nothing else under `main`.
+fn interactive_only() -> watchtower::poller::PollUpdate {
+    let rows = r#"[{"kind": "interactive", "pid": 77,
+        "sessionId": "cccc0001-0000-4000-8000-000000000000",
+        "name": "shell-web", "cwd": "/home/user/workspace/web",
+        "status": "busy", "startedAt": 4000}]"#;
+    watchtower::poller::PollUpdate {
+        account: "main".into(),
+        cycle: 0,
+        result: Ok(watchtower::listing::parse_listing(rows).unwrap()),
+    }
+}
+
+#[test]
+fn empty_list_says_why_rows_are_hidden() {
+    let mut app = app_single();
+    app.apply_poll(interactive_only());
+    assert!(line_with(&render(&mut app, 100, 10), "shell-web").contains("not attachable"));
+
+    // `i` hides the only row: the list says so instead of "No sessions".
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    let lines = render(&mut app, 100, 10);
+    let text = "Nothing to show: 1 interactive hidden (i shows)";
+    assert!(lines.iter().any(|l| l.contains(text)), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("No sessions")));
+
+    // Shown again, then a filter that matches nothing.
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    for c in "/zzz".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let lines = render(&mut app, 100, 10);
+    let text = "Nothing to show: no match for filter \"zzz\" (Esc clears)";
+    assert!(lines.iter().any(|l| l.contains(text)), "{lines:#?}");
 }
 
 #[test]
