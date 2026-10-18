@@ -22,17 +22,18 @@ The saved options are the flags given at the original dispatch: a session dispat
 Key `a` on a row hands the session off. v1 only has the manual trigger.
 
 - **Target account**: with two accounts, the other one; with more, a picker of every account except the owner.
-- **Confirmation**: required when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn.
+- **Confirmation**: required when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn. Tower asks for every row with a live process in the Working or Needs me group, as `s` does ([0009](0009-stop-remove-and-logs.md)): stopping a blocked session also drops its pending prompt. The prompt says what will happen, e.g. "stop under main, continue under alt".
 - **Steps**:
-  1. If the session has a process (`pid` present), run `<owner> stop <id>`, then poll the listing until the process is gone (short timeout; abort with an error if it stays).
+  1. If the session has a process (`pid` present), run `<owner> stop <id>`, then poll the listing until the process is gone (short timeout; abort with an error if it stays). Tower lists with the same command every 0.5 s for up to 10 s; the row counts as gone when it has neither `pid` nor `status`, or is not listed.
   2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`. The prompt is always passed: without one the woken session stays idle.
-  3. Parse `backgrounded · <id> · <name>` from stdout. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)).
-- **Copy detection**: if `--resume <sessionId> --bg` starts a copy instead of continuing (Claude Code prints a `note:` line and a different id, e.g. because the session was still running), tower shows a warning. On the next poll it finds the copy by the short id printed in `backgrounded · <id> · <name>` and reads its `sessionId`. It records the copy under that `sessionId` in the sidecar with the target account and `account_source: handoff`, and leaves the original session's entry as it was.
+  3. Parse `backgrounded · <id> · <name>` from stdout. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)). The stderr `note:` lines are kept for messages. A line that still ends in `(idle — send a prompt to start)` is reported as a warning.
+  The sequence runs on a worker thread; the status line shows the current step. Any other failure is shown with the CLI's text, and the sidecar is not changed.
+- **Copy detection**: if `--resume <sessionId> --bg` starts a copy instead of continuing (Claude Code prints a `note:` line and a different id, e.g. because the session was still running), tower shows a warning. On the next poll it finds the copy by the short id printed in `backgrounded · <id> · <name>` and reads its `sessionId`. It records the copy under that `sessionId` in the sidecar with the target account and `account_source: handoff`, and leaves the original session's entry as it was. Until then the record is keyed by the copy's short id, the same mechanism as a dispatch ([0008](0008-new-session-dialog.md)).
 - **Unknown owner** (`?`): `stop` works from any account, so tower stops with the target's command and asks only for the target.
 - **Preconditions**, checked before step 1:
   - Background session with an `id` and `sessionId`. Interactive rows cannot be handed off, and the action is not offered for them.
   - The `cwd` still exists.
-  - The target account trusts the folder. Trust is stored per account. If step 2 fails with `Workspace not trusted`, tower offers the trust flow from [0008](0008-new-session-dialog.md) and then retries.
+  - The target account trusts the folder. Trust is stored per account. If step 2 fails with `Workspace not trusted`, tower offers the trust flow from [0008](0008-new-session-dialog.md) (`Ctrl+T` runs the target's command in the folder) and then retries once, without a second `stop`.
 - The orchestrator ([0010](0010-orchestrator.md)) is handed off the same way.
 
 ### Why manual
@@ -59,3 +60,5 @@ Limits are not in the JSON. A later version could take per-account 5 h / 7 d usa
 - Whether effort survives the wake. The `note:` lists `--name`, `--permission-mode` (when set at dispatch) and `--model` only; the resume docs say auto mode is restored when the account still qualifies.
 - Whether a session stopped by the ~1 h idle rule (not by `stop`) keeps its account when its owner wakes it.
 - Hand-off between accounts that do not share history has not been tested.
+- The output of the copy case (wording of its `note:` line, exit code) has not been captured; tower only compares the short id.
+- Tower's implementation has been tested against fake commands only; the end-to-end hand-off with real accounts, including how long a stopped process takes to leave the listing, is still to be checked on a host with two accounts.

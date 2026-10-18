@@ -1,12 +1,14 @@
-//! The TUI state machine (doc/0014 milestones 1 and 2): the merged session
+//! The TUI state machine (doc/0014 milestones 1–3): the merged session
 //! list, selection, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
-//! logs panel (doc/0009), and the key table (doc/0011).
+//! logs panel (doc/0009), the hand-off to another account (doc/0004), and
+//! the key table (doc/0011).
 //!
 //! Nothing here touches the terminal, spawns processes or does file I/O. Key
 //! presses, poll results and the outcomes of background jobs go in;
 //! [`Effect`]s come out and the runtime (`tui`, `jobs`) carries them out.
-//! Every CLI call that can take a while (dispatch, stop, remove, logs) is an
+//! Every CLI call that can take a while (dispatch, stop, remove, logs,
+//! hand-off) is an
 //! effect the runtime runs on a worker thread, reporting back through the
 //! `*_finished` / [`App::logs_fetched`] methods. That keeps the whole flow
 //! testable without a terminal (doc/0015).
@@ -22,9 +24,11 @@ use crate::config::{Account, Config};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group};
+use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
 use crate::listing::Session;
 use crate::logview::{LogScreen, LogsError};
 use crate::merge::{AccountListing, EnvironReader, MergedSession, Ownership, Resolver};
+use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
 use crate::sidecar::{self, AccountSource, Sidecar};
@@ -64,6 +68,25 @@ pub enum Effect {
     /// Run `<owning account command> logs <id>` and replay it on a worker
     /// thread, then call [`App::logs_fetched`] (doc/0009).
     FetchLogs(LogsTarget),
+    /// Run the hand-off sequence ([`handoff::run`]) on a worker thread,
+    /// reporting steps to [`App::handoff_step`], then call
+    /// [`App::handoff_finished`] (doc/0004).
+    Handoff(HandoffJob),
+    /// Suspend tower like an attach and run the target account's
+    /// interactive command in the session's folder
+    /// ([`dispatch::trust_command`]), then call
+    /// [`App::handoff_trust_finished`], which retries the hand-off once
+    /// (doc/0004, doc/0008).
+    HandoffTrust(HandoffJob),
+}
+
+/// A hand-off of one session to another account (doc/0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffJob {
+    /// What to stop and resume, with which accounts.
+    pub request: HandoffRequest,
+    /// This is the retry after the trust flow.
+    pub after_trust: bool,
 }
 
 /// A dispatch from the new-session dialog.
@@ -179,6 +202,42 @@ pub enum Confirm {
     },
     /// Remove a session from the list.
     Remove { action: SessionAction },
+    /// Hand off a working or blocked session: stopping it interrupts the
+    /// turn (doc/0004); `detail` is its state label.
+    Handoff { job: HandoffJob, detail: String },
+}
+
+/// A running hand-off, for the status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HandoffProgress {
+    name: String,
+    text: String,
+}
+
+/// The target picker of a hand-off with more than one candidate account
+/// (doc/0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetPicker {
+    /// `sessionId` of the session.
+    pub key: String,
+    /// Display name.
+    pub name: String,
+    /// The owning account, `None` when unknown (`?`).
+    pub owner: Option<String>,
+    /// Candidate target accounts, in config order; never the owner.
+    pub targets: Vec<String>,
+    /// Index into `targets`.
+    pub selected: usize,
+}
+
+/// A hand-off that failed with `Workspace not trusted` (doc/0004): `Ctrl+T`
+/// runs the trust flow for the target account and retries once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedHandoff {
+    /// The hand-off to retry.
+    pub job: HandoffJob,
+    /// The CLI's message.
+    pub message: String,
 }
 
 /// What is drawn on top of the list.
@@ -192,6 +251,10 @@ pub enum Overlay {
     Picker(Picker),
     /// A yes/no confirmation.
     Confirm(Confirm),
+    /// The hand-off target picker.
+    Target(TargetPicker),
+    /// A hand-off stopped at `Workspace not trusted`.
+    Untrusted(UntrustedHandoff),
 }
 
 /// A scrollable text window above everything else, e.g. the full text of
@@ -302,6 +365,8 @@ pub enum Action {
     NewSession,
     Stop,
     Remove,
+    /// `a`: continue under another account (doc/0004).
+    Handoff,
     ToggleLogs,
     /// `Esc`: close the logs panel.
     Close,
@@ -314,13 +379,14 @@ pub enum Action {
     NotYet(&'static str),
 }
 
-/// Keys of the session list (doc/0011, milestones 1 and 2).
+/// Keys of the session list (doc/0011, milestones 1–3).
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
     ("PgUp/PgDn", "move one page"),
     ("Home/End, g/G", "first / last row"),
     ("Enter", "attach to the selected session"),
     ("n", "new session"),
+    ("a", "continue under another account (hand-off)"),
     ("s", "stop the session (confirm when working or blocked)"),
     ("d", "remove the session (confirm)"),
     ("Space, Esc", "toggle / close the logs panel"),
@@ -336,12 +402,12 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
     ("Ctrl+S", "start in the background"),
     ("Ctrl+Enter, Alt+Enter", "start and attach"),
     ("Ctrl+G", "edit the task in $VISUAL / $EDITOR"),
-    ("Ctrl+T", "after \"not trusted\": open claude there"),
+    ("Ctrl+T", "after \"not trusted\": open claude there, retry"),
     ("Esc", "cancel"),
 ];
 
 /// Keys of later milestones, shown in the help as not yet available.
-pub const LATER_KEYS: &str = "a o m / p i Tab";
+pub const LATER_KEYS: &str = "o m / p i Tab";
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
 /// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
@@ -375,7 +441,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('?') => Action::Help,
         KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('a') => Action::NotYet("continue under another account"),
+        KeyCode::Char('a') => Action::Handoff,
         KeyCode::Char('o') => Action::NotYet("orchestrator"),
         KeyCode::Char('m') => Action::NotYet("mark seen"),
         KeyCode::Char('/') => Action::NotYet("filter"),
@@ -409,6 +475,7 @@ pub struct App {
     /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
     root: bool,
     message: Option<Message>,
+    handoff: Option<HandoffProgress>,
     warnings: Vec<String>,
     last_refresh: Option<Instant>,
     /// Rows per page for PgUp/PgDn; the renderer keeps it current.
@@ -459,6 +526,7 @@ impl App {
             popup: None,
             root: dispatch::is_root(),
             message: None,
+            handoff: None,
             warnings: Vec::new(),
             last_refresh: None,
             page_size: 10,
@@ -554,10 +622,18 @@ impl App {
         });
     }
 
-    /// The status line at time `now`: the transient message (if fresh), then
-    /// the refresh time, per-account errors and warnings.
+    /// The status line at time `now`: a running hand-off's progress, the
+    /// transient message (if fresh), then the refresh time, per-account
+    /// errors and warnings.
     pub fn status_segments(&self, now: Instant) -> Vec<StatusSegment> {
         let mut out = Vec::new();
+        // A running hand-off stays visible until it reports back.
+        if let Some(h) = &self.handoff {
+            out.push(StatusSegment {
+                text: h.text.clone(),
+                severity: Severity::Info,
+            });
+        }
         if let Some(m) = &self.message
             && now.saturating_duration_since(m.at) < MESSAGE_TTL
         {
@@ -936,6 +1012,8 @@ impl App {
             Overlay::Help => self.help_key(key),
             Overlay::Picker(picker) => self.picker_key(key, picker),
             Overlay::Confirm(confirm) => self.confirm_key(key, confirm),
+            Overlay::Target(picker) => self.target_key(key, picker),
+            Overlay::Untrusted(untrusted) => self.untrusted_key(key, untrusted),
             Overlay::None => self.list_key(key),
         }
     }
@@ -1110,6 +1188,7 @@ impl App {
                 match confirm {
                     Confirm::Stop { action, .. } => self.run_stop(action),
                     Confirm::Remove { action } => self.run_remove(action),
+                    Confirm::Handoff { job, .. } => self.start_handoff(job),
                 }
             }
             // The default is cancel (doc/0011), so Enter cancels too.
@@ -1118,6 +1197,7 @@ impl App {
                 let verb = match confirm {
                     Confirm::Stop { .. } => "stop",
                     Confirm::Remove { .. } => "remove",
+                    Confirm::Handoff { .. } => "hand-off",
                 };
                 self.set_message(format!("{verb} cancelled"), Severity::Info);
                 Vec::new()
@@ -1142,6 +1222,7 @@ impl App {
             Action::NewSession => return vec![Effect::OpenDialog],
             Action::Stop => effects = self.request_action(Purpose::Stop),
             Action::Remove => effects = self.request_action(Purpose::Remove),
+            Action::Handoff => effects = self.request_handoff(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
                     self.logs = Some(LogsPanel {
@@ -1281,6 +1362,342 @@ impl App {
         vec![Effect::Remove(action)]
     }
 
+    /// The text of a running hand-off, if any (doc/0004).
+    pub fn handoff_progress(&self) -> Option<&str> {
+        self.handoff.as_ref().map(|h| h.text.as_str())
+    }
+
+    /// `a` on the selected row (doc/0004): background rows with a short id
+    /// and a `sessionId` only. With one candidate account the hand-off is
+    /// planned right away, with more the target picker opens.
+    fn request_handoff(&mut self) -> Vec<Effect> {
+        if let Some(running) = &self.handoff {
+            let text = format!("a hand-off is already running ({})", running.name);
+            self.set_message(text, Severity::Info);
+            return Vec::new();
+        }
+        let Some(m) = self.selected_session() else {
+            return Vec::new();
+        };
+        let name = m.session.display_name();
+        if m.session.is_interactive() {
+            self.set_message(
+                format!(
+                    "{name} is an interactive session in another terminal; it cannot be \
+                     continued under another account"
+                ),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        if m.session.id.is_none() {
+            self.set_message(
+                format!("{name} has no short id; tower cannot hand it off"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let Some(key) = m.session.session_id.clone() else {
+            self.set_message(
+                format!("{name} has no sessionId; it cannot be resumed under another account"),
+                Severity::Info,
+            );
+            return Vec::new();
+        };
+        if self.config.accounts.len() < 2 {
+            self.set_message(
+                "only one account is configured; a hand-off needs a second account in config.toml",
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let owner = m.owner.account().map(str::to_owned);
+        let targets: Vec<String> = self
+            .config
+            .accounts
+            .iter()
+            .filter(|a| owner.as_deref() != Some(a.name.as_str()))
+            .map(|a| a.name.clone())
+            .collect();
+        match targets.as_slice() {
+            [] => Vec::new(),
+            [only] => {
+                let only = only.clone();
+                self.plan_handoff(&key, &only)
+            }
+            _ => {
+                self.overlay = Overlay::Target(TargetPicker {
+                    key,
+                    name,
+                    owner,
+                    targets,
+                    selected: 0,
+                });
+                Vec::new()
+            }
+        }
+    }
+
+    /// The hand-off of the session with `sessionId` `key` to `target`, from
+    /// the current row: confirmed first when the session is working or
+    /// blocked (`stop` interrupts the turn), otherwise started.
+    fn plan_handoff(&mut self, key: &str, target: &str) -> Vec<Effect> {
+        let Some(m) = self
+            .sessions
+            .iter()
+            .find(|m| m.session.session_id.as_deref() == Some(key))
+        else {
+            self.set_message("session no longer listed", Severity::Info);
+            return Vec::new();
+        };
+        let Some(target) = self.config.account(target).cloned() else {
+            self.set_message(
+                format!("account `{target}` is not configured"),
+                Severity::Error,
+            );
+            return Vec::new();
+        };
+        let s = &m.session;
+        let request = HandoffRequest {
+            id: s.id.clone().unwrap_or_default(),
+            session_id: key.to_owned(),
+            name: s.display_name(),
+            cwd: paths::expand_tilde(&s.cwd, &self.home),
+            owner: m
+                .owner
+                .account()
+                .and_then(|a| self.config.account(a))
+                .cloned(),
+            target,
+            live: s.has_live_process(),
+            prompt: self.config.handoff_prompt.clone(),
+        };
+        let confirm = request.live && stop_needs_confirmation(s);
+        let detail = groups::detail(s);
+        let job = HandoffJob {
+            request,
+            after_trust: false,
+        };
+        if confirm {
+            self.overlay = Overlay::Confirm(Confirm::Handoff { job, detail });
+            return Vec::new();
+        }
+        self.start_handoff(job)
+    }
+
+    fn start_handoff(&mut self, job: HandoffJob) -> Vec<Effect> {
+        let r = &job.request;
+        self.handoff = Some(HandoffProgress {
+            name: r.name.clone(),
+            text: format!("hand-off: {} — {}…", r.name, r.plan()),
+        });
+        vec![Effect::Handoff(job)]
+    }
+
+    fn target_key(&mut self, key: KeyEvent, mut picker: TargetPicker) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let n = picker.targets.len();
+        match key.code {
+            KeyCode::Char('c') if ctrl => return vec![Effect::Quit],
+            _ if ctrl => {}
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.overlay = Overlay::None;
+                self.set_message("hand-off cancelled", Severity::Info);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                picker.selected = picker.selected.saturating_sub(1);
+                self.overlay = Overlay::Target(picker);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                picker.selected = (picker.selected + 1).min(n.saturating_sub(1));
+                self.overlay = Overlay::Target(picker);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                picker.selected = 0;
+                self.overlay = Overlay::Target(picker);
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                picker.selected = n.saturating_sub(1);
+                self.overlay = Overlay::Target(picker);
+            }
+            KeyCode::Enter => {
+                self.overlay = Overlay::None;
+                let Some(target) = picker.targets.get(picker.selected).cloned() else {
+                    return Vec::new();
+                };
+                return self.plan_handoff(&picker.key, &target);
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn untrusted_key(&mut self, key: KeyEvent, untrusted: UntrustedHandoff) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => vec![Effect::Quit],
+            KeyCode::Char('t' | 'T') if ctrl => {
+                self.overlay = Overlay::None;
+                vec![Effect::HandoffTrust(untrusted.job)]
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') if !ctrl => {
+                self.overlay = Overlay::None;
+                self.set_message(
+                    format!(
+                        "hand-off cancelled; {} stays stopped",
+                        untrusted.job.request.name
+                    ),
+                    Severity::Info,
+                );
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A step of the running hand-off has started (doc/0004).
+    pub fn handoff_step(&mut self, step: Step) {
+        let Some(h) = self.handoff.as_mut() else {
+            return;
+        };
+        h.text = match step {
+            Step::Stopping { account } => {
+                format!("hand-off: stopping {} under {account}…", h.name)
+            }
+            Step::WaitingForStop => format!("hand-off: waiting for {} to stop…", h.name),
+            Step::Resuming { account } => {
+                format!("hand-off: continuing {} under {account}…", h.name)
+            }
+        };
+    }
+
+    /// Reports a finished hand-off (doc/0004). On success the target is
+    /// recorded in the sidecar (`account_source: handoff`): for the session
+    /// itself when it continued, for the copy (by its short id until the
+    /// next poll shows its `sessionId`) when Claude Code started one; the
+    /// original's entry is then left as it was. `Workspace not trusted`
+    /// offers the trust flow; every outcome polls.
+    pub fn handoff_finished(
+        &mut self,
+        job: HandoffJob,
+        result: Result<Resumed, HandoffError>,
+    ) -> Vec<Effect> {
+        self.handoff = None;
+        let r = &job.request;
+        let target = r.target.name.clone();
+        let mut effects = Vec::new();
+        match result {
+            Ok(resumed) => {
+                if handoff::record(&mut self.sidecar, r, &resumed) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                match &resumed.outcome {
+                    Outcome::Continued => {
+                        for m in &mut self.sessions {
+                            if m.session.session_id.as_deref() == Some(r.session_id.as_str()) {
+                                m.owner = Ownership::Known {
+                                    account: target.clone(),
+                                    source: AccountSource::Handoff,
+                                };
+                            }
+                        }
+                        if resumed.idle {
+                            self.set_message(
+                                format!(
+                                    "continued {} under {target}, but it woke idle; attach and \
+                                     send a prompt",
+                                    r.name
+                                ),
+                                Severity::Warning,
+                            );
+                        } else {
+                            self.set_message(
+                                format!("continued {} under {target}", r.name),
+                                Severity::Info,
+                            );
+                        }
+                    }
+                    Outcome::Copied { new_id } => {
+                        let note = resumed
+                            .notes
+                            .first()
+                            .map(|n| format!(" ({})", one_line(n)))
+                            .unwrap_or_default();
+                        self.set_message(
+                            format!(
+                                "--resume started a copy {new_id} of {} under {target} instead \
+                                 of continuing {}; the original was left as it was{note}",
+                                r.name, r.id
+                            ),
+                            Severity::Warning,
+                        );
+                    }
+                }
+            }
+            Err(HandoffError::Untrusted { message, .. }) => {
+                let mut message = message;
+                if job.after_trust {
+                    message.push_str(&format!(
+                        "\n(still not trusted after running {} there)",
+                        r.target.command
+                    ));
+                }
+                self.set_message(
+                    format!(
+                        "{target} has not trusted {}'s folder; Ctrl+T to trust it and retry",
+                        r.name
+                    ),
+                    Severity::Warning,
+                );
+                self.overlay = Overlay::Untrusted(UntrustedHandoff {
+                    job: job.clone(),
+                    message,
+                });
+            }
+            Err(err) => {
+                let text = match &err {
+                    HandoffError::ResumeCli(_)
+                    | HandoffError::Failed { .. }
+                    | HandoffError::Unparsed { .. } => format!(
+                        "cannot continue {} under {target}: {}; it was not continued",
+                        r.name,
+                        one_line(&err.to_string())
+                    ),
+                    _ => format!(
+                        "hand-off of {} to {target} failed: {}",
+                        r.name,
+                        one_line(&err.to_string())
+                    ),
+                };
+                self.set_message(text, Severity::Error);
+            }
+        }
+        effects.push(Effect::PollNow);
+        effects.extend(self.logs_follow(false));
+        effects
+    }
+
+    /// Reports the end of the trust flow of a hand-off (doc/0004,
+    /// doc/0008): the interactive target command exited, so the hand-off is
+    /// retried once, without stopping again. When it could not run at all
+    /// the trust window shows why and nothing is retried.
+    pub fn handoff_trust_finished(
+        &mut self,
+        job: HandoffJob,
+        result: Result<Option<i32>, String>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(_) => self.start_handoff(HandoffJob {
+                request: job.request.after_stop(),
+                after_trust: true,
+            }),
+            Err(err) => {
+                self.overlay = Overlay::Untrusted(UntrustedHandoff { job, message: err });
+                Vec::new()
+            }
+        }
+    }
+
     /// What the logs panel should show for the selected row: a fetchable
     /// target, or a note (doc/0009).
     fn logs_wanted(&self) -> (String, Result<LogsTarget, String>) {
@@ -1399,12 +1816,17 @@ impl App {
             })
         });
         self.select(keep.unwrap_or(self.selected));
-        // The picker refers to a session by key; drop it if it vanished.
-        if let Overlay::Picker(p) = &self.overlay
+        // The pickers refer to a session by key; drop them if it vanished.
+        let picked = match &self.overlay {
+            Overlay::Picker(p) => Some(p.key.clone()),
+            Overlay::Target(p) => Some(p.key.clone()),
+            _ => None,
+        };
+        if let Some(key) = picked
             && !self
                 .sessions
                 .iter()
-                .any(|m| m.session.key() == Some(p.key.as_str()))
+                .any(|m| m.session.key() == Some(key.as_str()))
         {
             self.overlay = Overlay::None;
             self.set_message("session no longer listed", Severity::Info);

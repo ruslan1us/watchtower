@@ -1,0 +1,5 @@
+backgrounded · d4a1f7c8 · touch-config
+  claude agents             list sessions
+  claude attach d4a1f7c8    open in this terminal
+  claude logs d4a1f7c8      show recent output
+  claude stop d4a1f7c8      stop this session

@@ -42,6 +42,11 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
 `Enter` cancels too.
 
+**Hand-off** ([0004](0004-account-hand-off.md)): with more than one candidate account, `a`
+opens a target picker (`↑` / `↓`, `Enter` continues, `Esc` cancels). After a `Workspace not
+trusted` failure a window offers `Ctrl+T` (run the target account's command in the folder,
+then retry once, as in the dialog) and `Esc` (leave the session stopped).
+
 **New-session dialog** (field layout is defined in [0008](0008-new-session-dialog.md))
 
 | Key | Action |

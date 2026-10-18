@@ -1,7 +1,8 @@
 //! Rendering: title, grouped session list, the logs panel, status line,
 //! footer, and the overlays: help, account picker, confirmations, the
-//! new-session dialog ([`dialog`]) and the popup window (doc/0006, doc/0008,
-//! doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
+//! hand-off target picker and trust window (doc/0004), the new-session
+//! dialog ([`dialog`]) and the popup window (doc/0006, doc/0008, doc/0009,
+//! doc/0011). Pure drawing from [`App`] state; no I/O.
 //!
 //! The logs panel sits to the right of the list when the terminal is at
 //! least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise below it, taking
@@ -23,15 +24,15 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
-    Picker, Popup, Purpose, Severity,
+    Picker, Popup, Purpose, Severity, TargetPicker, UntrustedHandoff,
 };
 use crate::groups::{self, Group};
 use crate::merge::MergedSession;
 use crate::paths;
 
 /// Footer key hints of the session list (doc/0011).
-pub const FOOTER_KEYS: &str =
-    "↑↓ move · Enter attach · n new · s stop · d remove · Space logs · ? help · q quit";
+pub const FOOTER_KEYS: &str = "↑↓ move · Enter attach · n new · a hand-off · s stop · d remove · \
+     Space logs · ? help · q quit";
 
 /// The detach hint, always shown at the right of the footer (doc/0005,
 /// doc/0011); the key hints are cut first when the terminal is narrow.
@@ -81,6 +82,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
         Overlay::Help => draw_help(frame, app, area),
         Overlay::Picker(p) => draw_picker(frame, app, &p, area),
         Overlay::Confirm(c) => draw_confirm(frame, app, &c, area),
+        Overlay::Target(p) => draw_target(frame, app, &p, area),
+        Overlay::Untrusted(u) => draw_untrusted(frame, app, &u, area),
     }
     if let Some(d) = app.dialog() {
         dialog::draw(frame, app, d, area);
@@ -317,8 +320,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(format!(" {key:<22} {what}")));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(format!(" Not available yet: {LATER_KEYS}")));
+    // No blank line before this one, so the help fits 24 rows.
+    lines.push(Line::styled(
+        format!(" Not available yet: {LATER_KEYS}"),
+        Style::new().add_modifier(Modifier::DIM),
+    ));
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);
@@ -362,6 +368,25 @@ fn draw_confirm(frame: &mut Frame, app: &App, confirm: &Confirm, area: Rect) {
                     .to_owned(),
             ],
         ),
+        Confirm::Handoff { job, detail } => {
+            let r = &job.request;
+            let mut text = vec![
+                format!(
+                    "Continue {} ({}) under {}? It is {detail}.",
+                    r.name, r.id, r.target.name
+                ),
+                format!("Tower will {}.", r.plan()),
+                "Stopping interrupts the current turn; the session then gets the hand-off \
+                 prompt and picks up from there."
+                    .to_owned(),
+            ];
+            if detail == "permission prompt" {
+                text.push(
+                    "The pending permission prompt is not shown again after the wake.".to_owned(),
+                );
+            }
+            (" Continue under another account? ", text)
+        }
     };
     text.push(String::new());
     let w = area.width.saturating_sub(4).min(76);
@@ -428,6 +453,86 @@ fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
                 .title(format!(" {} ", popup.title))
                 .title_bottom(Line::styled(hint, Style::new().add_modifier(Modifier::DIM))),
         ),
+        rect,
+    );
+}
+
+/// The hand-off target picker (doc/0004): every account except the owner.
+fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect) {
+    let mut lines = vec![match &picker.owner {
+        Some(owner) => Line::from(format!(
+            " Owner: {owner}. Stop it there and continue under:"
+        )),
+        None => {
+            Line::from(" Owner unknown (?). Stop it with the target's command and continue under:")
+        }
+    }];
+    lines.push(Line::raw(""));
+    for (i, name) in picker.targets.iter().enumerate() {
+        let command = app
+            .config()
+            .account(name)
+            .map(|a| a.command.as_str())
+            .unwrap_or("?");
+        let text = format!(
+            " {} {name}  ({command})",
+            if i == picker.selected { "▶" } else { " " }
+        );
+        let style = if i == picker.selected {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        };
+        lines.push(Line::styled(text, style));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        " Enter continue under this account · Esc cancel",
+        Style::new().add_modifier(Modifier::DIM),
+    ));
+    let h = lines.len() as u16 + 2;
+    let w = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
+    let rect = centered(area, w.max(40), h);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Continue {} under which account? ", picker.name);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
+        rect,
+    );
+}
+
+/// The window after a hand-off failed with `Workspace not trusted`
+/// (doc/0004, doc/0008).
+fn draw_untrusted(frame: &mut Frame, app: &App, untrusted: &UntrustedHandoff, area: Rect) {
+    let r = &untrusted.job.request;
+    let dir = paths::shorten_home(&r.cwd.to_string_lossy(), app.home());
+    let mut text: Vec<String> = untrusted.message.lines().map(str::to_owned).collect();
+    text.extend([
+        String::new(),
+        format!(
+            "{} is stopped and was not continued under {}.",
+            r.name, r.target.name
+        ),
+        format!(
+            "Ctrl+T: run `{}` in {dir} to accept Claude Code's trust prompt, then /exit; tower \
+             then retries the hand-off once.",
+            r.target.command
+        ),
+        "Esc: leave it stopped.".to_owned(),
+    ]);
+    let w = area.width.saturating_sub(4).min(80);
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let lines: Vec<Line> = text
+        .iter()
+        .flat_map(|t| wrap(t, inner_w))
+        .map(|r| Line::from(format!(" {r}")))
+        .collect();
+    let h = lines.len() as u16 + 2;
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Not trusted by {} ", r.target.name);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
         rect,
     );
 }

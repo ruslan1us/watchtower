@@ -384,7 +384,7 @@ fn help_lists_milestone_two_keys() {
         "Ctrl+S",
         "Ctrl+G",
         "Ctrl+T",
-        "Not available yet: a o m / p i Tab",
+        "Not available yet: o m / p i Tab",
     ] {
         assert!(all.contains(needle), "{needle} missing\n{all}");
     }

@@ -23,15 +23,18 @@
 //! - [`dispatch`]: `claude --bg` from the dialog's fields, the dialog's
 //!   option lists and the trust flow command (doc/0008).
 //! - [`actions`]: `stop` and `rm` of a session (doc/0009).
+//! - [`handoff`]: continuing a session under another account (milestone 3,
+//!   doc/0004).
 //!
-//! The TUI (milestones 1 and 2, doc/0014):
+//! The TUI (milestones 1–3, doc/0014):
 //!
 //! - [`app`]: the state machine (list, selection, overlays, logs panel,
-//!   stop and remove, keys); no I/O.
+//!   stop, remove and hand-off, keys); no I/O.
 //! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
-//! - [`jobs`]: runs dispatch, stop, remove and logs on worker threads.
+//! - [`jobs`]: runs dispatch, stop, remove, hand-off and logs on worker
+//!   threads.
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
 //!   also used for the editor and the trust flow.
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
@@ -51,6 +54,7 @@ pub mod dialog;
 pub mod dispatch;
 pub mod editor;
 pub mod groups;
+pub mod handoff;
 pub mod jobs;
 pub mod listing;
 pub mod logview;

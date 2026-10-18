@@ -72,6 +72,8 @@ on stdout (see `cli-output/logs-stopped.stderr`).
 | `bg-untrusted.stderr` | `claude --bg "…"` in a folder that was never trusted | `Workspace not trusted. Run \`claude\` in <path> once and accept the trust prompt, then retry.` stdout was empty. |
 | `resume-noprompt.stdout` | `claude --resume <sessionId> --bg` (no prompt), on `touch-config` after it had been stopped | `backgrounded · <id> · <name> (idle — send a prompt to start)` plus hints. The short id stays the same. |
 | `resume-noprompt.stderr` | same run | `note: woke session <id> with its saved options (--name, --permission-mode, --model).` |
+| `resume-prompt.stdout` | **hand-written**: `claude --resume <sessionId> --bg "continue"` on the same session | `resume-noprompt.stdout` without the ` (idle — …)` suffix, as the verified flow in [0004](../../doc/0004-account-hand-off.md) reports for a wake with a prompt. Not a capture. |
+| `resume-prompt.stderr` | **hand-written**, same | The same `note:` line as `resume-noprompt.stderr`. Not a capture. |
 | `logs-done.stderr` | `claude logs <id>` on `say-ok` | `Session <id> · <name>` header (stdout is `logs/done.ansi`). |
 | `logs-stopped.stderr` | `claude logs <id>` on `say-ok` after it was stopped | `Couldn't read logs for <id> — job not found — it may have already exited`. stdout was empty. |
 | `logs-unknown.stderr` | `claude logs nosuchjob` | `No job matching 'nosuchjob'. Run 'claude agents' to list running sessions.` |

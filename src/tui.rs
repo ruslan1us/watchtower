@@ -1,8 +1,9 @@
 //! The terminal runtime: sets up and restores the terminal, runs the event
 //! loop, feeds key presses, poll results and finished background jobs to
-//! [`App`], and carries out the [`Effect`]s it returns (doc/0005, doc/0008,
-//! doc/0009, doc/0014 milestones 1 and 2). Slow CLI calls run on worker
-//! threads ([`Jobs`]); attach, the task editor and the trust flow take over
+//! [`App`], and carries out the [`Effect`]s it returns (doc/0004, doc/0005,
+//! doc/0008, doc/0009, doc/0014 milestones 1–3). Slow CLI calls, including
+//! the hand-off sequence, run on worker threads ([`Jobs`]); attach, the task
+//! editor and the trust flow take over
 //! the terminal through the same hand-over ([`attach::run_foreground`]).
 //!
 //! The terminal is restored on normal exit, on error (a drop guard), on panic
@@ -256,31 +257,20 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             Effect::Dispatch(job) => rt.jobs.dispatch(job),
             Effect::Trust(job) => {
                 let req = &job.request;
-                let line = dispatch::trust_command(&req.account, &req.project);
-                let dir = paths::shorten_home(&req.project.to_string_lossy(), app.home());
-                let fg = Foreground {
-                    line: &line,
-                    announce: Some(format!(
-                        "tower: running `{}` in {dir} for account {}. Accept the trust prompt, \
-                         then leave Claude Code with /exit (or Ctrl+C twice); tower then \
-                         retries the dispatch.",
-                        req.account.command, req.account.name
-                    )),
-                    label: "claude",
-                    pause_on_failure: false,
-                };
-                let termination = rt.termination;
-                let result = attach::run_foreground(
-                    &mut rt.handover(),
-                    &mut InheritSpawner,
-                    &fg,
-                    termination,
-                );
-                if termination.pending().is_some() {
+                let Some(result) = run_trust(rt, app, &req.account, &req.project, "dispatch")
+                else {
                     return Ok(false);
-                }
+                };
                 queue.extend(app.trust_finished(job, result));
             }
+            Effect::HandoffTrust(job) => {
+                let req = &job.request;
+                let Some(result) = run_trust(rt, app, &req.target, &req.cwd, "hand-off") else {
+                    return Ok(false);
+                };
+                queue.extend(app.handoff_trust_finished(job, result));
+            }
+            Effect::Handoff(job) => rt.jobs.handoff(job),
             Effect::EditTask(text) => {
                 let termination = rt.termination;
                 let result = editor::editor_from_env().and_then(|cmd| {
@@ -304,6 +294,37 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
         }
     }
     Ok(true)
+}
+
+/// The trust flow of doc/0008, for a dispatch or a hand-off (doc/0004):
+/// hands the terminal to the interactive `<account command>` in `dir` so the
+/// user accepts Claude Code's own trust prompt. `None` when a termination
+/// signal arrived meanwhile and tower must exit.
+fn run_trust(
+    rt: &mut Runtime<'_>,
+    app: &App,
+    account: &crate::config::Account,
+    dir: &Path,
+    what: &str,
+) -> Option<Result<Option<i32>, String>> {
+    let line = dispatch::trust_command(account, dir);
+    let shown = paths::shorten_home(&dir.to_string_lossy(), app.home());
+    let fg = Foreground {
+        line: &line,
+        announce: Some(format!(
+            "tower: running `{}` in {shown} for account {}. Accept the trust prompt, then \
+             leave Claude Code with /exit (or Ctrl+C twice); tower then retries the {what}.",
+            account.command, account.name
+        )),
+        label: "claude",
+        pause_on_failure: false,
+    };
+    let termination = rt.termination;
+    let result = attach::run_foreground(&mut rt.handover(), &mut InheritSpawner, &fg, termination);
+    if termination.pending().is_some() {
+        return None;
+    }
+    Some(result)
 }
 
 /// Raw mode, alternate screen, hidden cursor, and keyboard enhancement where
