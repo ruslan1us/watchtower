@@ -57,7 +57,7 @@ pub fn find_var(environ: &[u8], name: &str) -> Option<OsString> {
         .map(|value| std::ffi::OsStr::from_bytes(value).to_os_string())
 }
 
-/// One account's poll result, the input to [`merge`].
+/// One account's poll result, the input to [`Resolver::merge`].
 #[derive(Debug, Clone)]
 pub struct AccountListing {
     /// Account name, as in the config.
@@ -65,6 +65,47 @@ pub struct AccountListing {
     /// The rows, or `None` when this account's poll failed or has no data
     /// yet. A failed poll is not evidence for rule 2.
     pub sessions: Option<Vec<Session>>,
+    /// True when `sessions` is the last good snapshot kept after a failed
+    /// poll (doc/0001: the UI keeps showing it, marked stale). Stale rows are
+    /// shown but, like `None`, are not evidence for rule 2, and a fresh row
+    /// from another account replaces a stale one in the merge.
+    pub stale: bool,
+}
+
+impl AccountListing {
+    /// A successful poll.
+    pub fn fresh(account: impl Into<String>, sessions: Vec<Session>) -> AccountListing {
+        AccountListing {
+            account: account.into(),
+            sessions: Some(sessions),
+            stale: false,
+        }
+    }
+
+    /// No data: the account has not been polled yet, or its poll failed and
+    /// there is nothing to keep.
+    pub fn missing(account: impl Into<String>) -> AccountListing {
+        AccountListing {
+            account: account.into(),
+            sessions: None,
+            stale: false,
+        }
+    }
+
+    /// The last good rows of an account whose latest poll failed.
+    pub fn stale(account: impl Into<String>, sessions: Vec<Session>) -> AccountListing {
+        AccountListing {
+            account: account.into(),
+            sessions: Some(sessions),
+            stale: true,
+        }
+    }
+
+    /// True when this is a successful, current poll result: the only kind
+    /// that counts for rule 2.
+    pub fn is_fresh(&self) -> bool {
+        self.sessions.is_some() && !self.stale
+    }
 }
 
 /// Who owns a merged session.
@@ -150,22 +191,31 @@ impl<'a> Resolver<'a> {
     /// in order of first appearance, accounts in the given order.
     pub fn merge(&self, listings: &[AccountListing], sidecar: &Sidecar) -> Vec<MergedSession> {
         let mut merged: Vec<MergedSession> = Vec::new();
+        // Parallel to `merged`: whether the kept row came from a stale listing.
+        let mut from_stale: Vec<bool> = Vec::new();
         for listing in listings {
             for row in listing.sessions.iter().flatten() {
-                match merged.iter_mut().find(|m| same_session(&m.session, row)) {
-                    Some(m) => {
+                match merged.iter().position(|m| same_session(&m.session, row)) {
+                    Some(i) => {
+                        let m = &mut merged[i];
                         if !m.seen_in.contains(&listing.account) {
                             m.seen_in.push(listing.account.clone());
                         }
-                        if !m.session.has_live_process() && row.has_live_process() {
+                        let fresher = from_stale[i] && !listing.stale;
+                        let livelier = !m.session.has_live_process() && row.has_live_process();
+                        if fresher || (livelier && from_stale[i] == listing.stale) {
                             m.session = row.clone();
+                            from_stale[i] = listing.stale;
                         }
                     }
-                    None => merged.push(MergedSession {
-                        session: row.clone(),
-                        seen_in: vec![listing.account.clone()],
-                        owner: Ownership::Unknown { config_dir: None },
-                    }),
+                    None => {
+                        merged.push(MergedSession {
+                            session: row.clone(),
+                            seen_in: vec![listing.account.clone()],
+                            owner: Ownership::Unknown { config_dir: None },
+                        });
+                        from_stale.push(listing.stale);
+                    }
                 }
             }
         }
@@ -174,12 +224,11 @@ impl<'a> Resolver<'a> {
             .iter()
             .map(|a| self.canonical(&a.config_dir))
             .collect();
-        // Rule 2 needs a successful poll from every configured account.
-        let all_polled = self.accounts.iter().all(|a| {
-            listings
-                .iter()
-                .any(|l| l.account == a.name && l.sessions.is_some())
-        });
+        // Rule 2 needs a successful, current poll from every configured account.
+        let all_polled = self
+            .accounts
+            .iter()
+            .all(|a| listings.iter().any(|l| l.account == a.name && l.is_fresh()));
         for m in &mut merged {
             m.owner = self.resolve(m, &canon_dirs, all_polled, sidecar);
         }

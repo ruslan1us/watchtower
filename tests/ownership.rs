@@ -82,9 +82,9 @@ impl Home {
 }
 
 fn al(account: &str, sessions: Option<Vec<Session>>) -> AccountListing {
-    AccountListing {
-        account: account.into(),
-        sessions,
+    match sessions {
+        Some(rows) => AccountListing::fresh(account, rows),
+        None => AccountListing::missing(account),
     }
 }
 
@@ -404,4 +404,55 @@ fn proc_environ_reads_own_process() {
     assert!(ProcEnviron.config_dir_var(std::process::id()).is_ok());
     // A pid that cannot exist.
     assert!(ProcEnviron.config_dir_var(u32::MAX).is_err());
+}
+
+#[test]
+fn stale_rows_are_shown_but_not_evidence() {
+    let home = Home::new();
+    let all = listing("after-stop-all.json").sessions;
+    let (main_rows, alt_rows): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .partition(|s| matches!(s.name.as_deref(), Some("say-ok" | "bad-model")));
+    // alt's latest poll failed; its last good rows are kept, marked stale.
+    let merged = home.merge(
+        &FakeEnviron::default(),
+        &[
+            AccountListing::fresh("main", main_rows),
+            AccountListing::stale("alt", alt_rows),
+        ],
+        &Sidecar::default(),
+    );
+    assert_eq!(merged.len(), 7, "stale rows stay visible");
+    // Rule 2 needs every account to be freshly polled.
+    assert_eq!(
+        owner(&merged, "say-ok"),
+        Ownership::Unknown { config_dir: None }
+    );
+    assert_eq!(
+        owner(&merged, "touch-config"),
+        Ownership::Unknown { config_dir: None }
+    );
+    assert!(!AccountListing::stale("alt", vec![]).is_fresh());
+    assert!(!AccountListing::missing("alt").is_fresh());
+    assert!(AccountListing::fresh("alt", vec![]).is_fresh());
+}
+
+#[test]
+fn fresh_row_replaces_stale_duplicate() {
+    let home = Home::new();
+    let live = listing("mixed-states.json").sessions;
+    let stopped = listing("after-stop-all.json").sessions;
+    // The stale snapshot (first in config order) still shows say-ok live;
+    // the fresh poll says it has stopped. The fresh row wins.
+    let merged = home.merge(
+        &FakeEnviron::default(),
+        &[
+            AccountListing::stale("main", live),
+            AccountListing::fresh("alt", stopped),
+        ],
+        &Sidecar::default(),
+    );
+    let say_ok = find(&merged, "say-ok");
+    assert_eq!(say_ok.session.pid, None);
+    assert_eq!(say_ok.seen_in, ["main", "alt"]);
 }

@@ -14,14 +14,29 @@
 //! - [`groups`]: maps sessions to the overview groups and detail labels
 //!   (doc/0006).
 //! - [`paths`]: home and XDG directories, `~` expansion.
+//!
+//! The TUI (milestone 1, doc/0014):
+//!
+//! - [`app`]: the state machine (list, selection, overlays, keys); no I/O.
+//! - [`ui`]: renders [`app::App`] with ratatui.
+//! - [`poller`]: polls every account on worker threads (doc/0001).
+//! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005).
+//! - [`tui`]: the terminal runtime and event loop.
+//! - [`args`]: command-line arguments.
 
 #[macro_use]
 mod strenum;
 
+pub mod app;
+pub mod args;
+pub mod attach;
 pub mod cli;
 pub mod config;
 pub mod groups;
 pub mod listing;
 pub mod merge;
 pub mod paths;
+pub mod poller;
 pub mod sidecar;
+pub mod tui;
+pub mod ui;
