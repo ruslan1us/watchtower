@@ -656,3 +656,132 @@ fn app_prunes_only_when_every_account_polled_fine() {
     assert!(!app.sidecar.sessions.contains_key(SID));
     assert!(effects.contains(&Effect::SaveSidecar), "{effects:?}");
 }
+
+// ---- saves off the UI thread, reloads on change (doc/0002, doc/0017) -------
+
+#[test]
+fn a_save_on_another_thread_keeps_the_changes_made_meanwhile() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let mut sc = Sidecar::default();
+    sc.record_owner_at(SID, "main", AccountSource::Started, 100);
+    let job = sc.begin_save();
+    // While the job runs, this instance records more.
+    sc.record_owner_at(SID2, "alt", AccountSource::Asked, 200);
+    let written = std::thread::spawn({
+        let job = job.clone();
+        let path = path.clone();
+        move || job.run(&path, Duration::from_secs(2))
+    })
+    .join()
+    .unwrap();
+    assert!(!sc.finish_save(&job, written).unwrap(), "no other tower");
+    assert_eq!(sc.owner(SID), Some(("main", &AccountSource::Started)));
+    assert_eq!(sc.owner(SID2), Some(("alt", &AccountSource::Asked)));
+    let disk = on_disk(&path);
+    assert!(disk.owner(SID2).is_none(), "taken after the job");
+    assert!(sc.is_dirty(), "still to be saved");
+    sc.save(&path).unwrap();
+    assert_eq!(
+        on_disk(&path).owner(SID2),
+        Some(("alt", &AccountSource::Asked))
+    );
+    assert!(!sc.is_dirty());
+}
+
+#[test]
+fn a_reload_takes_in_another_instances_changes_under_unsaved_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut a, mut b) = two_instances(dir.path());
+
+    // Nothing changed yet: the check reads nothing.
+    let quiet = b.begin_check().run(&path).unwrap();
+    assert!(!quiet.changed());
+    assert!(!b.apply_reload(quiet));
+
+    // Instance 1 hands SID off and records SID3; instance 2 has unsaved
+    // records of its own: one new, one for SID3 that is newer.
+    a.record_owner_at(SID, "alt", AccountSource::Handoff, 200);
+    a.record_owner_at(SID3, "main", AccountSource::Asked, 300);
+    a.save(&path).unwrap();
+    b.record_owner_at(SID2, "main", AccountSource::Asked, 250);
+    b.record_owner_at(SID3, "alt", AccountSource::Handoff, 400);
+
+    let found = b.begin_check().run(&path).unwrap();
+    assert!(found.changed());
+    assert!(b.apply_reload(found));
+    assert_eq!(
+        b.owner(SID),
+        Some(("alt", &AccountSource::Handoff)),
+        "taken in"
+    );
+    assert_eq!(b.owner(SID2), Some(("main", &AccountSource::Asked)), "kept");
+    assert_eq!(
+        b.owner(SID3),
+        Some(("alt", &AccountSource::Handoff)),
+        "the newer unsaved change stays on top"
+    );
+    assert!(b.is_dirty(), "its own changes are still to be saved");
+
+    // Its save writes only its own changes; instance 1's stay.
+    b.save(&path).unwrap();
+    let disk = on_disk(&path);
+    assert_eq!(disk.owner(SID), Some(("alt", &AccountSource::Handoff)));
+    assert_eq!(disk.owner(SID2), Some(("main", &AccountSource::Asked)));
+    assert_eq!(disk.owner(SID3), Some(("alt", &AccountSource::Handoff)));
+
+    // Its own save is known: the next check reads nothing; instance 1 sees
+    // the change.
+    assert!(!b.begin_check().run(&path).unwrap().changed());
+    let seen = a.begin_check().run(&path).unwrap();
+    assert!(a.apply_reload(seen));
+    assert_eq!(a, disk);
+    assert!(!a.is_dirty());
+}
+
+#[test]
+fn an_unsaved_list_detection_never_beats_a_reloaded_handoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut a, mut b) = two_instances(dir.path());
+    a.record_owner_at(SID2, "alt", AccountSource::Handoff, 100);
+    a.save(&path).unwrap();
+    // Newer, but only a `list` detection.
+    b.record_owner_at(SID2, "main", AccountSource::List, 900);
+    let found = b.begin_check().run(&path).unwrap();
+    b.apply_reload(found);
+    assert_eq!(b.owner(SID2), Some(("alt", &AccountSource::Handoff)));
+}
+
+#[test]
+fn a_missing_or_corrupt_file_on_reload_keeps_the_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _a, mut b) = two_instances(dir.path());
+    std::fs::write(&path, b"{ not json").unwrap();
+    let found = b.begin_check().run(&path).unwrap();
+    assert!(found.changed());
+    assert!(!b.apply_reload(found));
+    assert_eq!(b.owner(SID), Some(("main", &AccountSource::Proc)));
+    // Read once: the same corrupt version is not read again.
+    assert!(!b.begin_check().run(&path).unwrap().changed());
+    std::fs::remove_file(&path).unwrap();
+    let gone = b.begin_check().run(&path).unwrap();
+    assert!(gone.changed());
+    assert!(!b.apply_reload(gone));
+    assert_eq!(b.owner(SID), Some(("main", &AccountSource::Proc)));
+}
+
+#[test]
+fn read_owner_reads_one_record_without_the_lock() {
+    use watchtower::sidecar::read_owner;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, a, _b) = two_instances(dir.path());
+    let rec = read_owner(&path, SID).unwrap().unwrap();
+    assert_eq!(rec.account.as_deref(), Some("main"));
+    assert_eq!(rec.account_source, Some(AccountSource::Proc));
+    assert_eq!(Some(rec), a.base_owner(SID));
+    assert_eq!(read_owner(&path, SID2).unwrap(), None);
+    assert_eq!(
+        read_owner(&dir.path().join("none.json"), SID).unwrap(),
+        None
+    );
+}

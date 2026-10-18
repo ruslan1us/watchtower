@@ -1362,3 +1362,44 @@ fn s3_a_stale_row_with_a_reused_pid_is_no_evidence() {
         Some(("alt", &AccountSource::Handoff))
     );
 }
+
+/// Each `CLAUDE_CONFIG_DIR` value is resolved once and the accounts' dirs
+/// once (doc/0001: no `canonicalize` per poll): a symlink that appears
+/// after the first merge is not looked at again.
+#[test]
+fn config_dirs_are_resolved_once_per_value() {
+    use watchtower::merge::CanonCache;
+    let home = Home::new();
+    let rows = listing("mixed-states.json").sessions;
+    let env = FakeEnviron::default()
+        .with(4290, Env::Var(home.sub("alt-link")))
+        .matching(&rows);
+    let listings = [al("main", Some(rows.clone())), al("alt", Some(rows))];
+    let canon = CanonCache::for_accounts(&home.accounts, home.path());
+    assert_eq!(canon.values(), 0);
+    let mut resolver = Resolver::new(&home.accounts, home.path(), &env).with_canon(canon);
+    let merged = resolver.merge(&listings, &Sidecar::default());
+    // The link does not exist yet: compared as given, no account.
+    assert_eq!(owner(&merged, "print-date").label(), "?");
+    let (seen, canon) = resolver.into_parts();
+    assert_eq!(canon.values(), 1);
+
+    std::os::unix::fs::symlink(
+        home.path().join(".claude-alt"),
+        home.path().join("alt-link"),
+    )
+    .unwrap();
+    let mut resolver = Resolver::new(&home.accounts, home.path(), &env)
+        .with_known(seen)
+        .with_canon(canon);
+    let merged = resolver.merge(&listings, &Sidecar::default());
+    assert_eq!(owner(&merged, "print-date").label(), "?", "cached");
+    assert_eq!(resolver.into_parts().1.values(), 1);
+
+    // A fresh cache (a new tower) resolves it.
+    let merged = home.merge(&env, &listings, &Sidecar::default());
+    assert_eq!(
+        owner(&merged, "print-date"),
+        known("alt", AccountSource::Proc)
+    );
+}

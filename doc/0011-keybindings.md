@@ -22,7 +22,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `↑` / `↓`, `k` / `j` | Move selection |
 | `PgUp` / `PgDn` | Move one page |
 | `Home` / `End`, `g` / `G` | First / last row |
-| `Enter` | Attach to the selected session; on a group header, collapse/expand |
+| `Enter` | Attach to the selected session after a refresh ([0005](0005-attach-and-detach.md)); on a group header, collapse/expand |
 | `Tab` | Collapse/expand the group of the selected row |
 | `Space` | Toggle the logs panel for the selected row ([0009](0009-stop-remove-and-logs.md)) |
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
@@ -37,7 +37,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `r` | Refresh now |
 | `?` | Help overlay listing all keys |
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
-| `Esc` | Close the topmost panel, overlay or filter |
+| `Esc` | Cancel an attach waiting for its refresh; else close the topmost panel, overlay or filter |
 
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
 `Enter` cancels too.
@@ -88,6 +88,17 @@ variant that works.
   (`in a session: Ctrl+Z returns to tower`).
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
+- A window that a background result opens (the hand-off trust window, the
+  full text of an `rm` refusal, the account picker after an attach's
+  refresh) never replaces or covers a window that is open: the open
+  confirmation, picker, help, target picker, popup, new-session dialog or
+  quit question keeps the keys. The new window waits in a queue, the status
+  line says `1 window is waiting; it opens when this one closes`, and queued
+  windows open in arrival order once nothing else is open.
+- Inside a popup, `Ctrl+C` follows the rules of the window beneath it: over
+  the list it quits, asking the hand-off question while a hand-off runs;
+  over the new-session dialog it is the dialog's `Ctrl+C`, so the dialog asks
+  its own question and the popup waits until the dialog closes.
 
 ## Consequences
 

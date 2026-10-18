@@ -173,3 +173,49 @@ pub fn status_text(app: &App) -> String {
         .collect::<Vec<_>>()
         .join(" | ")
 }
+
+// ---- refresh before attach (doc/0005) -------------------------------------
+
+use watchtower::app::{Effect, SidecarJob};
+
+/// The cycle the fake runtime gives the poll an attach asks for.
+pub const ATTACH_CYCLE: u64 = 1_000;
+
+/// A sidecar path that does not exist: a check finds no file.
+pub const NO_STATE_FILE: &str = "/nonexistent/watchtower-test/state.json";
+
+/// Plays the runtime for an attach's refresh (doc/0005): when `effects`
+/// ask for it, starts the poll (cycle [`ATTACH_CYCLE`]), applies the fresh
+/// polls `(account, fixture)` and runs the sidecar check against
+/// [`NO_STATE_FILE`]. Returns the other effects plus those that followed,
+/// e.g. the attach. Without a refresh request, returns `effects`.
+pub fn refresh_for_attach(
+    app: &mut App,
+    effects: Vec<Effect>,
+    polls: &[(&str, &str)],
+) -> Vec<Effect> {
+    if !effects.contains(&Effect::PollForAttach) {
+        return effects;
+    }
+    let mut out: Vec<Effect> = effects
+        .into_iter()
+        .filter(|e| !matches!(e, Effect::PollForAttach | Effect::CheckSidecar))
+        .collect();
+    app.attach_poll_started(ATTACH_CYCLE);
+    for (account, fixture) in polls {
+        let mut update = poll(account, fixture);
+        update.cycle = ATTACH_CYCLE;
+        out.extend(app.apply_poll(update));
+    }
+    out.extend(run_sidecar_check(app, Path::new(NO_STATE_FILE)));
+    out
+}
+
+/// Runs a sidecar check against `path` on this thread, as the runtime's
+/// worker would, and returns the app's effects.
+pub fn run_sidecar_check(app: &mut App, path: &Path) -> Vec<Effect> {
+    let Some(SidecarJob::Check { seq, job }) = app.start_sidecar_check() else {
+        panic!("a sidecar job is already running");
+    };
+    app.sidecar_checked(seq, job.run(path))
+}

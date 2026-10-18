@@ -75,7 +75,9 @@ defines; the task text is the place to ask for something else
 ## Consequences
 
 - Project discovery is a cheap directory scan: a folder counts if it contains `.git`. Nested
-  repos deeper than one level need an `extra_projects` entry.
+  repos deeper than one level need an `extra_projects` entry. It runs on a worker thread
+  ([0001](0001-thin-wrapper-over-claude-cli.md)): the dialog opens at once and shows
+  `scanning projects…` until the list arrives; a filter typed meanwhile is kept.
 - The dialog never edits Claude Code's trust state itself; the user accepts trust in Claude
   Code's own dialog.
 - Any other `--bg` failure is shown verbatim with the exit code; the dialog keeps its

@@ -1,8 +1,10 @@
 //! Background jobs: the CLI calls behind the app's [`Effect`]s that can take
 //! a while — dispatch (`claude --bg`, which may first start a supervisor),
-//! `stop`, `rm`, `logs` and the hand-off sequence — each run on its own
-//! short-lived worker thread so the UI never blocks (doc/0001, doc/0004,
-//! doc/0008, doc/0009). Results come back over a channel as [`JobResult`]s;
+//! `stop`, `rm`, `logs` and the hand-off sequence — and the file work that
+//! could block on a slow disk or a hung network mount — sidecar saves and
+//! reloads, the project scan — each run on its own short-lived worker
+//! thread so the UI never blocks (doc/0001, doc/0002, doc/0004, doc/0008,
+//! doc/0009). Results come back over a channel as [`JobResult`]s;
 //! [`JobResult::apply`] hands them to the [`App`]. A hand-off also reports
 //! each step as it starts ([`JobResult::HandoffStep`]).
 //!
@@ -23,17 +25,22 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::actions::{self, RemoveError, StopError};
-use crate::app::{App, DispatchJob, Effect, HandoffJob, LogsTarget, SessionAction};
+use crate::app::{
+    App, DispatchJob, Effect, HandoffJob, LogsTarget, ProjectScan, SessionAction, SidecarJob,
+};
 use crate::cli::{CliError, CliRunner};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::logview::{self, LogScreen, LogsError};
+use crate::projects::{self, ProjectList};
+use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 
 /// A finished background job.
 #[derive(Debug)]
@@ -50,6 +57,12 @@ pub enum JobResult {
     HandoffStep(Step),
     /// A finished hand-off (doc/0004).
     Handoff(HandoffJob, Result<Resumed, HandoffError>),
+    /// A finished sidecar save, with its job number (doc/0002).
+    Saved(u64, SaveJob, io::Result<Saved>),
+    /// A finished look for other towers' sidecar changes (doc/0017).
+    Checked(u64, io::Result<Reloaded>),
+    /// The projects for the dialog of scan `id` (doc/0008).
+    Projects(u64, ProjectList),
 }
 
 impl JobResult {
@@ -65,6 +78,12 @@ impl JobResult {
                 Vec::new()
             }
             JobResult::Handoff(job, result) => app.handoff_finished(job, result),
+            JobResult::Saved(seq, job, result) => app.sidecar_saved(seq, &job, result),
+            JobResult::Checked(seq, result) => app.sidecar_checked(seq, result),
+            JobResult::Projects(id, list) => {
+                app.projects_found(id, list);
+                Vec::new()
+            }
         }
     }
 }
@@ -81,6 +100,8 @@ fn spawn_thread(name: String, body: Box<dyn FnOnce() + Send>) -> io::Result<()> 
 pub struct Jobs {
     runner: Arc<CliRunner>,
     handoff_timing: HandoffTiming,
+    /// The sidecar file a hand-off checks before waking (doc/0017).
+    state_file: Option<PathBuf>,
     spawner: ThreadSpawner,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
@@ -93,6 +114,7 @@ impl Jobs {
         Jobs {
             runner: Arc::new(runner),
             handoff_timing: HandoffTiming::default(),
+            state_file: None,
             spawner: spawn_thread,
             tx,
             rx,
@@ -102,6 +124,15 @@ impl Jobs {
     /// Uses `timing` for the stop wait of hand-offs (tests).
     pub fn with_handoff_timing(mut self, timing: HandoffTiming) -> Jobs {
         self.handoff_timing = timing;
+        self
+    }
+
+    /// Hand-offs compare the session's record in `path` with
+    /// [`HandoffJob::recorded`] right before stopping and before waking it,
+    /// and stop there when another tower recorded another owner
+    /// (doc/0017 section 8). Without it they do not look.
+    pub fn with_state_file(mut self, path: PathBuf) -> Jobs {
+        self.state_file = Some(path);
         self
     }
 
@@ -166,13 +197,59 @@ impl Jobs {
     /// continued.
     pub fn handoff(&self, job: HandoffJob) {
         let timing = self.handoff_timing;
+        let state_file = self.state_file.clone();
         let fail = |job, err| JobResult::Handoff(job, Err(HandoffError::ResumeCli(err)));
         self.launch("handoff", job, fail, move |runner, tx, job| {
             let mut progress = |step: Step| {
                 let _ = tx.send(JobResult::HandoffStep(step));
             };
-            let result = handoff::run(runner, &job.request, &timing, &mut progress);
+            let mut check = |stopped: bool| match &state_file {
+                Some(path) => owner_unchanged(path, &job, stopped),
+                None => Ok(()),
+            };
+            let result =
+                handoff::run_checked(runner, &job.request, &timing, &mut progress, &mut check);
             JobResult::Handoff(job, result)
+        });
+    }
+
+    /// Runs a sidecar save or check on a worker thread (doc/0002); the
+    /// file is `path`.
+    pub fn sidecar(&self, job: SidecarJob, path: PathBuf) {
+        let fail = |(job, _): (SidecarJob, PathBuf), err: CliError| {
+            let err = io::Error::other(err.to_string());
+            match job {
+                SidecarJob::Save { seq, job } => JobResult::Saved(seq, job, Err(err)),
+                SidecarJob::Check { seq, .. } => JobResult::Checked(seq, Err(err)),
+            }
+        };
+        self.launch(
+            "sidecar",
+            (job, path),
+            fail,
+            |_, _, (job, path)| match job {
+                SidecarJob::Save { seq, job } => {
+                    let result = job.run(&path, LOCK_WAIT);
+                    JobResult::Saved(seq, job, result)
+                }
+                SidecarJob::Check { seq, job } => JobResult::Checked(seq, job.run(&path)),
+            },
+        );
+    }
+
+    /// Scans for the dialog's candidate projects (doc/0008). A failed
+    /// worker gives an empty list with the reason as a warning.
+    pub fn projects(&self, scan: ProjectScan) {
+        let fail = |scan: ProjectScan, err: CliError| {
+            let list = ProjectList {
+                projects: Vec::new(),
+                warnings: vec![format!("the project scan failed: {err}")],
+            };
+            JobResult::Projects(scan.id, list)
+        };
+        self.launch("projects", scan, fail, |_, _, scan| {
+            let list = projects::discover(&scan.roots, &scan.extras, &scan.recent, &scan.home);
+            JobResult::Projects(scan.id, list)
         });
     }
 
@@ -197,6 +274,32 @@ impl Jobs {
     }
 }
 
+/// The hand-off's guard (doc/0017 section 8): an error when the sidecar
+/// file now records the session under another account than the one the
+/// hand-off stops it with, and the record differs from the one this tower
+/// planned with, i.e. another tower changed it. An unreadable file gives no
+/// evidence and lets the hand-off go on.
+fn owner_unchanged(
+    path: &std::path::Path,
+    job: &HandoffJob,
+    stopped: bool,
+) -> Result<(), HandoffError> {
+    let Ok(now) = sidecar::read_owner(path, &job.request.session_id) else {
+        return Ok(());
+    };
+    if now == job.recorded {
+        return Ok(());
+    }
+    let Some(account) = now.and_then(|r| r.account) else {
+        return Ok(());
+    };
+    let owner = job.request.owner.as_ref().map(|a| a.name.as_str());
+    if owner == Some(account.as_str()) {
+        return Ok(());
+    }
+    Err(HandoffError::OwnerChanged { account, stopped })
+}
+
 fn worker_error(job: &str, message: String) -> CliError {
     CliError::Worker {
         job: job.to_owned(),
@@ -214,6 +317,14 @@ thread_local! {
 /// The last panic message of a background thread that runs no job (e.g. the
 /// poller), kept for the status line.
 static STRAY_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// Runs `work` on this thread, catching a panic: its message (as the panic
+/// hook recorded it, with its location, else taken from the payload) is the
+/// error. The message does not count as a stray panic. Used by the poller to
+/// keep its threads alive (doc/0001).
+pub fn catch_panic<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    guarded(work)
+}
 
 /// Runs `work`, catching a panic: its message (as recorded by the panic hook,
 /// else taken from the payload) is the error.

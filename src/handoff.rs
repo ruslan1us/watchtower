@@ -242,6 +242,16 @@ pub enum HandoffError {
         /// stderr, trimmed (stdout when stderr is empty).
         stderr: String,
     },
+    /// Another tower recorded the session under another account since this
+    /// tower last read the sidecar (doc/0017 section 8); nothing more was
+    /// run. `stopped`: this tower had already stopped it.
+    #[error("another tower recorded this session under {account} meanwhile; {}", if *.stopped { "it was stopped and not continued" } else { "nothing was run" })]
+    OwnerChanged {
+        /// The account in the other tower's record.
+        account: String,
+        /// Whether `stop` had already run.
+        stopped: bool,
+    },
     /// Exit 0, but no `backgrounded · <id> …` line on stdout.
     #[error("--resume printed no session id: {stdout}")]
     Unparsed {
@@ -264,6 +274,7 @@ impl HandoffError {
                 | HandoffError::Untrusted { .. }
                 | HandoffError::Failed { .. }
                 | HandoffError::Unparsed { .. }
+                | HandoffError::OwnerChanged { stopped: true, .. }
         )
     }
 }
@@ -418,15 +429,33 @@ pub fn run(
     timing: &HandoffTiming,
     progress: &mut dyn FnMut(Step),
 ) -> Result<Resumed, HandoffError> {
+    run_checked(runner, request, timing, progress, &mut |_| Ok(()))
+}
+
+/// [`run`], calling `check` before `stop` (with `false`) and again right
+/// before `--resume` wakes the session (with whether `stop` ran). An error
+/// from `check` ends the hand-off there; the runtime uses it to honour
+/// another tower's newer sidecar record (doc/0017 section 8).
+pub fn run_checked(
+    runner: &CliRunner,
+    request: &HandoffRequest,
+    timing: &HandoffTiming,
+    progress: &mut dyn FnMut(Step),
+    check: &mut dyn FnMut(bool) -> Result<(), HandoffError>,
+) -> Result<Resumed, HandoffError> {
     request.validate()?;
+    check(false)?;
+    let mut stopped = false;
     if let Some(account) = request.stop_account() {
         progress(Step::Stopping {
             account: account.name.clone(),
         });
         actions::stop(runner, account, &request.id)?;
+        stopped = true;
         progress(Step::WaitingForStop);
         wait_until_stopped(runner, account, request, timing)?;
     }
+    check(stopped)?;
     progress(Step::Resuming {
         account: request.target.name.clone(),
     });

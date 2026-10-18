@@ -216,6 +216,74 @@ impl KnownProcesses {
     }
 }
 
+/// At most this many `CLAUDE_CONFIG_DIR` values are remembered by a
+/// [`CanonCache`]; when full it starts over.
+const CANON_CACHE_MAX: usize = 64;
+
+/// Canonical forms of config dirs, so a merge does not resolve symlinks on
+/// every poll: a `canonicalize` on a hung network mount would block the UI
+/// thread (doc/0001). The accounts' config dirs are resolved once
+/// ([`CanonCache::for_accounts`], at startup), and each `CLAUDE_CONFIG_DIR`
+/// value read from a process once, keyed by the raw value. Callers that poll
+/// repeatedly carry it across merges like [`KnownProcesses`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CanonCache {
+    /// The accounts' config dirs as configured and resolved, in config
+    /// order.
+    accounts: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
+    /// Raw process value → its canonical form.
+    values: HashMap<PathBuf, PathBuf>,
+}
+
+impl CanonCache {
+    /// A cache with the canonical config dirs of `accounts` (`~` expanded
+    /// against `home`).
+    pub fn for_accounts(accounts: &[Account], home: &Path) -> CanonCache {
+        let mut cache = CanonCache::default();
+        cache.accounts(accounts, home);
+        cache
+    }
+
+    /// Number of remembered process values.
+    pub fn values(&self) -> usize {
+        self.values.len()
+    }
+
+    fn accounts(&mut self, accounts: &[Account], home: &Path) -> Vec<PathBuf> {
+        let raw: Vec<PathBuf> = accounts.iter().map(|a| a.config_dir.clone()).collect();
+        match &self.accounts {
+            Some((known, dirs)) if *known == raw => dirs.clone(),
+            _ => {
+                let dirs: Vec<PathBuf> = raw.iter().map(|d| canonical(d, home)).collect();
+                self.accounts = Some((raw, dirs.clone()));
+                dirs
+            }
+        }
+    }
+
+    fn value(&mut self, raw: &Path, home: &Path) -> PathBuf {
+        if let Some(c) = self.values.get(raw) {
+            return c.clone();
+        }
+        if self.values.len() >= CANON_CACHE_MAX {
+            self.values.clear();
+        }
+        let c = canonical(raw, home);
+        self.values.insert(raw.to_path_buf(), c.clone());
+        c
+    }
+}
+
+/// `~` expanded and symlinks resolved; a path that cannot be resolved
+/// (e.g. does not exist) compares as given after expansion.
+fn canonical(path: &Path, home: &Path) -> PathBuf {
+    let expanded = match path.to_str() {
+        Some(s) => paths::expand_tilde(s, home),
+        None => path.to_path_buf(),
+    };
+    crate::config::comparable_dir(&expanded)
+}
+
 /// One account's poll result, the input to [`Resolver::merge`].
 #[derive(Debug, Clone)]
 pub struct AccountListing {
@@ -368,6 +436,7 @@ pub struct Resolver<'a> {
     home: &'a Path,
     environ: &'a dyn EnvironReader,
     known: KnownProcesses,
+    canon: CanonCache,
 }
 
 /// Where the row kept for a merged session came from.
@@ -403,6 +472,7 @@ impl<'a> Resolver<'a> {
             home,
             environ,
             known: KnownProcesses::default(),
+            canon: CanonCache::default(),
         }
     }
 
@@ -415,6 +485,18 @@ impl<'a> Resolver<'a> {
     /// The processes accepted so far, to pass to the next poll's resolver.
     pub fn into_known(self) -> KnownProcesses {
         self.known
+    }
+
+    /// The same resolver, with canonical paths resolved earlier.
+    pub fn with_canon(mut self, canon: CanonCache) -> Resolver<'a> {
+        self.canon = canon;
+        self
+    }
+
+    /// The processes accepted and the paths resolved so far, to pass to the
+    /// next poll's resolver.
+    pub fn into_parts(self) -> (KnownProcesses, CanonCache) {
+        (self.known, self.canon)
     }
 
     /// The processes accepted so far.
@@ -460,11 +542,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        let canon_dirs: Vec<PathBuf> = self
-            .accounts
-            .iter()
-            .map(|a| self.canonical(&a.config_dir))
-            .collect();
+        let canon_dirs = self.canon.accounts(self.accounts, self.home);
         let rule_two = self.rule_two_applies(listings, &merged);
         for (m, origin) in merged.iter_mut().zip(&origins) {
             let listed = !origin.stale && self.is_listed_process(&m.session);
@@ -511,7 +589,7 @@ impl<'a> Resolver<'a> {
     /// `listed`: the row is from a fresh listing and its `pid` passed the
     /// pid-reuse guard ([`Self::is_listed_process`]).
     fn resolve(
-        &self,
+        &mut self,
         m: &MergedSession,
         listed: bool,
         canon_dirs: &[PathBuf],
@@ -592,7 +670,7 @@ impl<'a> Resolver<'a> {
     /// starting with `~`, which the process sees literally) depends on the
     /// process's working directory and is never guessed: `?` with the raw
     /// value.
-    fn owner_of_config_dir(&self, var: Option<OsString>, canon_dirs: &[PathBuf]) -> Ownership {
+    fn owner_of_config_dir(&mut self, var: Option<OsString>, canon_dirs: &[PathBuf]) -> Ownership {
         let raw = match var.filter(|v| !v.is_empty()) {
             // `canonical` expands the default's `~` against tower's home.
             None => PathBuf::from(DEFAULT_CLAUDE_CONFIG_DIR),
@@ -603,23 +681,13 @@ impl<'a> Resolver<'a> {
                 };
             }
         };
-        let canon = self.canonical(&raw);
+        let canon = self.canon.value(&raw, self.home);
         match canon_dirs.iter().position(|d| *d == canon) {
             Some(i) => known(&self.accounts[i].name, AccountSource::Proc),
             None => Ownership::Unknown {
                 config_dir: Some(raw),
             },
         }
-    }
-
-    /// `~` expanded and symlinks resolved; a path that cannot be resolved
-    /// (e.g. does not exist) compares as given after expansion.
-    fn canonical(&self, path: &Path) -> PathBuf {
-        let expanded = match path.to_str() {
-            Some(s) => paths::expand_tilde(s, self.home),
-            None => path.to_path_buf(),
-        };
-        crate::config::comparable_dir(&expanded)
     }
 }
 

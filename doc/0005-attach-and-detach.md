@@ -103,10 +103,27 @@ and needs no handling. Inside tower `Ctrl+Z` is a no-op ([0011](0011-keybindings
   shows a status-line message instead of running anything.
 - Unknown owning account (account `?`): tower asks which account to use, stores
   the answer and then attaches ([0003](0003-accounts-and-session-ownership.md)).
+  The answer goes through the refresh below and is stored only if the
+  refresh still shows no owner.
 - Non-zero exit: after the key pause above, tower shows the exit code in the
   status line.
 - A session that has disappeared since the last poll: tower refreshes first and
-  reports "session no longer listed" instead of attaching.
+  reports "session no longer listed" instead of attaching. On `Enter` (and on
+  the account picker's `Enter`) tower polls every account at once and looks
+  for another tower's sidecar changes ([0017](0017-ownership-evidence-rules.md)
+  section 8), both on worker threads; the status line shows
+  `checking <name>… (Esc cancels)` and the UI keeps running. Tower attaches
+  only once a listing that started after `Enter`, of the account whose command
+  attaches, still contains the short id; otherwise it reports "session no
+  longer listed". The account is the owner the refreshed merge shows, so an
+  owner another tower recorded meanwhile (for example by a hand-off) wins over
+  the one shown at `Enter`, and over the picker's answer. The wait is bounded
+  at 5 s: then, or when that listing failed, tower attaches anyway and says so
+  in the status line after the session returns. `Esc` cancels the wait, and
+  an attach whose refresh ends while another window is open is dropped with a
+  message. A row being handed off is refused, and an owner that became
+  unknown opens the account picker, as on `Enter`. Dispatch-and-attach does
+  not wait for a refresh: the new session is not listed yet.
 
 **SIGTERM and SIGHUP.** Tower handles both with flag-setting `signal-hook`
 handlers (installed once, reset on `exec` like the ones above). Outside an

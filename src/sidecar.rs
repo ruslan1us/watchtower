@@ -15,6 +15,13 @@
 //! only what this instance changed since its last load or save, writes the
 //! result and adopts it as the new in-memory state. Records not seen in a
 //! listing for a long time are pruned (doc/0017 section 9).
+//!
+//! The file work can run on another thread: [`Sidecar::begin_save`] takes a
+//! [`SaveJob`], [`SaveJob::run`] writes, [`Sidecar::finish_save`] takes the
+//! result back with the changes made meanwhile on top. A [`CheckJob`] looks
+//! for another instance's writes by the file's identity, size and
+//! modification time, and [`Sidecar::apply_reload`] merges them in under
+//! this instance's unsaved changes (doc/0002, doc/0017 section 8).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -178,6 +185,7 @@ impl Default for Sidecar {
                     ..Snapshot::default()
                 },
                 retry_after: None,
+                stamp: None,
             },
         }
     }
@@ -201,6 +209,183 @@ struct Tracking {
     base: Snapshot,
     /// Set by a failed save: when [`Sidecar::retry_due`] turns true.
     retry_after: Option<Instant>,
+    /// The file's identity, size and modification time when `base` was
+    /// read or written; `None` when there was no file. A [`CheckJob`]
+    /// reloads the file when it differs.
+    stamp: Option<FileStamp>,
+}
+
+/// What tells one version of `state.json` from another without reading it:
+/// device and inode (a save renames a new file over it), size and
+/// modification time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+}
+
+impl FileStamp {
+    fn of(meta: &std::fs::Metadata) -> FileStamp {
+        use std::os::unix::fs::MetadataExt;
+        FileStamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+        }
+    }
+}
+
+/// The owner fields of a record: what a hand-off compares before waking a
+/// session (doc/0017 section 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerRecord {
+    pub account: Option<String>,
+    pub account_source: Option<AccountSource>,
+    pub updated_ms: Option<i64>,
+}
+
+impl OwnerRecord {
+    fn of(rec: &SessionRecord) -> OwnerRecord {
+        OwnerRecord {
+            account: rec.account.clone(),
+            account_source: rec.account_source.clone(),
+            updated_ms: rec.updated_ms,
+        }
+    }
+}
+
+/// A save taken off the instance by [`Sidecar::begin_save`], to run on a
+/// worker thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveJob {
+    /// The state of the last load or save when the job was taken.
+    base: Snapshot,
+    /// The in-memory state when the job was taken.
+    mine: Snapshot,
+}
+
+/// What a [`SaveJob`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    written: Snapshot,
+    stamp: Option<FileStamp>,
+}
+
+impl SaveJob {
+    /// The save itself (see [`Sidecar::save_with_wait`]): under the lock,
+    /// re-reads `path`, applies the job's changes on top, writes the
+    /// result atomically and returns it. Touches no [`Sidecar`]; hand the
+    /// result to [`Sidecar::finish_save`].
+    pub fn run(&self, path: &Path, wait: Duration) -> std::io::Result<Saved> {
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+        if let Some(dir) = dir {
+            std::fs::create_dir_all(dir)?;
+        }
+        let _lock = lock(&lock_path(path), wait)?;
+        let merged = match read_for_merge(path)? {
+            Some(disk) => merge_snapshot(&self.base, &self.mine, disk),
+            None => self.mine.clone(),
+        };
+        let out = Sidecar {
+            version: merged.version,
+            sessions: merged.sessions.clone(),
+            recent_projects: merged.recent_projects.clone(),
+            extra: merged.extra.clone(),
+            tracking: Tracking::default(),
+        };
+        let json = serde_json::to_vec_pretty(&out).map_err(std::io::Error::other)?;
+        write_atomic(path, dir, &json)?;
+        // Still under the lock, so no other instance has written since.
+        let stamp = std::fs::metadata(path).ok().map(|m| FileStamp::of(&m));
+        Ok(Saved {
+            written: merged,
+            stamp,
+        })
+    }
+}
+
+/// A check for changes other instances made to the file, taken by
+/// [`Sidecar::begin_check`], to run on a worker thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckJob {
+    known: Option<FileStamp>,
+}
+
+/// What a [`CheckJob`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reloaded {
+    /// The file differs from the version this instance knows.
+    changed: bool,
+    stamp: Option<FileStamp>,
+    /// The file's state; `None` when it is missing or cannot be parsed
+    /// (a corrupt file is left for the next save to move aside).
+    snapshot: Option<Snapshot>,
+}
+
+impl Reloaded {
+    /// Whether the file changed since this instance last read or wrote it.
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+}
+
+impl CheckJob {
+    /// Looks at `path` without the lock (saves replace it by a rename, so
+    /// a read sees one whole version): when its identity, size or
+    /// modification time differ from the known ones, reads and parses it.
+    /// Hand the result to [`Sidecar::apply_reload`].
+    pub fn run(&self, path: &Path) -> std::io::Result<Reloaded> {
+        use std::io::Read;
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Reloaded {
+                    changed: self.known.is_some(),
+                    stamp: None,
+                    snapshot: None,
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        let stamp = FileStamp::of(&file.metadata()?);
+        if self.known == Some(stamp) {
+            return Ok(Reloaded {
+                changed: false,
+                stamp: Some(stamp),
+                snapshot: None,
+            });
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let snapshot = serde_json::from_slice::<Sidecar>(&bytes)
+            .ok()
+            .map(|s| s.snapshot());
+        Ok(Reloaded {
+            changed: true,
+            stamp: Some(stamp),
+            snapshot,
+        })
+    }
+}
+
+/// The owner fields of `key`'s record in the file at `path`, read without
+/// the lock; `Ok(None)` when the file or the record is missing. An
+/// unparsable file is an error. Used right before a hand-off wakes a
+/// session, to honour another instance's newer record (doc/0017 section 8).
+pub fn read_owner(path: &Path, key: &str) -> std::io::Result<Option<OwnerRecord>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let disk: Sidecar = serde_json::from_slice(&bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(disk.sessions.get(key).map(OwnerRecord::of))
 }
 
 impl PartialEq for Tracking {
@@ -224,10 +409,11 @@ impl Sidecar {
     /// corrupt file is renamed to `state.json.corrupt` (replacing an older
     /// one) and an empty sidecar is returned with a warning. Never fails.
     pub fn load(path: &Path) -> Loaded {
-        let problem = match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice::<Sidecar>(&bytes) {
+        let problem = match read_with_stamp(path) {
+            Ok((bytes, stamp)) => match serde_json::from_slice::<Sidecar>(&bytes) {
                 Ok(mut sidecar) => {
                     sidecar.tracking.base = sidecar.snapshot();
+                    sidecar.tracking.stamp = Some(stamp);
                     return Loaded {
                         sidecar,
                         warning: None,
@@ -278,37 +464,96 @@ impl Sidecar {
     /// stays pending: a later save writes it, and [`Sidecar::retry_due`]
     /// says when to try again without a new change.
     pub fn save_with_wait(&mut self, path: &Path, wait: Duration) -> std::io::Result<()> {
-        let result = self.save_locked(path, wait);
-        self.tracking.retry_after = result.is_err().then(|| Instant::now() + RETRY_DELAY);
-        result
+        let job = self.begin_save();
+        let result = job.run(path, wait);
+        self.finish_save(&job, result).map(drop)
     }
 
-    fn save_locked(&mut self, path: &Path, wait: Duration) -> std::io::Result<()> {
-        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
-        if let Some(dir) = dir {
-            std::fs::create_dir_all(dir)?;
+    /// Takes what a save needs, so it can run on another thread
+    /// ([`SaveJob::run`]) while this instance keeps changing; then
+    /// [`Sidecar::finish_save`] takes the result back (doc/0002: saves never
+    /// run on the UI thread).
+    pub fn begin_save(&self) -> SaveJob {
+        SaveJob {
+            base: self.tracking.base.clone(),
+            mine: self.snapshot(),
         }
-        let _lock = lock(&lock_path(path), wait)?;
-        let mine = self.snapshot();
-        let merged = match read_for_merge(path)? {
-            Some(disk) => merge_snapshot(&self.tracking.base, &mine, disk),
-            None => mine,
+    }
+
+    /// Takes back the result of `job`, started by [`Sidecar::begin_save`].
+    /// On success the written state becomes the in-memory state, with every
+    /// change made here since `job` was taken applied on top of it (the same
+    /// merge as on save, with the state the job wrote as "the file"). On
+    /// failure nothing changes, the change stays pending and
+    /// [`Sidecar::retry_due`] turns true after the retry delay. `Ok(true)`
+    /// when the save brought in another instance's changes.
+    pub fn finish_save(
+        &mut self,
+        job: &SaveJob,
+        result: std::io::Result<Saved>,
+    ) -> std::io::Result<bool> {
+        match result {
+            Ok(saved) => {
+                self.tracking.retry_after = None;
+                let others = saved.written != job.mine;
+                let current = self.snapshot();
+                let merged = merge_snapshot(&job.mine, &current, saved.written.clone());
+                self.adopt(merged);
+                self.tracking.base = saved.written;
+                self.tracking.stamp = saved.stamp;
+                Ok(others)
+            }
+            Err(err) => {
+                self.tracking.retry_after = Some(Instant::now() + RETRY_DELAY);
+                Err(err)
+            }
+        }
+    }
+
+    /// Replaces the persisted fields with `s`.
+    fn adopt(&mut self, s: Snapshot) {
+        self.version = s.version;
+        self.sessions = s.sessions;
+        self.recent_projects = s.recent_projects;
+        self.extra = s.extra;
+    }
+
+    /// What a [`CheckJob`] needs: the file as this instance last read or
+    /// wrote it.
+    pub fn begin_check(&self) -> CheckJob {
+        CheckJob {
+            known: self.tracking.stamp,
+        }
+    }
+
+    /// Takes in another instance's changes found by a [`CheckJob`]
+    /// (doc/0017 section 8): the file's state becomes the in-memory state,
+    /// with this instance's unsaved changes (memory compared with its last
+    /// load or save) applied on top by the same rules as merge on save.
+    /// The file becomes the new base, so those changes stay pending.
+    /// Returns true when the in-memory state changed.
+    pub fn apply_reload(&mut self, reloaded: Reloaded) -> bool {
+        if !reloaded.changed {
+            return false;
+        }
+        self.tracking.stamp = reloaded.stamp;
+        let Some(disk) = reloaded.snapshot else {
+            return false;
         };
-        let out = Sidecar {
-            version: merged.version,
-            sessions: merged.sessions.clone(),
-            recent_projects: merged.recent_projects.clone(),
-            extra: merged.extra.clone(),
-            tracking: Tracking::default(),
-        };
-        let json = serde_json::to_vec_pretty(&out).map_err(std::io::Error::other)?;
-        write_atomic(path, dir, &json)?;
-        self.version = out.version;
-        self.sessions = out.sessions;
-        self.recent_projects = out.recent_projects;
-        self.extra = out.extra;
-        self.tracking.base = merged;
-        Ok(())
+        let before = self.snapshot();
+        let merged = merge_snapshot(&self.tracking.base, &before, disk.clone());
+        let changed = merged != before;
+        self.adopt(merged);
+        self.tracking.base = disk;
+        changed
+    }
+
+    /// The owner fields of `key`'s record as this instance last read or
+    /// wrote them in the file, ignoring unsaved changes; `None` when it had
+    /// no record there. A hand-off compares it with the file before waking
+    /// the session ([`read_owner`]).
+    pub fn base_owner(&self, key: &str) -> Option<OwnerRecord> {
+        self.tracking.base.sessions.get(key).map(OwnerRecord::of)
     }
 
     /// True when the in-memory state has changes no save has written yet.
@@ -627,6 +872,16 @@ fn lock(path: &Path, wait: Duration) -> std::io::Result<std::fs::File> {
             _ => return Err(err),
         }
     }
+}
+
+/// The file's bytes and the stamp of the version read.
+fn read_with_stamp(path: &Path) -> std::io::Result<(Vec<u8>, FileStamp)> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let stamp = FileStamp::of(&file.metadata()?);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok((bytes, stamp))
 }
 
 /// Reads the file under the lock. `None` when there is nothing to merge

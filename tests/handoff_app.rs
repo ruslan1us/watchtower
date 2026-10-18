@@ -11,7 +11,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use common::{HOME, NoEnviron, app_single, app_two_with, ch, ctrl, key, poll, status_text};
+use common::{
+    HOME, NoEnviron, app_single, app_two_with, ch, ctrl, key, poll, refresh_for_attach, status_text,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
@@ -668,16 +670,22 @@ fn row_actions_on_the_session_being_handed_off_are_refused() {
 
     // Other rows are not affected.
     select(&mut app, "say-ok");
+    let both = [
+        ("main", "after-stop-all.json"),
+        ("alt", "after-stop-all.json"),
+    ];
+    let effects = app.handle_key(key(KeyCode::Enter));
     assert_eq!(
-        attach_account(&app.handle_key(key(KeyCode::Enter))).as_deref(),
+        attach_account(&refresh_for_attach(&mut app, effects, &both)).as_deref(),
         Some("main")
     );
 
     // Afterwards the row attaches with its new owner.
     app.handoff_finished(job, Ok(continued("7b4d9f02")));
     select(&mut app, "print-date");
+    let effects = app.handle_key(key(KeyCode::Enter));
     assert_eq!(
-        attach_account(&app.handle_key(key(KeyCode::Enter))).as_deref(),
+        attach_account(&refresh_for_attach(&mut app, effects, &both)).as_deref(),
         Some("alt")
     );
 }
@@ -760,6 +768,7 @@ fn termination_waits_for_the_handoff_and_records_it() {
     let job = HandoffJob {
         request: job.request,
         after_trust: false,
+        recorded: None,
     };
     let mut once = Some(JobResult::Handoff(
         job,

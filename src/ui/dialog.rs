@@ -381,7 +381,9 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
     }
     p.line(Line::from(spans));
     if filtered.is_empty() {
-        let text = if dialog.projects.is_empty() {
+        let text = if dialog.scanning {
+            "scanning projects…"
+        } else if dialog.projects.is_empty() {
             "no projects found — set project_roots or extra_projects in config.toml"
         } else {
             "no project matches the filter"

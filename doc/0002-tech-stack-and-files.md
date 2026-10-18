@@ -124,6 +124,18 @@ CLI does not expose:
   with a warning and retried later. Under the lock tower re-reads the file
   and applies only its own changes since its last load or save (merge on
   save, rules in [0017](0017-ownership-evidence-rules.md)).
+- Saves run on a worker thread, never on the UI thread: one save at a time,
+  plus at most one queued behind it (a save or a reload check). Changes made
+  while a save runs stay in memory on top of the state it wrote and go out
+  with the next save. On exit tower waits up to 5 s for the running save and
+  then writes what is still unsaved.
+- Tower also takes in other instances' changes without saving: at each poll
+  a worker compares the file's device, inode, size and modification time
+  with those of the version tower last read or wrote and, when they differ,
+  reads it and merges it like on save, with this instance's unsaved changes
+  applied on top. The same check runs right before an attach, and a
+  hand-off re-reads the session's record right before it stops and before
+  it wakes the session ([0017](0017-ownership-evidence-rules.md) section 8).
 - Writes happen only when something changed, not on every poll.
 - On a missing file tower starts empty. On an unreadable or corrupt one it
   moves it aside as `state.json.corrupt`, starts fresh and shows a warning. It

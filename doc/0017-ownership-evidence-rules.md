@@ -75,6 +75,9 @@ Two towers (for example in two SSH sessions) share `state.json`. Neither may rev
 - Other fields: `last_seen_ms` takes the later time, and `last_state`, `acknowledged` and unknown fields take the saving instance's value. If both instances changed `recent_projects`, the lists are united: one entry per path with the later `last_used_ms`, newest first, capped at 50.
 - A removal (pruning, or a short-id record moved to its `sessionId`) applies only if the file's record is unchanged since this instance read it. A record changed here but removed by the other instance is written back.
 - A missing file, or a corrupt one (moved aside as on load), is replaced by the whole in-memory state.
+- Saves run on a worker thread, one at a time with at most one queued ([0002](0002-tech-stack-and-files.md)). What changed in memory while a save ran is applied on top of the state it wrote, by the same rules, and stays pending for the next save.
+- Reload on change. At each poll a worker looks at the file's device, inode, size and modification time. When they differ from the version this instance last read or wrote, it reads the file (without the lock: saves replace it by a rename) and the file's state becomes the in-memory state with this instance's unsaved changes applied on top, by the rules above (the file plays the other instance). The file becomes this instance's new base, so its own changes stay pending. A missing or unparsable file changes nothing in memory (the next save handles it as above). A save records the version it wrote, so an instance does not reload its own writes.
+- Before waking a session. An attach waits for such a check that started after `Enter` (bounded, see [0005](0005-attach-and-detach.md)), so it uses the owner another tower recorded meanwhile, for example after its hand-off. A hand-off reads the session's record from the file right before `stop` and again right before `--resume`: when it differs from the record this instance last read or wrote and names another account than the one the hand-off stops it with, the hand-off ends there ("another tower recorded … meanwhile"), nothing more is run, and tower reloads the file. An unreadable file gives no evidence and the hand-off goes on.
 
 ### 9. Pruning
 
@@ -97,6 +100,7 @@ Two towers (for example in two SSH sessions) share `state.json`. Neither may rev
 - Rule 2 applies less often. An account with no sessions gives no `list` evidence for the other account's rows, and an account whose polls take longer than the poll interval rarely shares a cycle with the others. Such rows rely on `started`, `handoff`, `asked` or `proc` records, or are `?` and asked once. Being asked is safe; a wrong owner is not.
 - A suspended host or a stepped wall clock no longer costs rule-1 evidence. The first sighting trusts the `cmdline`: a row whose exited process's pid was taken by another Claude Code process before tower saw the row (for example while tower was not running) gives that process's config dir. The pairs live in memory, so every tower start is a first sighting for every live row.
 - A process with a literal `~` in `CLAUDE_CONFIG_DIR` shows `?` until the user answers.
+- Another instance's records reach this one within a poll, and always before this one wakes a session; an attach can wait up to 5 s for that.
 - A config that worked before with two accounts on one config dir now fails to load. The error says how to fix it.
 - A setup that relied on an exported `CLAUDE_CONFIG_DIR` for an account whose `command` is a bare `claude` now reaches `~/.claude` instead; the startup warning says so, and the variable belongs in that account's `command`.
 
@@ -111,4 +115,3 @@ Two towers (for example in two SSH sessions) share `state.json`. Neither may rev
 
 - Verify that a live background worker's `cmdline` and `exe` match the accepted forms. So far only an interactive process of a native install was inspected (bare `claude` as `argv[0]`, `exe` under `claude/versions/<version>`); the `node` form is inferred from the npm package layout, not observed.
 - Whether Claude Code expands a literal `~` in `CLAUDE_CONFIG_DIR`.
-- An instance sees another instance's sidecar changes only when it saves (section 8). Until then it resolves owners from its own copy. Reloading when the file's mtime changes would close that gap.

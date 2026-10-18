@@ -2,7 +2,8 @@
 //! loop, feeds key presses, poll results and finished background jobs to
 //! [`App`], and carries out the [`Effect`]s it returns (doc/0004, doc/0005,
 //! doc/0008, doc/0009, doc/0014 milestones 1–3). Slow CLI calls, including
-//! the hand-off sequence, run on worker threads ([`Jobs`]); attach, the task
+//! the hand-off sequence, and file work (sidecar saves and reloads, the
+//! project scan) run on worker threads ([`Jobs`]); attach, the task
 //! editor and the trust flow take over
 //! the terminal through the same hand-over ([`attach::run_foreground`]).
 //!
@@ -60,7 +61,7 @@ use crate::merge::ProcEnviron;
 use crate::paths::{self, Dirs};
 use crate::poller::Poller;
 use crate::sidecar::Loaded;
-use crate::{dispatch, editor, projects};
+use crate::{dispatch, editor};
 
 /// How long the loop waits for input before checking for poll results and
 /// redrawing (the status line shows the age of the last refresh).
@@ -362,6 +363,47 @@ pub fn finish_handoff_for_exit(
     save
 }
 
+/// How long tower waits on exit for the sidecar saves still to be made.
+pub const SAVE_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// The exit path of the sidecar (doc/0002): saves run on worker threads, so
+/// tower waits up to `timeout` for the one running, then saves what is
+/// still unsaved, at most twice. `start` runs a job on a worker, `recv` is
+/// the jobs' `recv_timeout`; every job result that arrives meanwhile is
+/// fed to the app and its other effects are dropped. Returns whether
+/// nothing was left unsaved. Never touches the terminal.
+pub fn flush_sidecar(
+    app: &mut App,
+    timeout: Duration,
+    mut start: impl FnMut(crate::app::SidecarJob),
+    mut recv: impl FnMut(Duration) -> Option<JobResult>,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut attempts = 0;
+    loop {
+        if !app.sidecar_busy() {
+            if !app.sidecar.is_dirty() {
+                return true;
+            }
+            if attempts >= 2 {
+                return false;
+            }
+            if let Some(job) = app.start_save() {
+                start(job);
+                attempts += 1;
+            }
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return !app.sidecar.is_dirty();
+        }
+        let Some(done) = recv(left) else {
+            return !app.sidecar.is_dirty();
+        };
+        done.apply(app);
+    }
+}
+
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
 pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
@@ -402,7 +444,7 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
         Arc::new(CliRunner::new()),
         config.poll_interval(),
     );
-    let jobs = Jobs::new(CliRunner::new());
+    let jobs = Jobs::new(CliRunner::new()).with_state_file(state_file.clone());
     let mut rt = Runtime {
         terminal: &mut terminal,
         poller: &poller,
@@ -428,11 +470,15 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
                 .terminal
                 .draw(|frame| crate::ui::draw(frame, &mut app, Instant::now()));
         }
-        if finish_handoff_for_exit(&mut app, HANDOFF_EXIT_WAIT, |t| jobs.recv_timeout(t)) {
-            // Nowhere to report a failure: tower is exiting.
-            let _ = app.sidecar.save(&state_file);
-        }
+        finish_handoff_for_exit(&mut app, HANDOFF_EXIT_WAIT, |t| jobs.recv_timeout(t));
     }
+    // Saves run on worker threads: let the last ones finish (doc/0002).
+    flush_sidecar(
+        &mut app,
+        SAVE_EXIT_WAIT,
+        |job| jobs.sidecar(job, state_file.clone()),
+        |t| jobs.recv_timeout(t),
+    );
     let exit = exit_for(result, termination.pending());
     if let Ok(exit) = exit {
         restore.write = exit.may_write_to_terminal();
@@ -505,8 +551,21 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
             // Resize: the next draw picks up the new size.
             _ => {}
         }
+        let mut polled = false;
         while let Some(update) = rt.poller.try_recv() {
             effects.extend(app.apply_poll(update));
+            polled = true;
+        }
+        if polled {
+            // Other towers' sidecar changes, looked for once per poll
+            // (doc/0017 section 8).
+            effects.push(Effect::CheckSidecar);
+        }
+        while let Some(message) = rt.poller.try_restart() {
+            app.set_message(
+                format!("polling stopped unexpectedly and was restarted: {message}"),
+                Severity::Warning,
+            );
         }
         while let Some(done) = rt.jobs.try_recv() {
             if polls_after(&done) {
@@ -520,6 +579,7 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
                 Severity::Error,
             );
         }
+        effects.extend(app.tick(Instant::now()));
         if !run_effects(rt, app, effects)? {
             return Ok(());
         }
@@ -532,13 +592,21 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
     while let Some(effect) = queue.pop_front() {
         match effect {
             Effect::Quit => return Ok(false),
-            Effect::PollNow => rt.poller.poll_now(),
+            Effect::PollNow => {
+                rt.poller.poll_now();
+            }
+            Effect::PollForAttach => {
+                let cycle = rt.poller.poll_now();
+                app.attach_poll_started(cycle);
+            }
             Effect::SaveSidecar => {
-                if let Err(err) = app.sidecar.save(rt.state_file) {
-                    app.set_message(
-                        format!("cannot save {}: {err}", rt.state_file.display()),
-                        Severity::Error,
-                    );
+                if let Some(job) = app.start_save() {
+                    rt.jobs.sidecar(job, rt.state_file.to_path_buf());
+                }
+            }
+            Effect::CheckSidecar => {
+                if let Some(job) = app.start_sidecar_check() {
+                    rt.jobs.sidecar(job, rt.state_file.to_path_buf());
                 }
             }
             Effect::Attach(req) => {
@@ -550,16 +618,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 }
                 queue.extend(app.attach_finished(outcome));
             }
-            Effect::OpenDialog => {
-                let config = app.config();
-                let list = projects::discover(
-                    &config.project_roots,
-                    &config.extra_projects,
-                    &app.sidecar.recent_projects,
-                    app.home(),
-                );
-                app.open_dialog(list);
-            }
+            Effect::OpenDialog => rt.jobs.projects(app.begin_project_scan()),
             Effect::Dispatch(job) => rt.jobs.dispatch(job),
             Effect::Trust(job) => {
                 let req = &job.request;

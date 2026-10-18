@@ -43,13 +43,25 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   the error in the status line. A poll is skipped while the previous one for
   the same account is still running, so calls never pile up. `attach` is the
   only call that runs in the foreground, because it takes over the terminal
-  ([0005](0005-attach-and-detach.md)).
+  ([0005](0005-attach-and-detach.md)). File work that a slow disk or a hung
+  network mount could stall runs on worker threads too: sidecar saves (with
+  their fsyncs) and reloads ([0002](0002-tech-stack-and-files.md)) and the
+  project scan of the new-session dialog
+  ([0008](0008-new-session-dialog.md)). The accounts' config dirs are
+  resolved (`canonicalize`) once at startup, and each `CLAUDE_CONFIG_DIR`
+  value read from a process once per tower process (a small cache keyed by
+  the raw value), not on every poll.
 - **Workers always report back.** Each background job (dispatch, `stop`,
   `rm`, `logs`, hand-off) sends exactly one result. A job that panics, or
   whose thread cannot be started, reports an error of its own kind, so no
   dialog, hand-off or logs fetch is left waiting. Tower's panic hook restores
   the terminal only when the main thread panics; on any other thread it
   prints nothing and keeps the message for the status line.
+- **The poller restarts.** Its coordinator loop runs under `catch_unwind`; a
+  panic there restarts it after a short wait (0.5 s, doubling up to 30 s,
+  back to 0.5 s after a minute without trouble) with an immediate poll, and
+  the status line shows one warning per restart. A panic inside one listing
+  call is that account's poll error, so the account keeps being polled.
 - **Background calls in their own process group.** Every captured-output call
   (polls, `stop`, `rm`, `logs`, dispatch, hand-off resume) runs in a new
   process group, outside tower's foreground group, so `Ctrl+C` or `Ctrl+Z`

@@ -457,6 +457,9 @@ pub struct Dialog {
     pub projects: Vec<Project>,
     /// Non-fatal problems from the project scan.
     pub project_warnings: Vec<String>,
+    /// The project scan still runs on a worker thread; the list is empty
+    /// until it reports back ([`Dialog::set_projects`]).
+    pub scanning: bool,
     /// The project filter text.
     pub filter: LineInput,
     /// Index into [`Dialog::filtered`] of the chosen project.
@@ -501,6 +504,7 @@ impl Dialog {
             field: Field::Project,
             projects: projects.projects,
             project_warnings: projects.warnings,
+            scanning: false,
             filter: LineInput::default(),
             project_index: 0,
             task: TextArea::default(),
@@ -513,6 +517,16 @@ impl Dialog {
             status: DialogStatus::Editing,
             prompt: None,
         }
+    }
+
+    /// Takes the result of the project scan; the filter typed meanwhile is
+    /// kept and the choice is clamped to the matching projects.
+    pub fn set_projects(&mut self, projects: ProjectList) {
+        self.projects = projects.projects;
+        self.project_warnings = projects.warnings;
+        self.scanning = false;
+        let n = self.filtered().len();
+        self.project_index = self.project_index.min(n.saturating_sub(1));
     }
 
     /// The projects matching the filter, in display order.

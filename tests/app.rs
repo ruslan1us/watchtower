@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{HOME, app_single, app_two, app_two_with, poll, poll_err};
+use common::{HOME, app_single, app_two, app_two_with, poll, poll_err, refresh_for_attach};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use watchtower::app::{App, AttachOutcome, Effect, Entry, Overlay, Severity};
 use watchtower::groups::Group;
@@ -136,10 +136,19 @@ fn enter_attaches_with_owning_account() {
     let mut app = app_single();
     app.apply_poll(poll("main", "mixed-states.json"));
     let effects = press(&mut app, key(KeyCode::Enter));
+    assert_eq!(effects, [Effect::PollForAttach, Effect::CheckSidecar]);
+    assert!(attach_of(&effects).is_none(), "refreshes first");
+    assert!(
+        message(&app).contains("checking pick-colour…"),
+        "{}",
+        message(&app)
+    );
+    let effects = refresh_for_attach(&mut app, effects, &[("main", "mixed-states.json")]);
     assert_eq!(
         attach_of(&effects),
         Some(("main", "9c6e1a35", "pick-colour"))
     );
+    assert!(!app.attach_pending());
 }
 
 #[test]
@@ -150,6 +159,7 @@ fn stopped_row_attaches_by_id() {
         press(&mut app, ch('j'));
     }
     let effects = press(&mut app, key(KeyCode::Enter));
+    let effects = refresh_for_attach(&mut app, effects, &[("main", "after-stop-all.json")]);
     assert_eq!(attach_of(&effects), Some(("main", "b2f8d064", "say-ok")));
 }
 
@@ -187,6 +197,13 @@ fn unknown_owner_asks_records_and_attaches() {
     press(&mut app, ch('j'));
     assert_eq!(selected(&app), "touch-config");
     let effects = press(&mut app, key(KeyCode::Enter));
+    assert!(attach_of(&effects).is_none(), "refreshes first");
+    assert!(!app.sidecar.is_dirty(), "the answer waits for the refresh");
+    let both = [
+        ("main", "after-stop-all.json"),
+        ("alt", "after-stop-all.json"),
+    ];
+    let effects = refresh_for_attach(&mut app, effects, &both);
     assert_eq!(effects[0], Effect::SaveSidecar, "saved before attaching");
     assert_eq!(
         attach_of(&effects),
@@ -204,6 +221,7 @@ fn unknown_owner_asks_records_and_attaches() {
     // The next poll keeps the answer (sidecar, rule 3); no second question.
     app.apply_poll(poll("main", "after-stop-all.json"));
     let effects = press(&mut app, key(KeyCode::Enter));
+    let effects = refresh_for_attach(&mut app, effects, &both);
     assert_eq!(
         attach_of(&effects),
         Some(("alt", "d4a1f7c8", "touch-config"))
@@ -233,6 +251,11 @@ fn owner_learned_while_the_picker_is_open_wins_over_the_answer() {
 
         // Enter on main: alt is used, nothing is recorded as asked.
         let effects = press(&mut app, key(KeyCode::Enter));
+        let both = [
+            ("main", "after-stop-all.json"),
+            ("alt", "after-stop-all.json"),
+        ];
+        let effects = refresh_for_attach(&mut app, effects, &both);
         assert!(!effects.contains(&Effect::SaveSidecar), "{effects:?}");
         match purpose_key.code {
             KeyCode::Enter => assert_eq!(
@@ -295,6 +318,11 @@ fn sidecar_owner_attaches_without_asking() {
         press(&mut app, ch('j'));
     }
     let effects = press(&mut app, key(KeyCode::Enter));
+    let both = [
+        ("main", "after-stop-all.json"),
+        ("alt", "after-stop-all.json"),
+    ];
+    let effects = refresh_for_attach(&mut app, effects, &both);
     assert_eq!(attach_of(&effects), Some(("alt", "b2f8d064", "say-ok")));
 }
 

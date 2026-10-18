@@ -4,15 +4,22 @@
 //! logs panel (doc/0009), the hand-off to another account (doc/0004), and
 //! the key table (doc/0011).
 //!
-//! Nothing here touches the terminal, spawns processes or does file I/O. Key
-//! presses, poll results and the outcomes of background jobs go in;
-//! [`Effect`]s come out and the runtime (`tui`, `jobs`) carries them out.
-//! Every CLI call that can take a while (dispatch, stop, remove, logs,
-//! hand-off) is an
-//! effect the runtime runs on a worker thread, reporting back through the
-//! `*_finished` / [`App::logs_fetched`] methods. That keeps the whole flow
+//! Nothing here touches the terminal, spawns processes or does file I/O
+//! (apart from the `/proc` reads of ownership rule 1, and resolving the
+//! accounts' config dirs once when the app is created). Key presses, poll
+//! results and the outcomes of background jobs go in; [`Effect`]s come out
+//! and the runtime (`tui`, `jobs`) carries them out. Every CLI call that can
+//! take a while (dispatch, stop, remove, logs, hand-off) and every file
+//! operation (sidecar saves and reloads, the project scan) is an effect the
+//! runtime runs on a worker thread, reporting back through the `*_finished`
+//! / [`App::logs_fetched`] / `sidecar_*` methods. That keeps the whole flow
 //! testable without a terminal (doc/0015).
+//!
+//! Windows that a background result opens (the hand-off trust window, the
+//! `rm` refusal) never replace one that is open: they wait in a queue and
+//! open, in order, once nothing else is open (doc/0011).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -28,15 +35,21 @@ use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step}
 use crate::listing::Session;
 use crate::logview::{LogScreen, LogsError};
 use crate::merge::{
-    AccountListing, EnvironReader, KnownProcesses, MergedSession, Ownership, Resolver,
+    AccountListing, CanonCache, EnvironReader, KnownProcesses, MergedSession, Ownership, Resolver,
 };
 use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
-use crate::sidecar::{self, AccountSource, Sidecar};
+use crate::sidecar::{
+    self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
+};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
+
+/// How long `Enter` waits for the refresh before an attach (doc/0005); then
+/// tower attaches anyway and says so.
+pub const ATTACH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Something the runtime must do on the app's behalf, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,11 +58,23 @@ pub enum Effect {
     Quit,
     /// Poll every account now.
     PollNow,
-    /// Write the sidecar file; it changed.
+    /// Poll every account now and report the poll's cycle to
+    /// [`App::attach_poll_started`]: an attach waits for it (doc/0005).
+    PollForAttach,
+    /// Write the sidecar file; it changed. The runtime takes the job from
+    /// [`App::start_save`] (none while another sidecar job runs; it is then
+    /// queued) and runs it on a worker thread, then calls
+    /// [`App::sidecar_saved`].
     SaveSidecar,
+    /// Look for changes another tower made to the sidecar file: the job
+    /// from [`App::start_sidecar_check`], run on a worker thread, then
+    /// [`App::sidecar_checked`] (doc/0017 section 8).
+    CheckSidecar,
     /// Hand the terminal to `<account command> attach <id>` (doc/0005).
     Attach(AttachRequest),
-    /// Scan for candidate projects and call [`App::open_dialog`] (doc/0008).
+    /// Open the new-session dialog (doc/0008): [`App::begin_project_scan`]
+    /// opens it while the projects are scanned on a worker thread, then
+    /// [`App::projects_found`] fills the list.
     OpenDialog,
     /// Run `claude --bg` on a worker thread, then call
     /// [`App::dispatch_finished`] (doc/0008).
@@ -89,6 +114,38 @@ pub struct HandoffJob {
     pub request: HandoffRequest,
     /// This is the retry after the trust flow.
     pub after_trust: bool,
+    /// The session's owner record as this tower last read or wrote it in
+    /// the sidecar file. Right before stopping and before waking, the job
+    /// compares the file with it and does not wake the session when
+    /// another tower recorded another owner meanwhile (doc/0017 section 8).
+    pub recorded: Option<OwnerRecord>,
+}
+
+/// Sidecar file work the runtime runs on a worker thread (doc/0002): at
+/// most one at a time, numbered in the order started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarJob {
+    /// A save; report with [`App::sidecar_saved`].
+    Save { seq: u64, job: SaveJob },
+    /// A check for another tower's changes; report with
+    /// [`App::sidecar_checked`].
+    Check { seq: u64, job: CheckJob },
+}
+
+/// The project scan of a new-session dialog, run on a worker thread
+/// (doc/0008); report with [`App::projects_found`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectScan {
+    /// Which dialog the scan is for.
+    pub id: u64,
+    /// `project_roots`, `~` expanded.
+    pub roots: Vec<PathBuf>,
+    /// `extra_projects`, `~` expanded.
+    pub extras: Vec<PathBuf>,
+    /// The sidecar's recent projects, for the order.
+    pub recent: Vec<RecentProject>,
+    /// For `~` in displayed paths.
+    pub home: PathBuf,
 }
 
 /// A dispatch from the new-session dialog.
@@ -206,7 +263,10 @@ pub enum Confirm {
     Remove { action: SessionAction },
     /// Hand off a working or blocked session: stopping it interrupts the
     /// turn (doc/0004); `detail` is its state label.
-    Handoff { job: HandoffJob, detail: String },
+    Handoff {
+        job: Box<HandoffJob>,
+        detail: String,
+    },
 }
 
 /// A running hand-off, for the status line and the row-action guard.
@@ -280,7 +340,7 @@ pub enum Overlay {
     /// The hand-off target picker.
     Target(TargetPicker),
     /// A hand-off stopped at `Workspace not trusted`.
-    Untrusted(UntrustedHandoff),
+    Untrusted(Box<UntrustedHandoff>),
 }
 
 /// A scrollable text window above everything else, e.g. the full text of
@@ -293,6 +353,68 @@ pub struct Popup {
     pub lines: Vec<String>,
     /// First visible (wrapped) line; the renderer clamps it.
     pub scroll: usize,
+}
+
+/// A window a background result opened while another window was open; it
+/// waits until nothing else is open (doc/0011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Waiting {
+    Overlay(Box<Overlay>),
+    Popup(Popup),
+}
+
+/// An attach waiting for its refresh (doc/0005): a poll that started after
+/// `Enter` and a look at the sidecar file, at most
+/// [`ATTACH_CHECK_TIMEOUT`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAttach {
+    /// Sidecar key of the session.
+    key: String,
+    /// What to attach to, with the account known at `Enter`.
+    request: AttachRequest,
+    /// The account is the picker's answer: recorded as `asked` once the
+    /// refresh still shows no owner (doc/0003).
+    asked: bool,
+    deadline: Instant,
+    /// Cycle of the poll started for it, once the runtime reports it.
+    cycle: Option<u64>,
+    /// The fresh listings so far, by account: whether each lists the
+    /// short id, or why it failed.
+    listed: Vec<(String, Result<bool, String>)>,
+    /// Sidecar jobs numbered from here started after `Enter`.
+    sidecar_from: u64,
+    /// One of them has finished.
+    sidecar_done: bool,
+}
+
+/// Sidecar file jobs: one at a time, plus at most one queued save and one
+/// queued check (doc/0002).
+#[derive(Debug, Clone, Default)]
+struct SidecarIo {
+    /// Number of the job in flight.
+    busy: Option<u64>,
+    save_queued: bool,
+    check_queued: bool,
+    next_seq: u64,
+}
+
+impl PendingAttach {
+    /// What the fresh listing of `account` said, once it arrived.
+    fn listed_by(&self, account: &str) -> Option<&Result<bool, String>> {
+        self.listed
+            .iter()
+            .find(|(a, _)| a == account)
+            .map(|(_, r)| r)
+    }
+}
+
+impl SidecarIo {
+    fn take_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.busy = Some(seq);
+        seq
+    }
 }
 
 /// What the logs panel shows.
@@ -491,6 +613,9 @@ pub struct App {
     /// Processes rule 1 accepted on earlier polls, in memory only
     /// (doc/0017).
     known: KnownProcesses,
+    /// Canonical config dirs: the accounts' resolved once, process values
+    /// once each (doc/0001: no `canonicalize` per poll).
+    canon: CanonCache,
     /// Tower's sidecar state; the runtime saves it on [`Effect::SaveSidecar`].
     pub sidecar: Sidecar,
     polls: Vec<AccountPoll>,
@@ -508,6 +633,19 @@ pub struct App {
     dialog: Option<Dialog>,
     logs: Option<LogsPanel>,
     popup: Option<Popup>,
+    /// Windows opened by background results while another was open.
+    waiting: VecDeque<Waiting>,
+    /// An attach waiting for its refresh.
+    pending_attach: Option<PendingAttach>,
+    /// Added to the message after the next attach (e.g. the refresh timed
+    /// out).
+    attach_note: Option<String>,
+    /// Sidecar saves and checks on worker threads.
+    sidecar_io: SidecarIo,
+    /// Why the last sidecar check failed; shown until one succeeds.
+    check_error: Option<String>,
+    /// Number of the latest project scan; the open dialog waits for it.
+    scan: u64,
     /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
     root: bool,
     message: Option<Message>,
@@ -550,11 +688,13 @@ impl App {
                 received: 0,
             })
             .collect();
+        let canon = CanonCache::for_accounts(&config.accounts, &home);
         App {
             config,
             home,
             environ,
             known: KnownProcesses::default(),
+            canon,
             sidecar,
             polls,
             received: 0,
@@ -567,6 +707,12 @@ impl App {
             dialog: None,
             logs: None,
             popup: None,
+            waiting: VecDeque::new(),
+            pending_attach: None,
+            attach_note: None,
+            sidecar_io: SidecarIo::default(),
+            check_error: None,
+            scan: 0,
             root: dispatch::is_root(),
             message: None,
             handoff: None,
@@ -684,6 +830,26 @@ impl App {
                 severity: Severity::Info,
             });
         }
+        // So is an attach waiting for its refresh (doc/0005).
+        if let Some(p) = &self.pending_attach {
+            out.push(StatusSegment {
+                text: format!("checking {}… (Esc cancels)", p.request.name),
+                severity: Severity::Info,
+            });
+        }
+        // And windows waiting for the open one to close (doc/0011).
+        if !self.waiting.is_empty() {
+            let n = self.waiting.len();
+            let what = if n == 1 {
+                "1 window is waiting".to_owned()
+            } else {
+                format!("{n} windows are waiting")
+            };
+            out.push(StatusSegment {
+                text: format!("{what}; it opens when this one closes"),
+                severity: Severity::Warning,
+            });
+        }
         if let Some(m) = &self.message
             && now.saturating_duration_since(m.at) < MESSAGE_TTL
         {
@@ -723,6 +889,12 @@ impl App {
                 });
             }
         }
+        if let Some(err) = &self.check_error {
+            out.push(StatusSegment {
+                text: err.clone(),
+                severity: Severity::Warning,
+            });
+        }
         for w in &self.warnings {
             out.push(StatusSegment {
                 text: one_line(w),
@@ -744,6 +916,21 @@ impl App {
         let Some(poll) = self.polls.iter_mut().find(|p| p.name == update.account) else {
             return Vec::new();
         };
+        // The fresh listings an attach waits for (doc/0005): polls that
+        // started after `Enter`.
+        if let Some(p) = self.pending_attach.as_mut()
+            && p.listed_by(&update.account).is_none()
+            && p.cycle.is_some_and(|c| update.cycle >= c)
+        {
+            let listed = match &update.result {
+                Ok(listing) => Ok(listing
+                    .sessions
+                    .iter()
+                    .any(|s| s.id.as_deref() == Some(p.request.id.as_str()))),
+                Err(err) => Err(err.clone()),
+            };
+            p.listed.push((update.account.clone(), listed));
+        }
         let mut changed = false;
         match update.result {
             Ok(listing) => {
@@ -759,6 +946,27 @@ impl App {
             }
             Err(err) => poll.error = Some(err),
         }
+        changed |= self.rebuild();
+        let mut effects = Vec::new();
+        // A save that failed (e.g. the lock was busy) is retried.
+        if changed || self.sidecar.retry_due() {
+            effects.push(Effect::SaveSidecar);
+        }
+        let refresh = self
+            .logs
+            .as_ref()
+            .and_then(|l| l.target.as_ref())
+            .is_some_and(|t| t.account.name == update.account);
+        effects.extend(self.logs_follow(refresh));
+        effects.extend(self.attach_progress(Instant::now()));
+        effects
+    }
+
+    /// Merges the accounts' last listings with the sidecar and rebuilds the
+    /// list (see [`App::apply_poll`]). Returns true when the sidecar
+    /// changed.
+    fn rebuild(&mut self) -> bool {
+        let mut changed = false;
         let listings: Vec<AccountListing> = self
             .polls
             .iter()
@@ -775,9 +983,10 @@ impl App {
             })
             .collect();
         let mut resolver = Resolver::new(&self.config.accounts, &self.home, self.environ.as_ref())
-            .with_known(std::mem::take(&mut self.known));
+            .with_known(std::mem::take(&mut self.known))
+            .with_canon(std::mem::take(&mut self.canon));
         let merged = resolver.merge(&listings, &self.sidecar);
-        self.known = resolver.into_known();
+        (self.known, self.canon) = resolver.into_parts();
         changed |= self.sidecar.record_detections(&merged);
         // Last-seen times and pruning (doc/0017 section 9): rows of every
         // good listing count as seen; pruning only while every account's
@@ -796,23 +1005,26 @@ impl App {
             .sidecar
             .observe_listing(seen, complete, sidecar::now_ms());
         self.set_sessions(merged);
-        let mut effects = Vec::new();
-        // A save that failed (e.g. the lock was busy) is retried.
-        if changed || self.sidecar.retry_due() {
-            effects.push(Effect::SaveSidecar);
-        }
-        let refresh = self
-            .logs
-            .as_ref()
-            .and_then(|l| l.target.as_ref())
-            .is_some_and(|t| t.account.name == update.account);
-        effects.extend(self.logs_follow(refresh));
-        effects
+        changed
     }
 
     /// Reports how an attach ended and asks for an immediate poll.
     pub fn attach_finished(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
         let who = format!("{} ({})", outcome.name, outcome.account);
+        if let Some(note) = self.attach_note.take() {
+            let severity = match outcome.result {
+                Ok(Some(0)) => Severity::Warning,
+                _ => Severity::Error,
+            };
+            let how = match &outcome.result {
+                Ok(Some(0)) => format!("back from {who}"),
+                Ok(Some(code)) => format!("attach to {who} exited with code {code}"),
+                Ok(None) => format!("attach to {who} was ended by a signal"),
+                Err(err) => format!("cannot attach to {who}: {}", one_line(err)),
+            };
+            self.set_message(format!("{how} ({note})"), severity);
+            return vec![Effect::PollNow];
+        }
         match outcome.result {
             Ok(Some(0)) => self.set_message(format!("back from {who}"), Severity::Info),
             Ok(Some(code)) => self.set_message(
@@ -1019,11 +1231,11 @@ impl App {
                      yourself."
                         .to_owned(),
                 ]);
-                self.popup = Some(Popup {
+                self.open_late(Waiting::Popup(Popup {
                     title: format!("{} was not removed", action.name),
                     lines,
                     scroll: 0,
-                });
+                }));
                 self.set_message(
                     format!("{} was not removed", action.name),
                     Severity::Warning,
@@ -1094,7 +1306,9 @@ impl App {
             return self.guard_quit(vec![Effect::Quit]);
         }
         let effects = self.route_key(key);
-        self.guard_quit(effects)
+        let effects = self.guard_quit(effects);
+        self.show_waiting();
+        effects
     }
 
     /// While a hand-off runs, turns [`Effect::Quit`] into the quit
@@ -1147,7 +1361,7 @@ impl App {
             Overlay::Picker(picker) => self.picker_key(key, picker),
             Overlay::Confirm(confirm) => self.confirm_key(key, confirm),
             Overlay::Target(picker) => self.target_key(key, picker),
-            Overlay::Untrusted(untrusted) => self.untrusted_key(key, untrusted),
+            Overlay::Untrusted(untrusted) => self.untrusted_key(key, *untrusted),
             Overlay::None => self.list_key(key),
         }
     }
@@ -1159,7 +1373,19 @@ impl App {
             return Vec::new();
         };
         match key.code {
-            KeyCode::Char('c') if ctrl => return vec![Effect::Quit],
+            // Ctrl+C follows the rules of the window beneath (doc/0011):
+            // the dialog asks its own question, so the popup steps back
+            // until the dialog is answered; over the list it quits (with
+            // the hand-off question while one runs, see `handle_key`).
+            KeyCode::Char('c' | 'C') if ctrl => {
+                if self.dialog.is_some() {
+                    if let Some(popup) = self.popup.take() {
+                        self.waiting.push_front(Waiting::Popup(popup));
+                    }
+                    return self.dialog_key(key);
+                }
+                return vec![Effect::Quit];
+            }
             _ if ctrl => {}
             KeyCode::Up | KeyCode::Char('k') => popup.scroll = popup.scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => popup.scroll += 1,
@@ -1275,7 +1501,8 @@ impl App {
     /// Records the picked account (`asked`, doc/0003) and carries on with
     /// the action the picker was opened for. When a poll made the owner
     /// known while the picker was open, the known owner is used instead and
-    /// nothing is recorded: the answer was given without that evidence.
+    /// nothing is recorded: the answer was given without that evidence. An
+    /// attach records the answer only after its refresh (doc/0005).
     fn pick_account(&mut self, picker: Picker) -> Vec<Effect> {
         self.overlay = Overlay::None;
         let Some(picked) = self.config.accounts.get(picker.selected).cloned() else {
@@ -1289,17 +1516,34 @@ impl App {
             .and_then(|a| self.config.account(a))
             .cloned();
         let mut effects = Vec::new();
+        if picker.purpose == Purpose::Attach {
+            // The answer is recorded only once the refresh still shows no
+            // owner (doc/0005): another tower may have recorded one.
+            let (account, asked) = match learned {
+                Some(known) => {
+                    self.set_message(
+                        learned_text(&picker.name, &known.name, &picked.name),
+                        Severity::Info,
+                    );
+                    (known, false)
+                }
+                None => (picked, true),
+            };
+            let request = AttachRequest {
+                account,
+                id: picker.id,
+                name: picker.name,
+            };
+            effects.extend(self.begin_attach(picker.key, request, asked));
+            effects.extend(self.logs_follow(false));
+            return effects;
+        }
         let account = match learned {
             Some(known) => {
-                let text = if known.name == picked.name {
-                    format!("{} turned out to run under {}", picker.name, known.name)
-                } else {
-                    format!(
-                        "{} turned out to run under {}; using {} instead of {}",
-                        picker.name, known.name, known.name, picked.name
-                    )
-                };
-                self.set_message(text, Severity::Info);
+                self.set_message(
+                    learned_text(&picker.name, &known.name, &picked.name),
+                    Severity::Info,
+                );
                 known
             }
             None => {
@@ -1328,11 +1572,8 @@ impl App {
             name: picker.name,
         };
         match picker.purpose {
-            Purpose::Attach => effects.push(Effect::Attach(AttachRequest {
-                account: action.account,
-                id: action.id,
-                name: action.name,
-            })),
+            // Handled above, through the refresh.
+            Purpose::Attach => {}
             Purpose::Stop => effects.extend(self.stop_or_confirm(action, confirm_stop)),
             Purpose::Remove => self.confirm_remove(action),
         }
@@ -1351,7 +1592,7 @@ impl App {
                 match confirm {
                     Confirm::Stop { action, .. } => self.run_stop(action),
                     Confirm::Remove { action } => self.run_remove(action),
-                    Confirm::Handoff { job, .. } => self.start_handoff(job),
+                    Confirm::Handoff { job, .. } => self.start_handoff(*job),
                 }
             }
             // The default is cancel (doc/0011), so Enter cancels too.
@@ -1401,6 +1642,13 @@ impl App {
                 return Vec::new();
             }
             Action::Close => {
+                if let Some(p) = self.pending_attach.take() {
+                    self.set_message(
+                        format!("attach to {} cancelled", p.request.name),
+                        Severity::Info,
+                    );
+                    return Vec::new();
+                }
                 self.logs = None;
                 return Vec::new();
             }
@@ -1469,13 +1717,18 @@ impl App {
                     );
                     return Vec::new();
                 };
+                let key = m.session.key().unwrap_or(&id).to_owned();
                 let action = SessionAction { account, id, name };
                 match purpose {
-                    Purpose::Attach => vec![Effect::Attach(AttachRequest {
-                        account: action.account,
-                        id: action.id,
-                        name: action.name,
-                    })],
+                    Purpose::Attach => self.begin_attach(
+                        key,
+                        AttachRequest {
+                            account: action.account,
+                            id: action.id,
+                            name: action.name,
+                        },
+                        false,
+                    ),
                     Purpose::Stop => self.stop_or_confirm(action, Some(confirm_stop)),
                     Purpose::Remove => {
                         self.confirm_remove(action);
@@ -1501,6 +1754,386 @@ impl App {
                 });
                 Vec::new()
             }
+        }
+    }
+
+    // ---- attach after a refresh (doc/0005) -------------------------------
+
+    /// Starts the refresh an attach waits for: a poll of every account and
+    /// a look at the sidecar file for another tower's changes. The attach
+    /// itself follows from [`App::apply_poll`], [`App::sidecar_saved`] /
+    /// [`App::sidecar_checked`] or [`App::tick`]. `asked`: the account is
+    /// the picker's answer, recorded only if the owner is still unknown then.
+    fn begin_attach(&mut self, key: String, request: AttachRequest, asked: bool) -> Vec<Effect> {
+        if let Some(p) = &self.pending_attach {
+            let text = format!("still checking {} before attaching", p.request.name);
+            self.set_message(text, Severity::Info);
+            return Vec::new();
+        }
+        self.pending_attach = Some(PendingAttach {
+            key,
+            request,
+            asked,
+            deadline: Instant::now() + ATTACH_CHECK_TIMEOUT,
+            cycle: None,
+            listed: Vec::new(),
+            sidecar_from: self.sidecar_io.next_seq,
+            sidecar_done: false,
+        });
+        vec![Effect::PollForAttach, Effect::CheckSidecar]
+    }
+
+    /// The runtime started the poll of [`Effect::PollForAttach`]: listings
+    /// of this cycle or later count as fresh.
+    pub fn attach_poll_started(&mut self, cycle: u64) {
+        if let Some(p) = self.pending_attach.as_mut()
+            && p.cycle.is_none()
+        {
+            p.cycle = Some(cycle);
+        }
+    }
+
+    /// Whether an attach waits for its refresh.
+    pub fn attach_pending(&self) -> bool {
+        self.pending_attach.is_some()
+    }
+
+    /// Attaches once the refresh is complete, or anyway after
+    /// [`ATTACH_CHECK_TIMEOUT`].
+    fn attach_progress(&mut self, now: Instant) -> Vec<Effect> {
+        let Some(p) = &self.pending_attach else {
+            return Vec::new();
+        };
+        let ready = p.listed_by(&p.request.account.name).is_some() && p.sidecar_done;
+        if !ready && now < p.deadline {
+            return Vec::new();
+        }
+        let Some(p) = self.pending_attach.take() else {
+            return Vec::new();
+        };
+        self.finish_attach(p, !ready)
+    }
+
+    /// The refresh is in (or `timed_out`): attach unless the session is no
+    /// longer listed, with the owner the refresh shows. An owner another
+    /// tower recorded meanwhile wins over the one known at `Enter`, and over
+    /// the picker's answer, which is recorded only when the owner is still
+    /// unknown. The fresh listing checked is that of the account whose
+    /// command attaches.
+    fn finish_attach(&mut self, p: PendingAttach, timed_out: bool) -> Vec<Effect> {
+        let name = p.request.name.clone();
+        let asked_for = p.request.account.name.clone();
+        if self.window_open() {
+            self.set_message(
+                format!("attach to {name} cancelled: another window is open"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let Some(m) = self
+            .sessions
+            .iter()
+            .find(|m| m.session.key() == Some(p.key.as_str()))
+        else {
+            self.set_message(format!("session no longer listed: {name}"), Severity::Info);
+            return Vec::new();
+        };
+        if self.handing_off(&m.session) {
+            self.set_message(
+                format!("{name} is being handed off to another account; wait until it finishes"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let owner = m.owner.clone();
+        let mut notes = Vec::new();
+        // The account to attach with, and whether it is the picker's answer
+        // to record.
+        let (chosen, record) = match &owner {
+            Ownership::Known { account, .. } if *account != asked_for => {
+                match self.config.account(account).cloned() {
+                    Some(a) => {
+                        notes.push(learned_text(&name, account, &asked_for));
+                        (a, false)
+                    }
+                    None => (p.request.account.clone(), false),
+                }
+            }
+            Ownership::Known { .. } => (p.request.account.clone(), false),
+            Ownership::Unknown { .. } => (p.request.account.clone(), p.asked),
+        };
+        match p.listed_by(&chosen.name) {
+            Some(Ok(false)) => {
+                self.set_message(
+                    format!(
+                        "session no longer listed: {} does not list {name} any more",
+                        chosen.name
+                    ),
+                    Severity::Info,
+                );
+                return Vec::new();
+            }
+            Some(Err(err)) => notes.push(format!(
+                "{} could not be listed ({}), so tower attached without a fresh list",
+                chosen.name,
+                one_line(err)
+            )),
+            Some(Ok(true)) if timed_out => notes.push(format!(
+                "the state file could not be checked for other towers' changes within {}s",
+                ATTACH_CHECK_TIMEOUT.as_secs()
+            )),
+            Some(Ok(true)) => {}
+            None if timed_out => notes.push(format!(
+                "the refresh did not finish within {}s, so tower attached without it",
+                ATTACH_CHECK_TIMEOUT.as_secs()
+            )),
+            None => {}
+        }
+        if let Ownership::Unknown { config_dir } = owner
+            && !p.asked
+        {
+            // The owner became unknown: ask, as for any such row.
+            let selected = self
+                .config
+                .accounts
+                .iter()
+                .position(|a| a.name == self.config.default_account)
+                .unwrap_or(0);
+            self.overlay = Overlay::Picker(Picker {
+                key: p.key,
+                id: p.request.id,
+                name,
+                config_dir,
+                selected,
+                purpose: Purpose::Attach,
+            });
+            return Vec::new();
+        }
+        let mut effects = Vec::new();
+        if record {
+            if self.sidecar.record_answer(&p.key, &chosen.name) {
+                effects.push(Effect::SaveSidecar);
+            }
+            for m in &mut self.sessions {
+                if m.session.key() == Some(p.key.as_str()) {
+                    m.owner = Ownership::Known {
+                        account: chosen.name.clone(),
+                        source: AccountSource::Asked,
+                    };
+                }
+            }
+        }
+        self.attach_note = (!notes.is_empty()).then(|| notes.join("; "));
+        effects.push(Effect::Attach(AttachRequest {
+            account: chosen,
+            id: p.request.id,
+            name,
+        }));
+        effects
+    }
+
+    /// Time passes: opens waiting windows once nothing else is open, and
+    /// attaches when an attach's refresh has timed out. The runtime calls it
+    /// on every turn of its loop.
+    pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
+        self.show_waiting();
+        self.attach_progress(now)
+    }
+
+    // ---- windows opened by background results (doc/0011) -----------------
+
+    /// Whether any window is open above the list: a popup, the dialog, an
+    /// overlay or the quit question.
+    fn window_open(&self) -> bool {
+        self.popup.is_some()
+            || self.dialog.is_some()
+            || self.overlay != Overlay::None
+            || self.quit_prompt.is_some()
+    }
+
+    /// Number of windows waiting for the open one to close.
+    pub fn waiting_windows(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// Opens `window` now, or queues it while another window is open, so a
+    /// late result never replaces the window the user is answering.
+    fn open_late(&mut self, window: Waiting) {
+        if self.window_open() || !self.waiting.is_empty() {
+            self.waiting.push_back(window);
+            self.show_waiting();
+        } else {
+            self.open_window(window);
+        }
+    }
+
+    /// The hand-off trust window (doc/0004), opened by a late result.
+    fn open_untrusted(&mut self, job: HandoffJob, message: String) {
+        let overlay = Overlay::Untrusted(Box::new(UntrustedHandoff { job, message }));
+        self.open_late(Waiting::Overlay(Box::new(overlay)));
+    }
+
+    fn open_window(&mut self, window: Waiting) {
+        match window {
+            Waiting::Overlay(overlay) => self.overlay = *overlay,
+            Waiting::Popup(popup) => self.popup = Some(popup),
+        }
+    }
+
+    /// Opens the next waiting window when nothing else is open.
+    fn show_waiting(&mut self) {
+        if !self.window_open()
+            && let Some(window) = self.waiting.pop_front()
+        {
+            self.open_window(window);
+        }
+    }
+
+    // ---- sidecar file jobs (doc/0002, doc/0017 section 8) ----------------
+
+    /// The save to run for [`Effect::SaveSidecar`], or `None` when another
+    /// sidecar job runs: the save is then queued (at most one) and asked
+    /// for again when that job reports back.
+    pub fn start_save(&mut self) -> Option<SidecarJob> {
+        if self.sidecar_io.busy.is_some() {
+            self.sidecar_io.save_queued = true;
+            return None;
+        }
+        self.sidecar_io.save_queued = false;
+        let seq = self.sidecar_io.take_seq();
+        Some(SidecarJob::Save {
+            seq,
+            job: self.sidecar.begin_save(),
+        })
+    }
+
+    /// The check to run for [`Effect::CheckSidecar`], or `None` when
+    /// another sidecar job runs (then queued, at most one).
+    pub fn start_sidecar_check(&mut self) -> Option<SidecarJob> {
+        if self.sidecar_io.busy.is_some() {
+            self.sidecar_io.check_queued = true;
+            return None;
+        }
+        self.sidecar_io.check_queued = false;
+        let seq = self.sidecar_io.take_seq();
+        Some(SidecarJob::Check {
+            seq,
+            job: self.sidecar.begin_check(),
+        })
+    }
+
+    /// Whether a sidecar job runs.
+    pub fn sidecar_busy(&self) -> bool {
+        self.sidecar_io.busy.is_some()
+    }
+
+    /// Takes back a finished save (see [`Sidecar::finish_save`]): changes
+    /// made meanwhile stay on top, another tower's changes merged by the
+    /// save show at once. A failure is reported and retried later.
+    pub fn sidecar_saved(
+        &mut self,
+        seq: u64,
+        job: &SaveJob,
+        result: std::io::Result<Saved>,
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        match self.sidecar.finish_save(job, result) {
+            Ok(true) => effects.extend(self.after_reload()),
+            Ok(false) => {}
+            Err(err) => self.set_message(
+                format!("cannot save the state file: {}", one_line(&err.to_string())),
+                Severity::Error,
+            ),
+        }
+        effects.extend(self.sidecar_job_done(seq));
+        effects
+    }
+
+    /// Takes back a finished check: another tower's changes are merged
+    /// under this instance's unsaved ones (see [`Sidecar::apply_reload`]).
+    pub fn sidecar_checked(&mut self, seq: u64, result: std::io::Result<Reloaded>) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        match result {
+            Ok(reloaded) => {
+                self.check_error = None;
+                if self.sidecar.apply_reload(reloaded) {
+                    effects.extend(self.after_reload());
+                }
+            }
+            Err(err) => {
+                self.check_error = Some(format!(
+                    "cannot read the state file for other towers' changes: {}",
+                    one_line(&err.to_string())
+                ));
+            }
+        }
+        effects.extend(self.sidecar_job_done(seq));
+        effects
+    }
+
+    /// Owners may have changed: merge again with the new sidecar.
+    fn after_reload(&mut self) -> Vec<Effect> {
+        if self.polls.iter().all(|p| p.rows.is_none()) {
+            return Vec::new();
+        }
+        let mut effects = Vec::new();
+        if self.rebuild() {
+            effects.push(Effect::SaveSidecar);
+        }
+        effects.extend(self.logs_follow(false));
+        effects
+    }
+
+    /// A sidecar job reported back: the next queued one, and an attach
+    /// waiting for it.
+    fn sidecar_job_done(&mut self, seq: u64) -> Vec<Effect> {
+        if self.sidecar_io.busy == Some(seq) {
+            self.sidecar_io.busy = None;
+        }
+        let mut effects = Vec::new();
+        if self.sidecar_io.save_queued {
+            effects.push(Effect::SaveSidecar);
+        } else if self.sidecar_io.check_queued {
+            effects.push(Effect::CheckSidecar);
+        }
+        if let Some(p) = self.pending_attach.as_mut()
+            && seq >= p.sidecar_from
+        {
+            p.sidecar_done = true;
+        }
+        effects.extend(self.attach_progress(Instant::now()));
+        effects
+    }
+
+    // ---- the project scan (doc/0008) --------------------------------------
+
+    /// Opens the new-session dialog with an empty project list ("scanning
+    /// projects…") and returns the scan to run on a worker thread.
+    pub fn begin_project_scan(&mut self) -> ProjectScan {
+        self.scan += 1;
+        self.open_dialog(ProjectList::default());
+        if let Some(d) = self.dialog.as_mut() {
+            d.scanning = true;
+        }
+        ProjectScan {
+            id: self.scan,
+            roots: self.config.project_roots.clone(),
+            extras: self.config.extra_projects.clone(),
+            recent: self.sidecar.recent_projects.clone(),
+            home: self.home.clone(),
+        }
+    }
+
+    /// Fills the dialog's list with the result of scan `id`; a result for
+    /// a dialog that was closed meanwhile is dropped.
+    pub fn projects_found(&mut self, id: u64, list: ProjectList) {
+        if id != self.scan {
+            return;
+        }
+        if let Some(d) = self.dialog.as_mut()
+            && d.scanning
+        {
+            d.set_projects(list);
         }
     }
 
@@ -1662,9 +2295,13 @@ impl App {
         let job = HandoffJob {
             request,
             after_trust: false,
+            recorded: self.sidecar.base_owner(key),
         };
         if confirm {
-            self.overlay = Overlay::Confirm(Confirm::Handoff { job, detail });
+            self.overlay = Overlay::Confirm(Confirm::Handoff {
+                job: Box::new(job),
+                detail,
+            });
             return Vec::new();
         }
         self.start_handoff(job)
@@ -1838,10 +2475,24 @@ impl App {
                     ),
                     Severity::Warning,
                 );
-                self.overlay = Overlay::Untrusted(UntrustedHandoff {
-                    job: job.clone(),
-                    message,
-                });
+                self.open_untrusted(job.clone(), message);
+            }
+            Err(HandoffError::OwnerChanged { account, stopped }) => {
+                let what = if stopped {
+                    "it was stopped and not continued"
+                } else {
+                    "nothing was run"
+                };
+                self.set_message(
+                    format!(
+                        "another tower recorded {} under {account} meanwhile; {what} — check \
+                         the row and retry",
+                        r.name
+                    ),
+                    Severity::Warning,
+                );
+                // Take in the other tower's record now.
+                effects.push(Effect::CheckSidecar);
             }
             Err(err) => {
                 let text = match &err {
@@ -1879,9 +2530,10 @@ impl App {
             Ok(_) => self.start_handoff(HandoffJob {
                 request: job.request.after_stop(),
                 after_trust: true,
+                recorded: job.recorded,
             }),
             Err(err) => {
-                self.overlay = Overlay::Untrusted(UntrustedHandoff { job, message: err });
+                self.open_untrusted(job, err);
                 Vec::new()
             }
         }
@@ -2020,6 +2672,16 @@ impl App {
             self.overlay = Overlay::None;
             self.set_message("session no longer listed", Severity::Info);
         }
+    }
+}
+
+/// The message when a poll learned the owner of a session the picker was
+/// asked about.
+fn learned_text(name: &str, known: &str, picked: &str) -> String {
+    if known == picked {
+        format!("{name} turned out to run under {known}")
+    } else {
+        format!("{name} turned out to run under {known}; using {known} instead of {picked}")
     }
 }
 

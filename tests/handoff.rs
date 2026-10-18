@@ -837,6 +837,7 @@ fn jobs_report_each_step_then_the_result() {
     jobs.handoff(HandoffJob {
         request: req.clone(),
         after_trust: false,
+        recorded: None,
     });
     let mut kinds = Vec::new();
     loop {
@@ -859,4 +860,75 @@ fn jobs_report_each_step_then_the_result() {
             "handoff"
         ]
     );
+}
+
+/// Another tower's newer record is honoured before waking (doc/0017
+/// section 8): when the sidecar file records the session under another
+/// account than the one this tower planned with, nothing is stopped or
+/// resumed; when it names the planned owner, the hand-off goes on.
+#[test]
+fn a_record_changed_by_another_tower_stops_the_handoff_before_waking() {
+    let _l = lock();
+    let world = World::new();
+    let main_fake = Fake::new("claude", &world.stopper_body(1));
+    let alt_fake = Fake::new(
+        "claude-alt",
+        &resumer_body(
+            Some("cli-output/resume-prompt.stdout"),
+            Some("cli-output/resume-prompt.stderr"),
+            0,
+        ),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let path = state.path().join("state.json");
+    // This tower planned with `started main`; another tower then recorded
+    // a hand-off to `spare`.
+    let mut mine = Sidecar::default();
+    mine.record_owner(SID, "main", AccountSource::Started);
+    mine.save(&path).unwrap();
+    let recorded = Sidecar::load(&path).sidecar.base_owner(SID);
+    let mut other = Sidecar::load(&path).sidecar;
+    other.record_owner(SID, "spare", AccountSource::Handoff);
+    other.save(&path).unwrap();
+
+    let req = request(
+        &world.project(),
+        Some(main_fake.account_named("main", None)),
+        alt_fake.account_named("alt", None),
+        true,
+    );
+    let jobs = Jobs::new(CliRunner::new())
+        .with_handoff_timing(fast())
+        .with_state_file(path.clone());
+    let run = |recorded| {
+        jobs.handoff(HandoffJob {
+            request: req.clone(),
+            after_trust: false,
+            recorded,
+        });
+        loop {
+            match jobs.recv_timeout(Duration::from_secs(20)).expect("reports") {
+                JobResult::Handoff(_, result) => return result,
+                JobResult::HandoffStep(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    };
+    match run(recorded.clone()) {
+        Err(HandoffError::OwnerChanged { account, stopped }) => {
+            assert_eq!(account, "spare");
+            assert!(!stopped);
+        }
+        other => panic!("expected OwnerChanged, got {other:?}"),
+    }
+    assert_eq!(main_fake.calls(), 0, "nothing stopped");
+    assert_eq!(alt_fake.calls(), 0, "nothing woken");
+
+    // A record that still names the planned owner (here: this tower's own
+    // later save) lets it go on.
+    let mut again = Sidecar::load(&path).sidecar;
+    again.record_owner(SID, "main", AccountSource::Proc);
+    again.save(&path).unwrap();
+    assert_eq!(run(recorded).unwrap().outcome, Outcome::Continued);
+    assert_eq!(alt_fake.calls(), 1);
 }

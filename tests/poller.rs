@@ -136,3 +136,84 @@ fn slow_account_is_skipped_not_piled_up() {
     );
     assert_eq!(source.max_in_flight.load(Ordering::SeqCst), 1);
 }
+
+/// Panics once in each place: the coordinator at the start of cycle 2, and
+/// the first listing call of account `bad`.
+#[derive(Default)]
+struct Flaky {
+    coordinator_panics: AtomicUsize,
+    listing_panics: AtomicUsize,
+}
+
+impl ListSource for Flaky {
+    fn list(&self, account: &Account) -> Result<Listing, String> {
+        if account.name == "bad" && self.listing_panics.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("listing blew up");
+        }
+        Ok(Listing::default())
+    }
+
+    fn cycle_started(&self, cycle: u64) {
+        if cycle == 2 && self.coordinator_panics.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("coordinator blew up");
+        }
+    }
+}
+
+#[test]
+fn a_panicking_coordinator_is_restarted_and_reported_once() {
+    let source = Arc::new(Flaky::default());
+    let poller = Poller::start(
+        vec![account("main")],
+        source.clone(),
+        Duration::from_millis(20),
+    );
+    // Cycle 1 reports, cycle 2 panics in the coordinator; after the restart
+    // polling goes on.
+    let mut cycles = Vec::new();
+    while cycles.len() < 3 {
+        let u = poller
+            .recv_timeout(Duration::from_secs(10))
+            .expect("polls go on");
+        cycles.push(u.cycle);
+    }
+    assert!(cycles.iter().all(|&c| c != 2), "{cycles:?}");
+    let message = poller.try_restart().expect("the restart is reported");
+    assert!(message.contains("coordinator blew up"), "{message}");
+    assert!(poller.try_restart().is_none(), "once per restart");
+    assert_eq!(source.coordinator_panics.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_panicking_listing_is_that_polls_error_and_polling_goes_on() {
+    let source = Arc::new(Flaky::default());
+    let poller = Poller::start(
+        vec![account("bad")],
+        source.clone(),
+        Duration::from_millis(20),
+    );
+    let first = poller
+        .recv_timeout(Duration::from_secs(10))
+        .expect("reports");
+    let err = first.result.unwrap_err();
+    assert!(err.contains("listing blew up"), "{err}");
+    let next = poller
+        .recv_timeout(Duration::from_secs(10))
+        .expect("polled again");
+    assert!(next.result.is_ok());
+}
+
+#[test]
+fn poll_now_returns_a_cycle_every_later_result_reaches() {
+    let source = Arc::new(FakeSource::default());
+    let poller = Poller::start(vec![account("main")], source, Duration::from_secs(60));
+    poller
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first poll");
+    let cycle = poller.poll_now();
+    assert!(cycle > 1);
+    let u = poller
+        .recv_timeout(Duration::from_secs(5))
+        .expect("forced poll");
+    assert!(u.cycle >= cycle, "{} < {cycle}", u.cycle);
+}
