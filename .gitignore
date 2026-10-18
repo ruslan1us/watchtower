@@ -1,0 +1,5 @@
+# Private working notes (contain personal environment details)
+SPEC.md
+
+# Rust build output
+/target/
