@@ -71,10 +71,7 @@ fn owned_by_alt(app: &mut App, fixture: &str) {
 }
 
 fn select(app: &mut App, name: &str) {
-    app.handle_key(key(KeyCode::Home));
-    while app.selected_session().unwrap().session.display_name() != name {
-        app.handle_key(ch('j'));
-    }
+    common::select_name(app, name);
 }
 
 /// Carries out the background effects with `jobs` and feeds every result

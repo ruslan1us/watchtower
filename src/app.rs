@@ -1,5 +1,7 @@
-//! The TUI state machine (doc/0014 milestones 1–4): the merged session
-//! list, selection, the help overlay, the account picker, confirmations, the
+//! The TUI state machine (doc/0014 milestones 1–5): the merged session
+//! list with its view controls (grouping by state or project, collapsed
+//! groups, the interactive toggle and the text filter, doc/0006), the
+//! selection over headers and rows, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
 //! logs panel (doc/0009), the hand-off to another account (doc/0004), the
 //! orchestrator key `o` (doc/0010), the tracked activity times and the
@@ -21,7 +23,7 @@
 //! `rm` refusal) never replace one that is open: they wait in a queue and
 //! open, in order, once nothing else is open (doc/0011).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -33,7 +35,7 @@ use crate::activity;
 use crate::config::{Account, Config};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
-use crate::groups::{self, Group};
+use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
 use crate::listing::Session;
 use crate::logview::{LogScreen, LogsError};
@@ -237,13 +239,49 @@ pub struct AttachOutcome {
     pub result: Result<Option<i32>, String>,
 }
 
-/// One line of the session list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One line of the session list. Headers and rows can both be selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
-    /// A group header with its row count.
-    Header { group: Group, count: usize },
+    /// A group header (doc/0006, doc/0007).
+    Header {
+        /// The group: a state group, or a project in project mode.
+        group: GroupKey,
+        /// Its rows; with a filter, the matching ones.
+        count: usize,
+        /// How many of those rows are highlighted.
+        highlighted: usize,
+        /// The group is collapsed: its rows are not listed.
+        collapsed: bool,
+    },
     /// A session: index into [`App::sessions`].
     Row(usize),
+}
+
+/// What the selection is on, kept across rebuilds of the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Selected {
+    /// A session row, by [`row_key`].
+    Row(String),
+    /// A group header.
+    Header(GroupKey),
+}
+
+/// Where the selection goes when the list is rebuilt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// The same session or header; a session whose group is collapsed
+    /// gives its header; otherwise the same position.
+    Same,
+    /// The first session row (the filter changed).
+    FirstRow,
+}
+
+/// The text filter of the list (doc/0006).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Filter {
+    text: String,
+    /// The input line has the keys.
+    editing: bool,
 }
 
 /// The account picker shown before attaching to a session whose owner is
@@ -585,34 +623,42 @@ pub enum Action {
     /// `m`: mark the highlighted row as seen (doc/0007).
     MarkSeen,
     ToggleLogs,
-    /// `Esc`: close the logs panel.
+    /// `Esc`: cancel a waiting attach, else close the logs panel, else
+    /// clear the filter.
     Close,
     Refresh,
     Help,
     Quit,
     /// `Ctrl+Z`: reserved for detaching inside a session; a no-op here.
     DetachKeyHint,
-    /// A key of a later milestone; the text names the feature.
-    NotYet(&'static str),
+    /// `/`: type or edit the text filter (doc/0006).
+    Filter,
+    /// `p`: group by state / by project (doc/0006).
+    ToggleGrouping,
+    /// `i`: show / hide the Interactive group (doc/0006).
+    ToggleInteractive,
+    /// `Tab`: collapse / expand the group of the selected line (doc/0006).
+    ToggleGroup,
 }
 
-/// Keys of the session list (doc/0011, milestones 1–5a).
+/// Keys of the session list (doc/0011), for the help. Short enough that
+/// the help fits a 24-row terminal.
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
     (
         "PgUp/PgDn",
-        "move one page; Home/End, g/G: first / last row",
+        "move one page; Home/End, g/G: first / last line",
     ),
-    ("Enter", "attach to the selected session"),
-    ("n", "new session"),
+    ("Enter", "attach; on a group header: collapse / expand"),
+    ("Tab", "collapse / expand the group of the selected line"),
+    ("/", "filter by name, project, account; Esc clears it"),
+    ("p, i", "group by state / project; show / hide interactive"),
+    ("n, o", "new session; attach to the orchestrator (start it)"),
     ("a", "continue under another account (hand-off)"),
-    ("o", "attach to the orchestrator, starting it if missing"),
-    ("s", "stop the session (confirm when working or blocked)"),
-    ("d", "remove the session (confirm)"),
+    ("s, d", "stop (confirm when working or blocked); remove"),
     ("m", "mark the highlighted session as seen"),
     ("Space, Esc", "toggle / close the logs panel"),
-    ("r", "refresh now"),
-    ("?", "this help"),
+    ("r, ?", "refresh now; this help"),
     ("q, Ctrl+C", "quit"),
     ("Ctrl+Z", "inside a session: return to tower"),
 ];
@@ -626,9 +672,6 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
     ("Ctrl+T", "after \"not trusted\": open claude there, retry"),
     ("Esc", "cancel"),
 ];
-
-/// Keys of later milestones, shown in the help as not yet available.
-pub const LATER_KEYS: &str = "/ p i Tab";
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
 /// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
@@ -665,10 +708,10 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('a') => Action::Handoff,
         KeyCode::Char('o') => Action::Orchestrator,
         KeyCode::Char('m') => Action::MarkSeen,
-        KeyCode::Char('/') => Action::NotYet("filter"),
-        KeyCode::Char('p') => Action::NotYet("group by project"),
-        KeyCode::Char('i') => Action::NotYet("show/hide interactive"),
-        KeyCode::Tab => Action::NotYet("collapse group (Tab)"),
+        KeyCode::Char('/') => Action::Filter,
+        KeyCode::Char('p') => Action::ToggleGrouping,
+        KeyCode::Char('i') => Action::ToggleInteractive,
+        KeyCode::Tab => Action::ToggleGroup,
         _ => return None,
     };
     Some(action)
@@ -691,13 +734,23 @@ pub struct App {
     /// Number of successful listings received so far: orders the accounts'
     /// last good rows by arrival (doc/0017).
     received: u64,
+    /// Every merged session, in the display order of the current grouping,
+    /// including rows a filter, a collapsed group or `i` hides.
     sessions: Vec<MergedSession>,
+    /// The visible lines: headers and rows.
     entries: Vec<Entry>,
-    /// Indices into `entries` of the selectable (session) lines.
-    rows: Vec<usize>,
-    /// Index into `rows`.
+    /// Index into `entries`.
     selected: usize,
-    selected_key: Option<String>,
+    selected_key: Option<Selected>,
+    /// Grouping by state or by project (`p`, doc/0006).
+    grouping: Grouping,
+    /// Whether the Interactive group is shown (`i`, doc/0006).
+    show_interactive: bool,
+    /// Groups the user collapsed or expanded, against their default; kept
+    /// for the session only (doc/0006).
+    folded: HashMap<GroupKey, bool>,
+    /// The text filter (`/`, doc/0006).
+    filter: Filter,
     overlay: Overlay,
     dialog: Option<Dialog>,
     logs: Option<LogsPanel>,
@@ -782,9 +835,12 @@ impl App {
             received: 0,
             sessions: Vec::new(),
             entries: Vec::new(),
-            rows: Vec::new(),
             selected: 0,
             selected_key: None,
+            grouping: Grouping::State,
+            show_interactive: true,
+            folded: HashMap::new(),
+            filter: Filter::default(),
             overlay: Overlay::None,
             dialog: None,
             logs: None,
@@ -870,9 +926,91 @@ impl App {
         &self.entries
     }
 
-    /// Index into [`App::entries`] of the selected row, if any.
+    /// Index into [`App::entries`] of the selected line (a row or a group
+    /// header), if any.
     pub fn selected_entry(&self) -> Option<usize> {
-        self.rows.get(self.selected).copied()
+        (self.selected < self.entries.len()).then_some(self.selected)
+    }
+
+    /// The group header that is selected, if the selection is on one.
+    pub fn selected_header(&self) -> Option<&GroupKey> {
+        match self.entries.get(self.selected_entry()?)? {
+            Entry::Header { group, .. } => Some(group),
+            Entry::Row(_) => None,
+        }
+    }
+
+    /// The current grouping (`p`, doc/0006).
+    pub fn grouping(&self) -> Grouping {
+        self.grouping
+    }
+
+    /// Whether the Interactive group is shown (`i`, doc/0006).
+    pub fn shows_interactive(&self) -> bool {
+        self.show_interactive
+    }
+
+    /// Whether `group` is collapsed; while a filter is active every group
+    /// shows its matches (doc/0006).
+    pub fn is_collapsed(&self, group: &GroupKey) -> bool {
+        !self.filter_active() && !self.folded_open(group)
+    }
+
+    /// The group's remembered state: the user's choice this session, else
+    /// its default.
+    fn folded_open(&self, group: &GroupKey) -> bool {
+        self.folded
+            .get(group)
+            .copied()
+            .unwrap_or_else(|| group.default_expanded())
+    }
+
+    /// The filter text; empty when no filter is set.
+    pub fn filter_text(&self) -> &str {
+        &self.filter.text
+    }
+
+    /// Whether the filter's input line has the keys.
+    pub fn filter_editing(&self) -> bool {
+        self.filter.editing
+    }
+
+    /// Whether a non-empty filter restricts the list.
+    pub fn filter_active(&self) -> bool {
+        !self.filter.text.trim().is_empty()
+    }
+
+    /// Whether the session matches the filter (doc/0006): name, project
+    /// (`cwd` as listed and with `~`) and account. True without a filter.
+    pub fn matches_filter(&self, m: &MergedSession) -> bool {
+        let s = &m.session;
+        let short = paths::shorten_home(&s.cwd, &self.home);
+        groups::filter_matches(
+            &self.filter.text,
+            &[&s.display_name(), &s.cwd, &short, m.owner.label()],
+        )
+    }
+
+    /// Number of sessions the filter lets through, whatever the groups'
+    /// collapse state; interactive rows only while they are shown.
+    pub fn filter_match_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|m| self.show_interactive || !m.session.is_interactive())
+            .filter(|m| self.matches_filter(m))
+            .count()
+    }
+
+    /// Number of highlighted sessions the filter hides: the attention
+    /// counter still counts them and says "(filtered)" (doc/0006, doc/0007).
+    pub fn attention_filtered(&self) -> usize {
+        if !self.filter_active() {
+            return 0;
+        }
+        self.sessions
+            .iter()
+            .filter(|m| self.is_highlighted(m) && !self.matches_filter(m))
+            .count()
     }
 
     /// The selected session, if any.
@@ -983,6 +1121,36 @@ impl App {
     /// errors and warnings.
     pub fn status_segments(&self, now: Instant) -> Vec<StatusSegment> {
         let mut out = Vec::new();
+        // The view's own state: the filter with its match count, hidden
+        // interactive rows (doc/0006).
+        if self.filter_active() {
+            out.push(StatusSegment {
+                text: format!(
+                    "filter \"{}\": {}",
+                    self.filter.text.trim(),
+                    match self.filter_match_count() {
+                        0 => "no matches".to_owned(),
+                        1 => "1 match".to_owned(),
+                        n => format!("{n} matches"),
+                    }
+                ),
+                severity: Severity::Info,
+            });
+        }
+        let hidden = if self.show_interactive {
+            0
+        } else {
+            self.sessions
+                .iter()
+                .filter(|m| m.session.is_interactive())
+                .count()
+        };
+        if hidden > 0 {
+            out.push(StatusSegment {
+                text: format!("{hidden} interactive hidden (i shows)"),
+                severity: Severity::Info,
+            });
+        }
         // A running hand-off stays visible until it reports back.
         if let Some(h) = &self.handoff {
             out.push(StatusSegment {
@@ -1585,8 +1753,66 @@ impl App {
             Overlay::Target(picker) => self.target_key(key, picker),
             Overlay::Untrusted(untrusted) => self.untrusted_key(key, *untrusted),
             Overlay::OrchestratorUntrusted(u) => self.orchestrator_untrusted_key(key, *u),
+            Overlay::None if self.filter.editing => self.filter_key(key),
             Overlay::None => self.list_key(key),
         }
+    }
+
+    /// Keys of the filter's input line (doc/0006, doc/0011): typing filters
+    /// live and the selection follows the first match; `Enter` keeps the
+    /// filter and gives the keys back to the list; `Esc` clears it.
+    /// `↑` / `↓` move the selection meanwhile; `Ctrl+C` quits.
+    fn filter_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => return vec![Effect::Quit],
+            KeyCode::Char('z' | 'Z') if ctrl => {
+                self.set_message(
+                    "Ctrl+Z does nothing here; inside a session it returns to tower",
+                    Severity::Info,
+                );
+                return Vec::new();
+            }
+            KeyCode::Char('u' | 'U') if ctrl => {
+                self.filter.text.clear();
+                self.rebuild_view(Keep::Same);
+            }
+            _ if ctrl || alt => return Vec::new(),
+            KeyCode::Enter => {
+                self.filter.editing = false;
+                if !self.filter_active() {
+                    self.filter.text.clear();
+                }
+            }
+            KeyCode::Esc => {
+                self.filter = Filter::default();
+                self.rebuild_view(Keep::Same);
+                self.set_message("filter cleared", Severity::Info);
+            }
+            KeyCode::Backspace => {
+                self.filter.text.pop();
+                let keep = if self.filter_active() {
+                    Keep::FirstRow
+                } else {
+                    Keep::Same
+                };
+                self.rebuild_view(keep);
+            }
+            KeyCode::Up => self.move_by(-1),
+            KeyCode::Down => self.move_by(1),
+            KeyCode::Char(c) if !c.is_control() => {
+                self.filter.text.push(c);
+                let keep = if self.filter_active() {
+                    Keep::FirstRow
+                } else {
+                    Keep::Same
+                };
+                self.rebuild_view(keep);
+            }
+            _ => return Vec::new(),
+        }
+        self.logs_follow(false)
     }
 
     fn popup_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -1844,7 +2070,8 @@ impl App {
             Action::PageUp => self.move_by(-(self.page_size.max(1) as isize)),
             Action::PageDown => self.move_by(self.page_size.max(1) as isize),
             Action::First => self.select(0),
-            Action::Last => self.select(self.rows.len().saturating_sub(1)),
+            Action::Last => self.select(self.entries.len().saturating_sub(1)),
+            Action::Attach if self.selected_header().is_some() => self.toggle_group(),
             Action::Attach => effects = self.request_action(Purpose::Attach),
             Action::NewSession => return vec![Effect::OpenDialog],
             Action::Stop => effects = self.request_action(Purpose::Stop),
@@ -1874,8 +2101,14 @@ impl App {
                     );
                     return Vec::new();
                 }
-                self.logs = None;
-                return Vec::new();
+                if self.logs.take().is_some() {
+                    return Vec::new();
+                }
+                if self.filter_active() {
+                    self.filter = Filter::default();
+                    self.rebuild_view(Keep::Same);
+                    self.set_message("filter cleared", Severity::Info);
+                }
             }
             Action::Refresh => {
                 self.set_message("refreshing…", Severity::Info);
@@ -1887,9 +2120,30 @@ impl App {
                 "Ctrl+Z does nothing here; inside a session it returns to tower",
                 Severity::Info,
             ),
-            Action::NotYet(what) => {
-                self.set_message(format!("{what}: not available yet"), Severity::Info)
+            Action::Filter => self.filter.editing = true,
+            Action::ToggleGrouping => {
+                self.grouping = match self.grouping {
+                    Grouping::State => Grouping::Project,
+                    Grouping::Project => Grouping::State,
+                };
+                self.rebuild_view(Keep::Same);
+                let how = match self.grouping {
+                    Grouping::State => "grouped by state",
+                    Grouping::Project => "grouped by project",
+                };
+                self.set_message(format!("{how} (p toggles)"), Severity::Info);
             }
+            Action::ToggleInteractive => {
+                self.show_interactive = !self.show_interactive;
+                self.rebuild_view(Keep::Same);
+                // While hidden, the status bar says so on its own.
+                if self.show_interactive {
+                    self.set_message("interactive sessions shown", Severity::Info);
+                } else {
+                    self.message = None;
+                }
+            }
+            Action::ToggleGroup => self.toggle_group(),
         }
         effects.extend(self.logs_follow(false));
         effects
@@ -3061,55 +3315,71 @@ impl App {
     }
 
     fn move_by(&mut self, delta: isize) {
-        if self.rows.is_empty() {
+        if self.entries.is_empty() {
             return;
         }
-        let last = self.rows.len() - 1;
+        let last = self.entries.len() - 1;
         let target = (self.selected as isize + delta).clamp(0, last as isize) as usize;
         self.select(target);
     }
 
+    /// Selects line `index` (clamped). An empty list keeps the key, so
+    /// the selection comes back to the same session when a filter that
+    /// matched nothing is cleared.
     fn select(&mut self, index: usize) {
-        if self.rows.is_empty() {
+        if self.entries.is_empty() {
             self.selected = 0;
-            self.selected_key = None;
             return;
         }
-        self.selected = index.min(self.rows.len() - 1);
-        self.selected_key = self.selected_session().map(row_key);
+        self.selected = index.min(self.entries.len() - 1);
+        self.selected_key = match &self.entries[self.selected] {
+            Entry::Header { group, .. } => Some(Selected::Header(group.clone())),
+            Entry::Row(i) => Some(Selected::Row(row_key(&self.sessions[*i]))),
+        };
     }
 
-    /// Replaces the merged sessions, ordered for display, and keeps the
+    /// `Tab`, or `Enter` on a header: collapses or expands the group of the
+    /// selected line and remembers it for the session (doc/0006). The
+    /// selection moves to the header of a group it collapses. While a
+    /// filter is active every group shows its matches, so nothing folds.
+    fn toggle_group(&mut self) {
+        let Some(group) = self.selected_group() else {
+            return;
+        };
+        if self.filter_active() {
+            self.set_message(
+                "groups stay open while a filter is active (Esc clears it)",
+                Severity::Info,
+            );
+            return;
+        }
+        let open = !self.folded_open(&group);
+        if open == group.default_expanded() {
+            self.folded.remove(&group);
+        } else {
+            self.folded.insert(group.clone(), open);
+        }
+        if !open {
+            self.selected_key = Some(Selected::Header(group));
+        }
+        self.rebuild_view(Keep::Same);
+    }
+
+    /// The group of the selected line: the header itself, or the header
+    /// above the selected row.
+    fn selected_group(&self) -> Option<GroupKey> {
+        let at = self.selected_entry()?;
+        self.entries[..=at].iter().rev().find_map(|e| match e {
+            Entry::Header { group, .. } => Some(group.clone()),
+            Entry::Row(_) => None,
+        })
+    }
+
+    /// Replaces the merged sessions and rebuilds the list, keeping the
     /// selection on the same session when it is still listed.
     fn set_sessions(&mut self, merged: Vec<MergedSession>) {
-        let now_ms = sidecar::now_ms();
-        let grouped = groups::group_by_state_with(&merged, |m| {
-            activity::last_change_at(&m.session, &self.sidecar, now_ms)
-        });
-        let mut sessions = Vec::with_capacity(merged.len());
-        let mut entries = Vec::new();
-        let mut rows = Vec::new();
-        for g in &grouped {
-            entries.push(Entry::Header {
-                group: g.group,
-                count: g.rows.len(),
-            });
-            for m in &g.rows {
-                rows.push(entries.len());
-                entries.push(Entry::Row(sessions.len()));
-                sessions.push((*m).clone());
-            }
-        }
-        self.sessions = sessions;
-        self.entries = entries;
-        self.rows = rows;
-        let keep = self.selected_key.as_ref().and_then(|key| {
-            self.rows.iter().position(|&e| match self.entries[e] {
-                Entry::Row(i) => row_key(&self.sessions[i]) == *key,
-                Entry::Header { .. } => false,
-            })
-        });
-        self.select(keep.unwrap_or(self.selected));
+        self.sessions = merged;
+        self.rebuild_view(Keep::Same);
         // The pickers refer to a session by key; drop them if it vanished.
         let picked = match &self.overlay {
             Overlay::Picker(p) => Some(p.key.clone()),
@@ -3125,6 +3395,89 @@ impl App {
             self.overlay = Overlay::None;
             self.set_message("session no longer listed", Severity::Info);
         }
+    }
+
+    /// Orders the sessions for the current grouping and builds the visible
+    /// lines (doc/0006): groups without a row (or, with a filter, without
+    /// a match) are hidden, a collapsed group shows only its header, the
+    /// Interactive group only while `i` shows it. Then puts the selection
+    /// back as `keep` says.
+    fn rebuild_view(&mut self, keep: Keep) {
+        let now_ms = sidecar::now_ms();
+        let all = std::mem::take(&mut self.sessions);
+        let grouped = groups::group_with(self.grouping, &all, &self.home, |m| {
+            activity::last_change_at(&m.session, &self.sidecar, now_ms)
+        });
+        let order: Vec<(GroupKey, Vec<MergedSession>)> = grouped
+            .into_iter()
+            .map(|g| (g.key, g.rows.into_iter().cloned().collect()))
+            .collect();
+        drop(all);
+        let mut sessions = Vec::with_capacity(order.iter().map(|g| g.1.len()).sum());
+        let mut entries = Vec::new();
+        // Rows of collapsed groups, with the index of their header.
+        let mut folded_rows: Vec<(String, usize)> = Vec::new();
+        for (group, rows) in order {
+            let first = sessions.len();
+            sessions.extend(rows);
+            if group.is_interactive() && !self.show_interactive {
+                continue;
+            }
+            let shown: Vec<usize> = (first..sessions.len())
+                .filter(|&i| self.matches_filter(&sessions[i]))
+                .collect();
+            if shown.is_empty() {
+                continue;
+            }
+            let collapsed = self.is_collapsed(&group);
+            let highlighted = shown
+                .iter()
+                .filter(|&&i| self.is_highlighted(&sessions[i]))
+                .count();
+            let header = entries.len();
+            entries.push(Entry::Header {
+                group,
+                count: shown.len(),
+                highlighted,
+                collapsed,
+            });
+            if collapsed {
+                folded_rows.extend(shown.iter().map(|&i| (row_key(&sessions[i]), header)));
+            } else {
+                entries.extend(shown.into_iter().map(Entry::Row));
+            }
+        }
+        self.sessions = sessions;
+        self.entries = entries;
+        let first_row = || {
+            self.entries
+                .iter()
+                .position(|e| matches!(e, Entry::Row(_)))
+                .unwrap_or(0)
+        };
+        let index = match (keep, &self.selected_key) {
+            (Keep::FirstRow, _) | (Keep::Same, None) => first_row(),
+            (Keep::Same, Some(Selected::Header(key))) => self
+                .entries
+                .iter()
+                .position(|e| matches!(e, Entry::Header { group, .. } if group == key))
+                .unwrap_or(self.selected),
+            (Keep::Same, Some(Selected::Row(key))) => self
+                .entries
+                .iter()
+                .position(|e| match e {
+                    Entry::Row(i) => row_key(&self.sessions[*i]) == *key,
+                    Entry::Header { .. } => false,
+                })
+                .or_else(|| {
+                    folded_rows
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, header)| *header)
+                })
+                .unwrap_or(self.selected),
+        };
+        self.select(index);
     }
 }
 

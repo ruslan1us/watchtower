@@ -1,6 +1,6 @@
-//! Rendering: title, grouped session list (with the attention marker and
-//! the age column, doc/0006, doc/0007), the logs panel, status line,
-//! footer, and the overlays: help, account picker, confirmations, the
+//! Rendering: title, grouped session list (with the attention marker, the
+//! age column and collapsed headers, doc/0006, doc/0007), the logs panel,
+//! the filter's input line, status line, footer, and the overlays: help, account picker, confirmations, the
 //! hand-off target picker and trust window (doc/0004), the orchestrator's
 //! trust window (doc/0010), the new-session dialog ([`dialog`]) and the
 //! popup window (doc/0006, doc/0008, doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
@@ -25,18 +25,39 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::activity;
 use crate::app::{
-    App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LATER_KEYS, LogsPanel, LogsView, Overlay,
-    Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
-    UntrustedOrchestrator,
+    App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LogsPanel, LogsView, Overlay, Picker, Popup,
+    Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff, UntrustedOrchestrator,
 };
-use crate::groups::{self, Group};
+use crate::groups;
 use crate::merge::MergedSession;
 use crate::paths;
 use crate::sidecar;
 
-/// Footer key hints of the session list (doc/0011).
-pub const FOOTER_KEYS: &str = "↑↓ move · Enter attach · n new · a hand-off · s stop · d remove · \
-     Space logs · m seen · o orchestrator · ? help · q quit";
+/// Footer key hints of the session list (doc/0011), most important first.
+/// A narrow footer drops whole hints from the end; [`FOOTER_HELP`] always
+/// closes the list while it fits.
+pub const FOOTER_KEYS: &[&str] = &[
+    "Enter attach",
+    "n new",
+    "Space logs",
+    "m seen",
+    "/ filter",
+    "a hand-off",
+    "s stop",
+    "d remove",
+    "o orchestrator",
+    "Tab fold",
+    "p by project",
+    "i interactive",
+    "↑↓ move",
+    "q quit",
+];
+
+/// The last footer hint, kept while anything fits.
+pub const FOOTER_HELP: &str = "? help";
+
+/// Separator between footer hints.
+const HINT_SEP: &str = " · ";
 
 /// The detach hint, always shown at the right of the footer (doc/0005,
 /// doc/0011); the key hints are cut first when the terminal is narrow.
@@ -67,9 +88,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 /// [`draw`] with the wall-clock time `now_ms` (Unix ms) the age column
 /// counts from (doc/0006).
 pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
-    let [title, list, status, footer] = Layout::vertical([
+    // The filter's input line sits above the status bar while it is
+    // edited (doc/0006).
+    let input_h = u16::from(app.filter_editing());
+    let [title, list, input, status, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(input_h),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -89,6 +114,9 @@ pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
             draw_list(frame, app, list_area, now_ms);
             draw_logs(frame, app, &panel, panel_area);
         }
+    }
+    if app.filter_editing() {
+        draw_filter_input(frame, app, input);
     }
     draw_status(frame, app, status, now);
     draw_footer(frame, footer);
@@ -146,15 +174,72 @@ fn draw_quit_prompt(frame: &mut Frame, app: &App, prompt: &QuitPrompt, area: Rec
     );
 }
 
+/// The filter's input line (doc/0006): `/` and the text with the cursor,
+/// then the match count and the keys.
+fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let text = app.filter_text();
+    let matches = match app.filter_match_count() {
+        _ if !app.filter_active() => "type to filter by name, project, account".to_owned(),
+        0 => "no matches".to_owned(),
+        1 => "1 match".to_owned(),
+        n => format!("{n} matches"),
+    };
+    let hint = format!("  {matches} · Enter keep · Esc clear");
+    let w = usize::from(area.width);
+    // Long text keeps its end, where the cursor is, in view.
+    let room = w.saturating_sub(3).max(1);
+    let mut shown = text.to_owned();
+    while shown.width() > room {
+        shown.remove(0);
+    }
+    let used = 2 + shown.width();
+    let line = Line::from(vec![
+        Span::styled(" /", Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(shown),
+        Span::styled(
+            fit(&hint, w.saturating_sub(used + 1)),
+            Style::new().add_modifier(Modifier::DIM),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+    let x = area.x + (used as u16).min(area.width.saturating_sub(1));
+    frame.set_cursor_position((x, area.y));
+}
+
+/// The footer's key hints in `w` columns: whole hints in order of
+/// importance, ending with `? help`; a hint that does not fit is dropped
+/// with the rest, never cut.
+pub fn footer_keys(w: usize) -> String {
+    let help = FOOTER_HELP.width();
+    let mut out = String::new();
+    for hint in FOOTER_KEYS {
+        let next = out.width() + hint.width() + HINT_SEP.width();
+        if next + help > w {
+            break;
+        }
+        out.push_str(hint);
+        out.push_str(HINT_SEP);
+    }
+    if out.width() + help <= w {
+        out.push_str(FOOTER_HELP);
+    } else {
+        out.truncate(out.trim_end_matches(HINT_SEP).len());
+    }
+    fit(&out, w)
+}
+
 /// The footer: key hints on the left, the detach hint on the right.
 fn draw_footer(frame: &mut Frame, area: Rect) {
     let w = usize::from(area.width);
     let hint = DETACH_HINT.width();
     let sep = "  │  ";
     let text = if w >= hint + sep.width() + 8 {
-        // Key hints padded or cut to the space left of the detach hint.
+        // Whole key hints in the space left of the detach hint.
         let keys_w = w - hint - sep.width();
-        format!("{}{sep}{DETACH_HINT}", fit(FOOTER_KEYS, keys_w))
+        format!("{}{sep}{DETACH_HINT}", footer_keys(keys_w))
     } else {
         fit(DETACH_HINT, w)
     };
@@ -308,14 +393,23 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
     let items: Vec<ListItem> = app
         .entries()
         .iter()
-        .map(|entry| match *entry {
-            Entry::Header { group, count } => {
+        .map(|entry| match entry {
+            Entry::Header {
+                group,
+                count,
+                highlighted,
+                collapsed,
+            } => {
                 let mut style = Style::new().add_modifier(Modifier::BOLD);
-                if group == Group::Interactive {
+                if group.is_interactive() {
                     style = style.add_modifier(Modifier::DIM);
                 }
-                let mut spans = vec![Span::styled(format!("{} ({count})", group.title()), style)];
-                let lit = app.highlighted_in(group);
+                let fold = if *collapsed { "▸" } else { "▾" };
+                let mut spans = vec![Span::styled(
+                    format!("{fold} {} ({count})", group.title()),
+                    style,
+                )];
+                let lit = *highlighted;
                 if lit > 0 {
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled(
@@ -326,8 +420,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
                 ListItem::new(Line::from(spans))
             }
             Entry::Row(i) => {
-                let c = &columns[i];
-                let m = &app.sessions()[i];
+                let c = &columns[*i];
+                let m = &app.sessions()[*i];
                 let lit = app.is_highlighted(m);
                 let mut base = Style::new();
                 if m.session.is_interactive() {
@@ -383,7 +477,15 @@ pub fn attention_text(count: usize) -> Option<String> {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant) {
     let mut spans = vec![Span::raw(" ")];
-    let counter = attention_text(app.attention_count());
+    // Global, whatever the filter hides; it says so when it hides some
+    // (doc/0006, doc/0007).
+    let counter = attention_text(app.attention_count()).map(|text| {
+        if app.attention_filtered() > 0 {
+            format!("{text} (filtered)")
+        } else {
+            text
+        }
+    });
     if let Some(text) = &counter {
         spans.push(Span::styled(
             format!("{MARKER} {text}"),
@@ -438,8 +540,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(format!(" {key:<22} {what}")));
     }
-    // The keys still to come share the bottom border with the closing
-    // hint, so the help fits 24 rows.
+    // 14 list keys, a blank line, the dialog title and 6 dialog keys:
+    // with the borders the help fits 24 rows (doc/0011).
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);
@@ -449,7 +551,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(" Keys ")
                 .title_bottom(Line::styled(
-                    format!(" Not available yet: {LATER_KEYS} · Esc or ? closes this help "),
+                    " Esc or ? closes this help ",
                     Style::new().add_modifier(Modifier::DIM),
                 )),
         ),

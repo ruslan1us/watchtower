@@ -255,9 +255,7 @@ fn bottom_panel_shows_the_tail_of_the_screen() {
 fn side_panel_on_wide_terminals_clips_without_wrapping() {
     let mut app = app_single();
     app.apply_poll(poll("main", "mixed-states.json"));
-    while app.selected_session().unwrap().session.display_name() != "say-ok" {
-        app.handle_key(ch('j'));
-    }
+    common::select_name(&mut app, "say-ok");
     app.handle_key(ch(' '));
     fetched(&mut app, "done");
     let lines = render(&mut app, 160, 30);
@@ -285,9 +283,7 @@ fn side_panel_on_wide_terminals_clips_without_wrapping() {
 fn panel_notes_render() {
     let mut app = app_single();
     app.apply_poll(poll("main", "after-stop-all.json"));
-    while app.selected_session().unwrap().session.display_name() != "say-ok" {
-        app.handle_key(ch('j'));
-    }
+    common::select_name(&mut app, "say-ok");
     app.handle_key(ch(' '));
     let all = text(&render(&mut app, 120, 30));
     assert!(
@@ -377,14 +373,14 @@ fn help_lists_milestone_two_keys() {
     let all = text(&render(&mut app, 100, 30));
     for needle in [
         "new session",
-        "stop the session",
-        "remove the session",
+        "stop (confirm when working or blocked); remove",
         "logs panel",
         "New-session dialog",
         "Ctrl+S",
         "Ctrl+G",
         "Ctrl+T",
-        "Not available yet: / p i Tab",
+        "filter by name, project, account",
+        "group by state / project",
         "attach to the orchestrator",
     ] {
         assert!(all.contains(needle), "{needle} missing\n{all}");

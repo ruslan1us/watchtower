@@ -107,19 +107,7 @@ fn app_three(sidecar: Sidecar) -> App {
 }
 
 fn select(app: &mut App, name: &str) {
-    app.handle_key(key(KeyCode::Home));
-    for _ in 0..app.sessions().len() {
-        if app
-            .selected_session()
-            .map(|m| m.session.display_name())
-            .as_deref()
-            == Some(name)
-        {
-            return;
-        }
-        app.handle_key(ch('j'));
-    }
-    panic!("no row {name}");
+    common::select_name(app, name);
 }
 
 fn handoff_of(effects: &[Effect]) -> Option<HandoffJob> {
@@ -949,7 +937,7 @@ fn help_and_footer_offer_the_handoff() {
         screen.contains("continue under another account"),
         "{screen}"
     );
-    assert!(screen.contains("Not available yet: / p i Tab"), "{screen}");
+    assert!(!screen.contains("Not available yet"), "{screen}");
     assert!(screen.contains("Ctrl+Z"), "{screen}");
     app.handle_key(key(KeyCode::Esc));
     let screen = render(&mut app, 160, 20);

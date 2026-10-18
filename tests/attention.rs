@@ -125,18 +125,7 @@ fn permission_tuple() -> StateTuple {
 
 /// Selects the row named `name` with the arrow keys.
 fn select(app: &mut App, name: &str) {
-    app.handle_key(key(KeyCode::Home));
-    for _ in 0..app.sessions().len() {
-        if app
-            .selected_session()
-            .and_then(|m| m.session.name.as_deref())
-            == Some(name)
-        {
-            return;
-        }
-        app.handle_key(key(KeyCode::Down));
-    }
-    panic!("cannot select {name}");
+    common::select_name(app, name);
 }
 
 // ---- activity times (doc/0006) ------------------------------------------
@@ -666,7 +655,9 @@ fn help_lists_m_and_fits_24_rows() {
     let top = line_index(&text, "Keys");
     let bottom = line_index(&text, "Esc or ? closes this help");
     assert!(top < bottom);
-    assert!(all.contains("Not available yet: / p i Tab"), "{all}");
+    assert!(!all.contains("Not available yet"), "{all}");
+    assert!(all.contains("filter by name, project, account"), "{all}");
+    assert!(all.contains("collapse / expand the group"), "{all}");
     // The whole box is on screen: every key line between the borders.
     assert!(all.contains("inside a session: return to tower"), "{all}");
     assert!(all.contains("Esc"));

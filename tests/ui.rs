@@ -73,7 +73,10 @@ fn list_renders_groups_rows_and_columns() {
     assert!(row.starts_with("▶"), "first row selected: {row}");
     assert!(line_with(&lines, "pick-colour").contains("input needed"));
     assert!(line_with(&lines, "bad-model").contains("failed"));
-    assert!(line_with(&lines, "say-ok").contains("stopped"));
+    // Stopped & finished starts collapsed: its header, no rows.
+    assert!(line_with(&lines, "▸ Stopped & finished (1)").contains('▸'));
+    assert!(line_with(&lines, "▾ Needs me (2)").contains("● 2"));
+    assert!(!lines.iter().any(|l| l.contains("say-ok")));
     assert!(line_with(&lines, "demo-app-3f").contains("not attachable"));
     assert!(!lines.iter().any(|l| l.contains("/home/user")));
 
@@ -102,6 +105,9 @@ fn unknown_account_shows_question_mark() {
 fn selection_moves_highlight() {
     let mut app = app_single();
     app.apply_poll(poll("main", "mixed-states.json"));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let lines = render(&mut app, 100, 20);
+    assert!(line_with(&lines, "Failed (1)").starts_with("▶"), "a header");
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let lines = render(&mut app, 100, 20);
     assert!(line_with(&lines, "bad-model").starts_with("▶"));
@@ -160,10 +166,12 @@ fn help_overlay_lists_active_keys() {
         "Keys",
         "move selection",
         "PgUp/PgDn",
-        "attach to the selected session",
+        "attach; on a group header: collapse / expand",
         "refresh now",
         "quit",
-        "Not available yet",
+        "filter by name, project, account",
+        "group by state / project; show / hide interactive",
+        "Esc or ? closes this help",
         "Ctrl+Z",
     ] {
         assert!(text.contains(needle), "{needle} missing in\n{text}");

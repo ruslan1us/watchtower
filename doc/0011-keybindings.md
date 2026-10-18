@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Proposed · 2026-10-18
+- Status: Accepted · 2026-10-18
 - Related: [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md)
 
 ## Context
@@ -19,11 +19,11 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 
 | Key | Action |
 |---|---|
-| `↑` / `↓`, `k` / `j` | Move selection |
+| `↑` / `↓`, `k` / `j` | Move selection; it moves over group headers and rows |
 | `PgUp` / `PgDn` | Move one page |
-| `Home` / `End`, `g` / `G` | First / last row |
+| `Home` / `End`, `g` / `G` | First / last line |
 | `Enter` | Attach to the selected session after a refresh ([0005](0005-attach-and-detach.md)); on a group header, collapse/expand |
-| `Tab` | Collapse/expand the group of the selected row |
+| `Tab` | Collapse/expand the group of the selected row or header ([0006](0006-session-states-and-grouping.md)) |
 | `Space` | Toggle the logs panel for the selected row ([0009](0009-stop-remove-and-logs.md)) |
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
 | `a` | Continue under another account ([0004](0004-account-hand-off.md)) |
@@ -31,13 +31,20 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `s` | Stop the session (confirm when working or blocked) |
 | `d` | Remove the session (confirm) |
 | `m` | Mark the selected highlighted session as seen: stores its current tuple as acknowledged, so the highlight clears until its next transition ([0007](0007-visual-only-attention.md)); on a row that is not highlighted the status line says so |
-| `/` | Text filter; `Esc` clears it |
+| `/` | Text filter: type or edit it in the input line ([0006](0006-session-states-and-grouping.md)); `Esc` clears it |
 | `p` | Toggle grouping: by state / by project ([0006](0006-session-states-and-grouping.md)) |
-| `i` | Show / hide interactive sessions |
+| `i` | Show / hide interactive sessions (shown by default) |
 | `r` | Refresh now |
 | `?` | Help overlay listing all keys |
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
 | `Esc` | Cancel an attach waiting for its refresh; else close the topmost panel, overlay or filter |
+
+**Filter input line** ([0006](0006-session-states-and-grouping.md)): typed
+characters, including list letters such as `q` or `j`, go into the filter, and
+the list follows as you type. `Backspace` deletes a character and `Ctrl+U`
+empties the line. `↑` / `↓` move the selection. `Enter` keeps the filter and
+gives the keys back to the list; `Esc` clears it. `Ctrl+C` quits as in the
+list, `Ctrl+Z` stays a no-op, and `←` is not bound.
 
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
 `Enter` cancels too.
@@ -85,9 +92,11 @@ variant that works.
   optionally with a hint that it is the detach key inside sessions.
 - `l` is not used for logs because it means "right" to vim users.
 - The footer always shows the most used keys (including `m seen`) and the
-  detach hint (`in a session: Ctrl+Z returns to tower`).
-- The help overlay fits a 24-row terminal; keys of later milestones are
-  named in its bottom border.
+  detach hint (`in a session: Ctrl+Z returns to tower`). On a narrow terminal
+  it drops whole key hints, least used first, and keeps `? help` and the
+  detach hint.
+- The help overlay fits a 24-row terminal: related list keys share a line
+  (`s, d`, `p, i`, …), followed by the dialog keys.
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
 - A window that a background result opens (the hand-off and orchestrator

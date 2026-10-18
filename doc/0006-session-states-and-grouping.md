@@ -53,7 +53,8 @@ Rules:
 - Parsing is lenient: unknown fields are ignored, missing fields get defaults,
   and an unknown `state`/`status`/`waitingFor` value is displayed as-is. It never
   crashes the UI or drops the row.
-- Empty groups are hidden. Group headers show a row count.
+- Empty groups are hidden. Group headers show a row count, and how many of
+  those rows are highlighted ([0007](0007-visual-only-attention.md)).
 - Finished and stopped rows stay until the user removes them
   ([0009](0009-stop-remove-and-logs.md)); the user often needs to go back into them.
 - Within a group, rows are sorted by last change, most recent first, then by
@@ -63,9 +64,51 @@ Rules:
 project (`cwd`). In project mode each project is a group, rows inside are
 ordered by the state order above, and the Interactive toggle still applies.
 
+- The header names the project as the row shows it (`cwd` with `~`); rows
+  without a `cwd` share a "(no folder)" group.
+- Projects are ordered by their most recent change, newest first; a project
+  with no known time comes last, and ties go by name.
+- Inside a project, rows follow the group order of the table, then last change
+  (most recent first), then name. Rows keep their state detail and highlight.
+- Interactive rows keep their own Interactive group, last, so `i` hides them
+  in either mode.
+
+**Collapsing.** `Tab` folds or unfolds the group of the selected line, and so
+does `Enter` on a group header. The selection can rest on headers, and a group
+that is folded leaves its header selected. Stopped & finished starts collapsed
+and every other group starts expanded, projects included. A collapsed header
+still shows its row count and its highlight count. Each choice is remembered
+per group (a state group or a project) while tower runs. It survives polls and
+`p` toggles but is not saved: the next start uses the defaults again, so the
+sidecar ([0002](0002-tech-stack-and-files.md)) holds no view settings.
+
+**Interactive toggle.** `i` hides or shows the Interactive group. It is shown,
+dimmed, by default. While it is hidden, the status bar says how many
+interactive rows are hidden.
+
 **Filter.** `/` opens a text filter that matches, case-insensitively, against
 name, `cwd` and account. Group counts reflect the filter; the attention counter
 does not ([0007](0007-visual-only-attention.md)).
+
+- The input line sits above the status bar, and typing filters as you go. The
+  query is split at whitespace, and every word must occur in at least one of:
+  the name (the short id when unnamed), the `cwd` as listed or with `~`, or
+  the account (`?` when unknown).
+- `Enter` keeps the filter and gives the keys back to the list. `Esc` clears
+  it, either while typing or later in the list (after an attach waiting for
+  its refresh and the logs panel). `/` edits the active filter.
+- While a filter is active, the status bar shows `filter "<text>": N matches`.
+- Groups without a match are hidden.
+- On every change of the text, the selection moves to the first match.
+- While a filter is active, collapsed groups show their matches, and folding
+  waits until the filter is cleared.
+- The attention counter keeps counting every highlighted session. It adds
+  "(filtered)" when the filter hides some of them.
+
+**Selection.** It stays on the same session across polls, filter changes and
+the `p`, `i` and collapse toggles whenever that session is still listed. If
+the session is in a collapsed group, its header is selected. If it is gone,
+the selection keeps its position, clamped to the list.
 
 **Row content:** the attention marker column ([0007](0007-visual-only-attention.md)),
 name (or short id when unnamed), project folder (`cwd` with the

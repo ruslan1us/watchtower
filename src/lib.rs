@@ -28,10 +28,10 @@
 //! - [`handoff`]: continuing a session under another account (milestone 3,
 //!   doc/0004).
 //!
-//! The TUI (milestones 1–3, doc/0014):
+//! The TUI (milestones 1–5, doc/0014):
 //!
-//! - [`app`]: the state machine (list, selection, overlays, logs panel,
-//!   stop, remove and hand-off, keys); no I/O.
+//! - [`app`]: the state machine (list, grouping, filter, selection,
+//!   overlays, logs panel, stop, remove and hand-off, keys); no I/O.
 //! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).

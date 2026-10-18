@@ -1,6 +1,9 @@
 //! Overview groups and per-row detail labels (doc/0006).
 
+use std::path::Path;
+
 use crate::listing::{Session, State, Status};
+use crate::paths;
 
 /// The overview groups, in display order (doc/0006).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -146,6 +149,153 @@ where
         });
     }
     out
+}
+
+/// How the overview groups its rows (doc/0006): by state, the default, or
+/// by project (`p`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grouping {
+    /// The state groups of the table in doc/0006.
+    #[default]
+    State,
+    /// One group per project folder; interactive rows keep their own group.
+    Project,
+}
+
+/// The identity of one group in the overview: a state group, or a project
+/// in project mode, named by its `cwd` with the home directory shortened
+/// to `~`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GroupKey {
+    /// A state group; in project mode only [`Group::Interactive`].
+    State(Group),
+    /// A project folder in project mode, e.g. `~/workspace/api`.
+    Project(String),
+}
+
+/// Header title of a project group whose rows have no `cwd`.
+pub const NO_PROJECT: &str = "(no folder)";
+
+impl GroupKey {
+    /// Header title.
+    pub fn title(&self) -> &str {
+        match self {
+            GroupKey::State(g) => g.title(),
+            GroupKey::Project(p) if p.is_empty() => NO_PROJECT,
+            GroupKey::Project(p) => p,
+        }
+    }
+
+    /// Whether the group starts expanded: Stopped & finished starts
+    /// collapsed, every other group (and every project) expanded (doc/0006).
+    pub fn default_expanded(&self) -> bool {
+        match self {
+            GroupKey::State(g) => g.default_expanded(),
+            GroupKey::Project(_) => true,
+        }
+    }
+
+    /// Whether this is the Interactive group (dimmed, toggled with `i`).
+    pub fn is_interactive(&self) -> bool {
+        *self == GroupKey::State(Group::Interactive)
+    }
+}
+
+/// Rows of one non-empty group of either grouping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyedRows<'a, T> {
+    pub key: GroupKey,
+    pub rows: Vec<&'a T>,
+}
+
+/// Groups rows for the overview in the given mode (doc/0006); see
+/// [`group_by_state_with`] and [`group_by_project_with`].
+pub fn group_with<'a, T, F>(
+    mode: Grouping,
+    items: &'a [T],
+    home: &Path,
+    last_change: F,
+) -> Vec<KeyedRows<'a, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+{
+    match mode {
+        Grouping::State => group_by_state_with(items, last_change)
+            .into_iter()
+            .map(|g| KeyedRows {
+                key: GroupKey::State(g.group),
+                rows: g.rows,
+            })
+            .collect(),
+        Grouping::Project => group_by_project_with(items, home, last_change),
+    }
+}
+
+/// Groups rows by project (doc/0006): one group per `cwd`, named with the
+/// home directory shortened to `~`. Groups are ordered by their most
+/// recent change, newest first (a group without any time last), then by
+/// name. Inside a group rows follow the state order of the state groups,
+/// then the last change, most recent first, then the display name.
+/// Interactive rows keep their own Interactive group, last.
+pub fn group_by_project_with<'a, T, F>(
+    items: &'a [T],
+    home: &Path,
+    last_change: F,
+) -> Vec<KeyedRows<'a, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+{
+    type Row<'r, T> = (Group, Option<i64>, String, &'r T);
+    let mut projects: Vec<(String, Vec<Row<'a, T>>)> = Vec::new();
+    let mut interactive: Vec<Row<'a, T>> = Vec::new();
+    for t in items {
+        let s = t.as_ref();
+        let row = (classify(s), last_change(t), s.display_name(), t);
+        if s.is_interactive() {
+            interactive.push(row);
+            continue;
+        }
+        let project = paths::shorten_home(&s.cwd, home);
+        match projects.iter_mut().find(|(p, _)| *p == project) {
+            Some((_, rows)) => rows.push(row),
+            None => projects.push((project, vec![row])),
+        }
+    }
+    let by_state =
+        |a: &Row<'a, T>, b: &Row<'a, T>| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2));
+    for (_, rows) in &mut projects {
+        rows.sort_by(by_state);
+    }
+    let newest = |rows: &[Row<'a, T>]| rows.iter().filter_map(|r| r.1).max();
+    projects.sort_by(|a, b| newest(&b.1).cmp(&newest(&a.1)).then(a.0.cmp(&b.0)));
+    interactive.sort_by(by_state);
+    let mut out: Vec<KeyedRows<'a, T>> = projects
+        .into_iter()
+        .map(|(p, rows)| KeyedRows {
+            key: GroupKey::Project(p),
+            rows: rows.into_iter().map(|r| r.3).collect(),
+        })
+        .collect();
+    if !interactive.is_empty() {
+        out.push(KeyedRows {
+            key: GroupKey::State(Group::Interactive),
+            rows: interactive.into_iter().map(|r| r.3).collect(),
+        });
+    }
+    out
+}
+
+/// Whether a row matches the text filter (doc/0006): every
+/// whitespace-separated word of `query` occurs, ignoring case, in at least
+/// one of `fields` (name, project, account). An empty query matches all.
+pub fn filter_matches(query: &str, fields: &[&str]) -> bool {
+    let fields: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
+    query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .all(|word| fields.iter().any(|f| f.contains(&word)))
 }
 
 impl AsRef<Session> for Session {

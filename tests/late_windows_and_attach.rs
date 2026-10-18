@@ -53,19 +53,7 @@ fn app_from(sc: Sidecar) -> App {
 }
 
 fn select(app: &mut App, name: &str) {
-    app.handle_key(key(KeyCode::Home));
-    for _ in 0..app.sessions().len() {
-        if app
-            .selected_session()
-            .map(|m| m.session.display_name())
-            .as_deref()
-            == Some(name)
-        {
-            return;
-        }
-        app.handle_key(ch('j'));
-    }
-    panic!("no row {name}");
+    common::select_name(app, name);
 }
 
 fn handoff_of(effects: &[Effect]) -> HandoffJob {

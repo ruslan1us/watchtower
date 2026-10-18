@@ -219,3 +219,66 @@ pub fn run_sidecar_check(app: &mut App, path: &Path) -> Vec<Effect> {
     };
     app.sidecar_checked(seq, job.run(path))
 }
+
+// ---- list controls (doc/0006) ---------------------------------------------
+
+use watchtower::app::Entry;
+use watchtower::merge::MergedSession;
+
+/// Selects the first row for which `pred` holds, walking the list from the
+/// top with `j` and expanding collapsed groups (`Tab` on their header) on
+/// the way, as a user would. Returns false at the bottom without a match.
+pub fn select_where(app: &mut App, pred: impl Fn(&MergedSession) -> bool) -> bool {
+    app.handle_key(key(KeyCode::Home));
+    loop {
+        if app.selected_session().is_some_and(&pred) {
+            return true;
+        }
+        if let Some(e) = app.selected_entry()
+            && let Entry::Header {
+                collapsed: true, ..
+            } = app.entries()[e]
+        {
+            app.handle_key(key(KeyCode::Tab));
+        }
+        let before = app.selected_entry();
+        app.handle_key(ch('j'));
+        if app.selected_entry() == before {
+            return false;
+        }
+    }
+}
+
+/// Selects the row whose display name is `name` (see [`select_where`]).
+pub fn select_name(app: &mut App, name: &str) {
+    if !select_where(app, |m| m.session.display_name() == name) {
+        panic!("no row {name}");
+    }
+}
+
+/// The group headers as (title, count, collapsed).
+pub fn headers(app: &App) -> Vec<(String, usize, bool)> {
+    app.entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Header {
+                group,
+                count,
+                collapsed,
+                ..
+            } => Some((group.title().to_owned(), *count, *collapsed)),
+            Entry::Row(_) => None,
+        })
+        .collect()
+}
+
+/// The display names of the visible rows, in order.
+pub fn visible_rows(app: &App) -> Vec<String> {
+    app.entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Row(i) => Some(app.sessions()[*i].session.display_name()),
+            Entry::Header { .. } => None,
+        })
+        .collect()
+}

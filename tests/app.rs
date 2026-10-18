@@ -6,7 +6,7 @@ mod common;
 use common::{HOME, app_single, app_two, app_two_with, poll, poll_err, refresh_for_attach};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use watchtower::app::{App, AttachOutcome, Effect, Entry, Overlay, Severity};
-use watchtower::groups::Group;
+use watchtower::groups::{Group, GroupKey};
 use watchtower::sidecar::{AccountSource, Sidecar};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -51,28 +51,44 @@ fn attach_of(effects: &[Effect]) -> Option<(&str, &str, &str)> {
 fn groups_in_doc_order_with_counts() {
     let mut app = app_single();
     app.apply_poll(poll("main", "after-stop-all.json"));
-    let headers: Vec<(Group, usize)> = app
+    let headers: Vec<(GroupKey, usize, bool)> = app
         .entries()
         .iter()
         .filter_map(|e| match e {
-            Entry::Header { group, count } => Some((*group, *count)),
+            Entry::Header {
+                group,
+                count,
+                collapsed,
+                ..
+            } => Some((group.clone(), *count, *collapsed)),
             Entry::Row(_) => None,
         })
         .collect();
+    let state = GroupKey::State;
     assert_eq!(
         headers,
         [
-            (Group::NeedsMe, 2),
-            (Group::Failed, 1),
-            (Group::ReadyForReview, 2),
-            (Group::Stopped, 1),
-            (Group::Interactive, 1),
+            (state(Group::NeedsMe), 2, false),
+            (state(Group::Failed), 1, false),
+            (state(Group::ReadyForReview), 2, false),
+            // Stopped & finished starts collapsed (doc/0006).
+            (state(Group::Stopped), 1, true),
+            (state(Group::Interactive), 1, false),
         ]
     );
+    assert!(!common::visible_rows(&app).contains(&"say-ok".to_owned()));
+}
+
+/// The selected line: a row's name, or `[title]` for a group header.
+fn line(app: &App) -> String {
+    match app.selected_header() {
+        Some(group) => format!("[{}]", group.title()),
+        None => selected(app),
+    }
 }
 
 #[test]
-fn selection_skips_headers_and_clamps() {
+fn selection_moves_over_headers_and_rows_and_clamps() {
     let mut app = app_single();
     assert!(app.selected_session().is_none());
     assert!(press(&mut app, key(KeyCode::Down)).is_empty(), "empty list");
@@ -80,55 +96,85 @@ fn selection_skips_headers_and_clamps() {
     app.apply_poll(poll("main", "mixed-states.json"));
     // Needs me: pick-colour; Failed: bad-model; Ready: say-ok, print-date;
     // Working: run-test-suite; Interactive: demo-app-3f.
-    assert_eq!(selected(&app), "pick-colour");
+    assert_eq!(line(&app), "pick-colour", "starts on the first row");
     press(&mut app, key(KeyCode::Up));
-    assert_eq!(selected(&app), "pick-colour", "top clamps");
+    assert_eq!(line(&app), "[Needs me]", "headers are selectable");
+    press(&mut app, key(KeyCode::Up));
+    assert_eq!(line(&app), "[Needs me]", "top clamps");
     press(&mut app, ch('j'));
-    assert_eq!(selected(&app), "bad-model", "header skipped");
+    assert_eq!(line(&app), "pick-colour");
+    press(&mut app, ch('j'));
+    assert_eq!(line(&app), "[Failed]");
     press(&mut app, key(KeyCode::Down));
-    assert_eq!(selected(&app), "say-ok");
+    assert_eq!(line(&app), "bad-model");
     press(&mut app, ch('j'));
-    assert_eq!(selected(&app), "print-date");
+    press(&mut app, ch('j'));
+    assert_eq!(line(&app), "say-ok");
+    press(&mut app, ch('j'));
+    assert_eq!(line(&app), "print-date");
     press(&mut app, ch('k'));
-    assert_eq!(selected(&app), "say-ok");
+    assert_eq!(line(&app), "say-ok");
     press(&mut app, key(KeyCode::End));
-    assert_eq!(selected(&app), "demo-app-3f");
+    assert_eq!(line(&app), "demo-app-3f");
     press(&mut app, key(KeyCode::Down));
-    assert_eq!(selected(&app), "demo-app-3f", "bottom clamps");
+    assert_eq!(line(&app), "demo-app-3f", "bottom clamps");
     press(&mut app, ch('g'));
-    assert_eq!(selected(&app), "pick-colour");
+    assert_eq!(line(&app), "[Needs me]", "g goes to the first line");
     press(
         &mut app,
         KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
     );
-    assert_eq!(selected(&app), "demo-app-3f");
+    assert_eq!(line(&app), "demo-app-3f");
     press(&mut app, key(KeyCode::Home));
-    assert_eq!(selected(&app), "pick-colour");
+    assert_eq!(line(&app), "[Needs me]");
 
     app.page_size = 3;
     press(&mut app, key(KeyCode::PageDown));
-    assert_eq!(selected(&app), "print-date");
+    assert_eq!(line(&app), "bad-model");
     press(&mut app, key(KeyCode::PageDown));
-    assert_eq!(selected(&app), "demo-app-3f");
+    assert_eq!(line(&app), "print-date");
     press(&mut app, key(KeyCode::PageUp));
-    assert_eq!(selected(&app), "say-ok");
+    assert_eq!(line(&app), "bad-model");
 
-    // The selected entry is always a row.
-    let e = app.selected_entry().unwrap();
-    assert!(matches!(app.entries()[e], Entry::Row(_)));
+    // Row keys do nothing on a header.
+    press(&mut app, key(KeyCode::Home));
+    for k in [ch('s'), ch('d'), ch('a'), ch('m')] {
+        assert!(press(&mut app, k).is_empty());
+        assert_eq!(app.overlay(), &Overlay::None);
+    }
 }
 
 #[test]
 fn selection_follows_the_session_across_polls() {
     let mut app = app_single();
     app.apply_poll(poll("main", "mixed-states.json"));
-    press(&mut app, ch('j'));
-    press(&mut app, ch('j'));
-    press(&mut app, ch('j'));
-    assert_eq!(selected(&app), "print-date");
+    common::select_name(&mut app, "print-date");
     // touch-config appears in Needs me and say-ok moves to Stopped.
     app.apply_poll(poll("main", "after-stop-all.json"));
     assert_eq!(selected(&app), "print-date");
+}
+
+#[test]
+fn selection_in_a_group_that_collapses_or_vanishes() {
+    let mut app = app_single();
+    app.apply_poll(poll("main", "mixed-states.json"));
+    common::select_name(&mut app, "say-ok");
+    // say-ok moves to the collapsed Stopped & finished: its header is
+    // selected.
+    app.apply_poll(poll("main", "after-stop-all.json"));
+    assert_eq!(line(&app), "[Stopped & finished]");
+    // Expanding it puts say-ok back in view; the header stays selected.
+    press(&mut app, key(KeyCode::Tab));
+    assert!(common::visible_rows(&app).contains(&"say-ok".to_owned()));
+    assert_eq!(line(&app), "[Stopped & finished]");
+    press(&mut app, ch('j'));
+    assert_eq!(line(&app), "say-ok");
+    // A row that leaves the listing: the selection keeps its place.
+    common::select_name(&mut app, "touch-config");
+    let at = app.selected_entry();
+    app.apply_poll(poll("main", "mixed-states.json"));
+    assert_eq!(app.selected_entry(), at);
+    assert!(app.selected_entry().unwrap() < app.entries().len());
 }
 
 #[test]
@@ -155,9 +201,7 @@ fn enter_attaches_with_owning_account() {
 fn stopped_row_attaches_by_id() {
     let mut app = app_single();
     app.apply_poll(poll("main", "after-stop-all.json"));
-    while selected(&app) != "say-ok" {
-        press(&mut app, ch('j'));
-    }
+    common::select_name(&mut app, "say-ok");
     let effects = press(&mut app, key(KeyCode::Enter));
     let effects = refresh_for_attach(&mut app, effects, &[("main", "after-stop-all.json")]);
     assert_eq!(attach_of(&effects), Some(("main", "b2f8d064", "say-ok")));
@@ -319,9 +363,7 @@ fn sidecar_owner_attaches_without_asking() {
     let mut app = app_two_with(sidecar);
     app.apply_poll(poll("main", "after-stop-all.json"));
     app.apply_poll(poll("alt", "after-stop-all.json"));
-    while selected(&app) != "say-ok" {
-        press(&mut app, ch('j'));
-    }
+    common::select_name(&mut app, "say-ok");
     let effects = press(&mut app, key(KeyCode::Enter));
     let both = [
         ("main", "after-stop-all.json"),
@@ -348,11 +390,13 @@ fn quit_help_refresh_and_reserved_keys() {
     assert!(press(&mut app, key(KeyCode::Left)).is_empty());
     assert_eq!(selected(&app), before);
 
-    // Keys of later milestones (doc/0014) only say so.
-    for c in ['/', 'p', 'i'] {
-        assert!(press(&mut app, ch(c)).is_empty(), "{c}");
-        assert!(message(&app).contains("not available yet"), "{c}");
+    // Every list key of doc/0011 is bound now; none says "not yet".
+    for k in [ch('p'), ch('i'), key(KeyCode::Tab), ch('/')] {
+        assert!(press(&mut app, k).is_empty(), "{k:?}");
+        assert!(!message(&app).contains("not available"), "{k:?}");
     }
+    press(&mut app, key(KeyCode::Esc));
+    assert!(!app.filter_editing());
 
     // Help overlay: opens with ?, swallows list keys, closes with Esc.
     press(&mut app, ch('?'));

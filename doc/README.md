@@ -28,7 +28,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted |
-| 0011 | [Keybindings](0011-keybindings.md) | Proposed |
+| 0011 | [Keybindings](0011-keybindings.md) | Accepted |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |

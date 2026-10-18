@@ -16,19 +16,7 @@ use watchtower::logview::{self, LogsError};
 use watchtower::poller::PollUpdate;
 
 fn select(app: &mut App, name: &str) {
-    app.handle_key(key(KeyCode::Home));
-    for _ in 0..app.sessions().len() {
-        if app
-            .selected_session()
-            .map(|m| m.session.display_name())
-            .as_deref()
-            == Some(name)
-        {
-            return;
-        }
-        app.handle_key(ch('j'));
-    }
-    panic!("no row {name}");
+    common::select_name(app, name);
 }
 
 fn stop_of(effects: &[Effect]) -> Option<(&str, &str)> {
@@ -351,7 +339,9 @@ fn selection_change_fetches_the_new_row_one_at_a_time() {
     assert_eq!(fetch_of(&effects).unwrap().1, "9c6e1a35");
     let first = app.logs().unwrap().in_flight().cloned().unwrap();
 
-    // Moving while the first fetch runs: no second process yet.
+    // Moving while the first fetch runs (over the Failed header): no
+    // second process yet.
+    assert!(app.handle_key(ch('j')).is_empty());
     assert!(app.handle_key(ch('j')).is_empty());
     assert_eq!(app.logs().unwrap().target().unwrap().id, "3e9a1c07");
     assert_eq!(view(&app), LogsView::Loading);

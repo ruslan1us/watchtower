@@ -36,6 +36,10 @@ v1 is delivered in five milestones. Each one is usable on its own.
    ([0006](0006-session-states-and-grouping.md),
    [0007](0007-visual-only-attention.md), [0002](0002-tech-stack-and-files.md)).
 
+All five milestones are implemented as of 2026-10-18. Milestone 5 was
+completed by the list controls: `/`, `p`, `Tab` and `i`
+([0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md)).
+
 **Non-goals for v1**
 
 - Own supervisor, PTY handling, tmux or process management.
