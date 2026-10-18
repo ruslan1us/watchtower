@@ -40,10 +40,17 @@ suggested command manually. These flags destroy work.
 
 - Run `<owning account command> logs <id>` and read **stdout only**; the
   `Session <id> · <name>` banner arrives on another stream and is ignored.
-- Feed the bytes into a fresh `vt100::Parser` and render its screen with `tui-term`.
-  Colours are kept; blank rows at the top and bottom are trimmed.
+- Feed the bytes into a fresh `vt100::Parser` and convert its screen cells to ratatui
+  lines (tower's own conversion, not `tui-term`, so rows can be trimmed and fitted).
+  Colours and bold/dim/italic/underline/reverse are kept; trailing spaces and blank rows at
+  the top and bottom are trimmed. When the panel is too short, runs of blank rows collapse
+  to one and the bottom rows are kept (prompt box or dialog and footer included).
 - Emulator size: the PTY size is not reported. Tower uses the larger of a default of
-  64 rows × 200 columns and the highest row and column addressed in the stream.
+  64 rows × 200 columns and the highest row and column addressed absolutely in the stream
+  (CUP/HVP, VPA, CHA/HPA, the DECSTBM bottom margin, and CUF right after a carriage
+  return), capped at 300 × 600. Other relative moves are not counted.
+- Only the last 2 MiB of the stream are replayed, starting at the last full clear in that
+  window, if any. Malformed sequences and invalid UTF-8 never fail the panel.
 - Refresh on every poll, only for the selected row and only while the panel is open.
   Changing the selection fetches the new row immediately.
 - Interactive rows have no `id`; the panel shows a short note instead of output.

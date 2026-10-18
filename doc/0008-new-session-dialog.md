@@ -47,16 +47,21 @@ Dispatch runs, with the project as working directory:
 - Flags left at `default` are omitted, so Claude Code's own defaults apply.
 - The permission mode has no `default` entry, so `--permission-mode` is always passed
   (`default_permission_mode`, built-in `auto`, unless changed).
+- The task is trimmed and passed as one argument, never through a shell. The dialog rejects
+  a task, name or option value that starts with `-`, because the CLI would read it as an
+  option (whether `--` would end the options for `--bg` is not verified).
 - Tower parses `backgrounded · <id> · <name>` from stdout and ignores the hint lines after
   it. stderr carries progress (`Starting background service…`) and error text; it is shown
   only when the dispatch fails.
 - Tower records the account for the new session in the sidecar (`account_source: started`),
   updates the project's `recent_projects` entry, and the row appears under Working on the
-  next poll.
+  next poll. `--bg` reports only the short id, so the record is keyed by it until a listing
+  shows the session's `sessionId`, and then moves to that key.
 - "Dispatch and attach" (`Ctrl+Enter` / `Alt+Enter`) dispatches and then attaches to the new
   id ([0005](0005-attach-and-detach.md)).
 
-Untrusted folder: if `--bg` exits 1 with stderr starting `Workspace not trusted`, tower
+Untrusted folder: if `--bg` exits 1 with a stderr line starting `Workspace not trusted`
+(`Starting background service…` may come first), tower
 shows the error and offers a key that suspends tower and runs the interactive `<account command>` in that
 folder. The user accepts the trust dialog and exits (`Ctrl+C` twice or `/exit`); tower then
 resumes and retries the same dispatch. Trust is per account, so the same folder may need

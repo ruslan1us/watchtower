@@ -253,7 +253,8 @@ fn attach_command_line() {
         line,
         CommandLine {
             program: "claude-alt".into(),
-            args: vec!["attach".into(), "1a2b3c4d".into()]
+            args: vec!["attach".into(), "1a2b3c4d".into()],
+            cwd: None,
         }
     );
     assert_eq!(line.argv(), ["claude-alt", "attach", "1a2b3c4d"]);
@@ -266,5 +267,31 @@ fn attach_command_line() {
     assert_eq!(
         attach_command(&wrapped, "1a2b3c4d").argv(),
         ["env", "FOO=1", "claude", "attach", "1a2b3c4d"]
+    );
+}
+
+#[test]
+fn run_in_sets_the_working_directory() {
+    let _g = lock();
+    let fake = Fake::new("claude", "pwd -P");
+    let dir = tempfile::tempdir().unwrap();
+    let out = CliRunner::new()
+        .run_in(&fake.account("claude"), dir.path(), ["--bg", "x"])
+        .unwrap();
+    assert_eq!(fake.argv(), ["--bg", "x"]);
+    assert_eq!(
+        out.stdout_text().trim_end(),
+        dir.path().canonicalize().unwrap().to_string_lossy()
+    );
+
+    let line = CommandLine::for_account(&fake.account("claude"), ["x"]).with_cwd(dir.path());
+    assert_eq!(line.cwd.as_deref(), Some(dir.path()));
+    assert_eq!(line.to_command().get_current_dir(), Some(dir.path()));
+    assert_eq!(
+        CommandLine::for_account(&fake.account("claude"), ["x"])
+            .to_command()
+            .get_current_dir(),
+        None,
+        "no cwd unless asked"
     );
 }

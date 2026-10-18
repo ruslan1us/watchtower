@@ -7,10 +7,16 @@
 //!
 //! `attach` is the exception: it takes over the terminal, so this module only
 //! builds its command line ([`attach_command`]) and the caller runs it with
-//! inherited stdio.
+//! inherited stdio. The same goes for the interactive trust flow of doc/0008
+//! ([`crate::dispatch::trust_command`]).
+//!
+//! A [`CommandLine`] may carry a working directory ([`CommandLine::cwd`]):
+//! `claude --bg` starts the session in the current directory, so dispatch
+//! runs in the project folder (doc/0008).
 
 use std::ffi::OsString;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -34,6 +40,8 @@ pub struct CommandLine {
     pub program: String,
     /// Arguments: the account command's own leading words, then the action's.
     pub args: Vec<String>,
+    /// Working directory for the child; `None` inherits tower's.
+    pub cwd: Option<PathBuf>,
 }
 
 impl CommandLine {
@@ -52,14 +60,25 @@ impl CommandLine {
         CommandLine {
             program: program.clone(),
             args: all,
+            cwd: None,
         }
     }
 
-    /// A [`Command`] for this line. No stdio, environment or working directory
-    /// is set, so by default the child inherits all of them.
+    /// The same line, run in `dir`.
+    pub fn with_cwd(mut self, dir: impl Into<PathBuf>) -> CommandLine {
+        self.cwd = Some(dir.into());
+        self
+    }
+
+    /// A [`Command`] for this line. The working directory is set when
+    /// [`CommandLine::cwd`] is; no stdio or environment is set, so by default
+    /// the child inherits them.
     pub fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
+        if let Some(dir) = &self.cwd {
+            cmd.current_dir(dir);
+        }
         cmd
     }
 
@@ -182,7 +201,22 @@ impl CliRunner {
         self.run_line(&CommandLine::for_account(account, args))
     }
 
-    /// Runs a prepared command line with stdin null and captured output.
+    /// Like [`CliRunner::run`], with `dir` as the working directory.
+    pub fn run_in<I, S>(
+        &self,
+        account: &Account,
+        dir: &Path,
+        args: I,
+    ) -> Result<CliOutput, CliError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.run_line(&CommandLine::for_account(account, args).with_cwd(dir))
+    }
+
+    /// Runs a prepared command line with stdin null and captured output, in
+    /// [`CommandLine::cwd`] when set.
     pub fn run_line(&self, line: &CommandLine) -> Result<CliOutput, CliError> {
         let mut cmd = line.to_command();
         cmd.stdin(Stdio::null())

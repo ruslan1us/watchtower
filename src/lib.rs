@@ -14,6 +14,15 @@
 //! - [`groups`]: maps sessions to the overview groups and detail labels
 //!   (doc/0006).
 //! - [`paths`]: home and XDG directories, `~` expansion.
+//! - [`logview`]: `claude logs` fetched and replayed into a screen for the
+//!   logs panel (doc/0009).
+//!
+//! Actions (milestone 2, no UI):
+//!
+//! - [`projects`]: candidate projects for the new-session dialog (doc/0008).
+//! - [`dispatch`]: `claude --bg` from the dialog's fields, the dialog's
+//!   option lists and the trust flow command (doc/0008).
+//! - [`actions`]: `stop` and `rm` of a session (doc/0009).
 //!
 //! The TUI (milestone 1, doc/0014):
 //!
@@ -27,16 +36,20 @@
 #[macro_use]
 mod strenum;
 
+pub mod actions;
 pub mod app;
 pub mod args;
 pub mod attach;
 pub mod cli;
 pub mod config;
+pub mod dispatch;
 pub mod groups;
 pub mod listing;
+pub mod logview;
 pub mod merge;
 pub mod paths;
 pub mod poller;
+pub mod projects;
 pub mod sidecar;
 pub mod tui;
 pub mod ui;

@@ -1,8 +1,9 @@
 //! Tower's own state file, `state.json` next to `config.toml` (doc/0002).
 //!
 //! It holds only what the CLI does not expose. Milestone 1 uses the account
-//! of each session; the other fields defined in doc/0002 (`last_state`,
-//! `last_change_ms`, `acknowledged`, `recent_projects`) are modelled and
+//! of each session; milestone 2 adds the `started` owner of dispatched
+//! sessions and `recent_projects` (doc/0008). The other fields defined in
+//! doc/0002 (`last_state`, `last_change_ms`, `acknowledged`) are modelled and
 //! carried through unchanged, and unknown fields are kept.
 //!
 //! Writes are atomic (`state.json.tmp`, fsync, rename). A corrupt file is moved
@@ -11,15 +12,29 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::listing::{State, Status, WaitingFor};
+use crate::listing::{Session, State, Status, WaitingFor};
 use crate::merge::{MergedSession, Ownership};
+use crate::paths;
 
 /// Current sidecar format version.
 pub const VERSION: u32 = 1;
+
+/// Maximum length of `recent_projects`; the least recently used entries are
+/// dropped beyond it.
+pub const MAX_RECENT_PROJECTS: usize = 50;
+
+/// The current time as Unix milliseconds (the unit of `last_used_ms` and
+/// `last_change_ms`). A clock before 1970 gives 0.
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
 
 string_enum! {
     /// How tower learned a session's account (doc/0002, doc/0003).
@@ -213,6 +228,93 @@ impl Sidecar {
     /// (`asked`, doc/0003). Returns true when the state changed.
     pub fn record_answer(&mut self, key: &str, account: &str) -> bool {
         self.record_owner(key, account, AccountSource::Asked)
+    }
+
+    /// Records the account of a session tower just dispatched
+    /// (`account_source: started`, doc/0008).
+    ///
+    /// `claude --bg` reports only the short `id`, so the record is keyed by
+    /// it until the listing shows the session's `sessionId`;
+    /// [`Sidecar::adopt_short_id_records`] then moves it to the `sessionId`
+    /// key that ownership rule 3 looks up (doc/0003). Returns true when the
+    /// state changed.
+    pub fn record_started(&mut self, id: &str, account: &str) -> bool {
+        self.record_owner(id, account, AccountSource::Started)
+    }
+
+    /// Moves records keyed by a short `id` (see [`Sidecar::record_started`])
+    /// to the `sessionId` of the listed row with that `id`. When a record
+    /// under the `sessionId` already exists, it is newer evidence and wins;
+    /// the short-id record is dropped. Rows without a `sessionId` keep their
+    /// short-id key, as [`Session::key`] defines. Call it with the raw rows
+    /// of a poll before merging. Returns true when the state changed.
+    pub fn adopt_short_id_records<'a, I>(&mut self, sessions: I) -> bool
+    where
+        I: IntoIterator<Item = &'a Session>,
+    {
+        let mut changed = false;
+        for s in sessions {
+            let (Some(id), Some(sid)) = (s.id.as_deref(), s.session_id.as_deref()) else {
+                continue;
+            };
+            if id == sid {
+                continue;
+            }
+            let Some(rec) = self.sessions.remove(id) else {
+                continue;
+            };
+            self.sessions.entry(sid.to_owned()).or_insert(rec);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Marks `project` as just used for a dispatch (doc/0008): its entry
+    /// moves to the front of `recent_projects` with `last_used_ms = now_ms`,
+    /// and the list is capped at [`MAX_RECENT_PROJECTS`].
+    ///
+    /// The path is stored in the `~/…` form (doc/0002 example). An existing
+    /// entry matches when its `~`-expanded path, or its canonical path, is
+    /// the same as `project`'s; its unknown fields are kept. Returns true
+    /// when the state changed.
+    pub fn touch_recent_project(&mut self, project: &Path, home: &Path, now_ms: i64) -> bool {
+        let canon = std::fs::canonicalize(project).ok();
+        let same = |entry: &RecentProject| {
+            let expanded = paths::expand_tilde(&entry.path, home);
+            expanded == project
+                || canon
+                    .as_ref()
+                    .is_some_and(|c| std::fs::canonicalize(&expanded).ok().as_ref() == Some(c))
+        };
+        let stored = paths::shorten_home(&project.to_string_lossy(), home);
+        let index = self.recent_projects.iter().position(&same);
+        if index == Some(0) {
+            let front = &self.recent_projects[0];
+            if front.path == stored
+                && front.last_used_ms == now_ms
+                && self.recent_projects.len() <= MAX_RECENT_PROJECTS
+                && !self.recent_projects[1..].iter().any(&same)
+            {
+                return false;
+            }
+        }
+        let mut entry = match index {
+            Some(i) => self.recent_projects.remove(i),
+            None => RecentProject {
+                path: String::new(),
+                last_used_ms: 0,
+                extra: Map::new(),
+            },
+        };
+        entry.path = stored;
+        entry.last_used_ms = now_ms;
+        self.recent_projects.insert(0, entry);
+        // Drop duplicates of the same folder (e.g. from a hand-edited file).
+        let mut first = true;
+        self.recent_projects
+            .retain(|e| std::mem::take(&mut first) || !same(e));
+        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
+        true
     }
 
     /// Stores every live detection (rule 1 `proc`, rule 2 `list`) from a merge

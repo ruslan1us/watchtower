@@ -19,7 +19,8 @@ expose.
 - `ratatui` with the `crossterm` backend for the UI.
 - `serde` and `serde_json` for the CLI's JSON and the sidecar file, `toml` for
   the config.
-- `vt100` to replay `claude logs` output, rendered with `tui-term`.
+- `vt100` to replay `claude logs` output, its screen converted to ratatui
+  lines by tower ([0009](0009-stop-remove-and-logs.md)).
 - `std::process::Command` for every CLI call. Worker threads and
   `std::sync::mpsc` channels, no async runtime.
 - Further dependencies only where they replace real code (e.g. path or XDG
@@ -84,7 +85,8 @@ CLI does not expose:
     `m`), or absent
     ([0007](0007-visual-only-attention.md));
 - `recent_projects`, most-recently-used projects for the new-session dialog
-  ([0008](0008-new-session-dialog.md)).
+  ([0008](0008-new-session-dialog.md)), newest first, paths in the `~/…` form,
+  capped at 50 entries.
 
 ```json
 {

@@ -195,3 +195,115 @@ fn unknown_account_source_is_kept() {
         Some(("main", &AccountSource::Unknown("guessed".into())))
     );
 }
+
+// ---- recent projects (doc/0008) ----------------------------------------
+
+use std::path::Path;
+use watchtower::sidecar::{MAX_RECENT_PROJECTS, RecentProject};
+
+fn recent_paths(sc: &Sidecar) -> Vec<&str> {
+    sc.recent_projects.iter().map(|r| r.path.as_str()).collect()
+}
+
+#[test]
+fn touch_recent_project_moves_to_front_in_tilde_form() {
+    let home = Path::new("/home/user");
+    let mut sc = Sidecar::default();
+    assert!(sc.touch_recent_project(Path::new("/home/user/workspace/a"), home, 1));
+    assert!(sc.touch_recent_project(Path::new("/home/user/workspace/b"), home, 2));
+    assert!(sc.touch_recent_project(Path::new("/srv/c"), home, 3));
+    assert_eq!(
+        recent_paths(&sc),
+        ["/srv/c", "~/workspace/b", "~/workspace/a"]
+    );
+
+    assert!(sc.touch_recent_project(Path::new("/home/user/workspace/a"), home, 4));
+    assert_eq!(
+        recent_paths(&sc),
+        ["~/workspace/a", "/srv/c", "~/workspace/b"]
+    );
+    assert_eq!(sc.recent_projects[0].last_used_ms, 4);
+    // Same project, same time: unchanged, no save due.
+    assert!(!sc.touch_recent_project(Path::new("/home/user/workspace/a"), home, 4));
+}
+
+#[test]
+fn touch_recent_project_keeps_unknown_fields_and_drops_duplicates() {
+    let home = Path::new("/home/user");
+    let mut sc: Sidecar = serde_json::from_str(
+        r#"{"recent_projects": [
+            {"path": "~/workspace/b", "last_used_ms": 5},
+            {"path": "/home/user/workspace/a", "last_used_ms": 4, "note": "kept"},
+            {"path": "~/workspace/a", "last_used_ms": 3}
+        ]}"#,
+    )
+    .unwrap();
+    assert!(sc.touch_recent_project(Path::new("/home/user/workspace/a"), home, 9));
+    assert_eq!(recent_paths(&sc), ["~/workspace/a", "~/workspace/b"]);
+    assert_eq!(sc.recent_projects[0].extra["note"], "kept");
+}
+
+#[test]
+fn touch_recent_project_caps_the_list() {
+    let home = Path::new("/home/user");
+    let mut sc = Sidecar {
+        recent_projects: (0..MAX_RECENT_PROJECTS + 5)
+            .map(|i| RecentProject {
+                path: format!("~/workspace/p{i}"),
+                last_used_ms: 0,
+                extra: Default::default(),
+            })
+            .collect(),
+        ..Sidecar::default()
+    };
+    assert!(sc.touch_recent_project(Path::new("/home/user/workspace/new"), home, 1));
+    assert_eq!(sc.recent_projects.len(), MAX_RECENT_PROJECTS);
+    assert_eq!(sc.recent_projects[0].path, "~/workspace/new");
+    assert_eq!(
+        sc.recent_projects.last().unwrap().path,
+        format!("~/workspace/p{}", MAX_RECENT_PROJECTS - 2)
+    );
+}
+
+#[test]
+fn touch_recent_project_matches_through_symlinks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    std::fs::create_dir_all(home.join("workspace/a")).unwrap();
+    std::os::unix::fs::symlink(home.join("workspace"), home.join("ws")).unwrap();
+    let mut sc = Sidecar::default();
+    sc.touch_recent_project(&home.join("ws/a"), home, 1);
+    sc.touch_recent_project(&home.join("workspace/a"), home, 2);
+    assert_eq!(recent_paths(&sc), ["~/workspace/a"]);
+}
+
+#[test]
+fn started_record_and_short_id_adoption() {
+    let mut sc = Sidecar::default();
+    assert!(sc.record_started("1a2b3c4d", "alt"));
+    assert_eq!(sc.owner("1a2b3c4d"), Some(("alt", &AccountSource::Started)));
+
+    // A row without sessionId keeps the short-id key.
+    let bare = Session {
+        id: Some("1a2b3c4d".into()),
+        ..Session::default()
+    };
+    assert!(!sc.adopt_short_id_records([&bare]));
+
+    // A newer record under the sessionId wins over the short-id one.
+    let row = Session {
+        id: Some("1a2b3c4d".into()),
+        session_id: Some(SID.into()),
+        ..Session::default()
+    };
+    sc.record_owner(SID, "main", AccountSource::Proc);
+    assert!(sc.adopt_short_id_records([&row]));
+    assert_eq!(sc.owner(SID), Some(("main", &AccountSource::Proc)));
+    assert!(!sc.sessions.contains_key("1a2b3c4d"));
+}
+
+#[test]
+fn now_ms_is_plausible() {
+    // After 2020-01-01.
+    assert!(watchtower::sidecar::now_ms() > 1_577_836_800_000);
+}
