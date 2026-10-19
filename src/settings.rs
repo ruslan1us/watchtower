@@ -325,8 +325,12 @@ pub fn toml_text(value: &SettingValue) -> String {
     }
 }
 
+/// How the Settings window shows an empty hand-off prompt (doc/0033).
+pub const NO_PROMPT: &str = "(none — waits for you)";
+
 /// A value as a row shows it: `on`/`off`, `2 s`, the paths joined; a
-/// logs-follow interval of 0 is `off`.
+/// logs-follow interval of 0 is `off`; an empty hand-off prompt is
+/// [`NO_PROMPT`].
 pub fn shown_value(key: SettingKey, value: &SettingValue) -> String {
     match (key, value) {
         (_, SettingValue::Bool(true)) => "on".to_owned(),
@@ -334,6 +338,9 @@ pub fn shown_value(key: SettingKey, value: &SettingValue) -> String {
         (SettingKey::LogsFollowSecs, SettingValue::Int(0)) => "off".to_owned(),
         (SettingKey::PollIntervalSecs | SettingKey::LogsFollowSecs, SettingValue::Int(n)) => {
             format!("{n} s")
+        }
+        (SettingKey::HandoffPrompt, SettingValue::Text(s)) if s.trim().is_empty() => {
+            NO_PROMPT.to_owned()
         }
         (SettingKey::HandoffPrompt, SettingValue::Text(s)) => format!("\"{s}\""),
         (_, v) => v.display(),
@@ -807,6 +814,9 @@ impl SettingsWindow {
                 Ok(n) => SettingValue::Int(n),
                 Err(_) => return Err(format!("must be {min} to {max} seconds")),
             },
+            // Free text is kept trimmed, so blanks save as an empty
+            // hand-off prompt (no prompt, doc/0033).
+            SettingKind::Text => SettingValue::Text(text.trim().to_owned()),
             _ => SettingValue::Text(text.to_owned()),
         };
         self.session.check(key, &value).map(|()| value)

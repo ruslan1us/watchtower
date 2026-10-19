@@ -75,6 +75,6 @@ A config dir found in `environ` that matches no configured account also yields `
 
 ## Open items
 
-- Cross-session messaging (`ListAgents`, `SendMessage`) between sessions hosted by different accounts' supervisors is not yet verified; this affects the orchestrator ([0010](0010-orchestrator.md)).
+- ~~Cross-session messaging (`ListAgents`, `SendMessage`) between sessions hosted by different accounts' supervisors is not yet verified; this affects the orchestrator ([0010](0010-orchestrator.md)).~~ Verified 2026-10-19 (Claude Code 2.1.303), with accounts that share their session lists: a session on `main` messages a session hosted by `alt`'s supervisor with `SendMessage` and gets the reply ([CLI reference](reference/claude-code-cli.md#cross-session-messaging)). `notify_when_idle` across accounts is not checked separately.
 - `attach` with another account's binary on a session that is still running has not been tested.
 - Whether `agents --json` starts a supervisor for an account with no live sessions (adding latency to each poll) is not yet known.

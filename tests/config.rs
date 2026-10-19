@@ -90,6 +90,20 @@ colour = "blue"
 }
 
 #[test]
+fn an_empty_or_blank_handoff_prompt_is_valid() {
+    // doc/0033: empty means no prompt; the default stays `continue`.
+    for (line, want) in [
+        ("handoff_prompt = \"\"\n", ""),
+        ("handoff_prompt = \"   \"\n", "   "),
+        ("handoff_prompt = \"go on\"\n", "go on"),
+        ("poll_interval_secs = 2\n", "continue"),
+    ] {
+        let c = parse(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+        assert_eq!(c.handoff_prompt, want, "{line}");
+    }
+}
+
+#[test]
 fn partial_config_defaults() {
     let c = parse("poll_interval_secs = 3\n").unwrap();
     assert_eq!(c.accounts[0].name, "main");

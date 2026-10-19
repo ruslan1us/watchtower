@@ -5059,7 +5059,17 @@ impl App {
                                 };
                             }
                         }
-                        if resumed.idle {
+                        if r.prompt_arg().is_none() {
+                            // No prompt by choice (doc/0033): the session
+                            // waits under the target and starts no turn.
+                            self.set_message(
+                                format!(
+                                    "continued {} under {target} · waiting for your prompt",
+                                    r.name
+                                ),
+                                Severity::Info,
+                            );
+                        } else if resumed.idle {
                             self.set_message(
                                 format!(
                                     "continued {} under {target}, but it woke idle; attach and \

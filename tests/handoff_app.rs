@@ -1236,3 +1236,142 @@ fn help_and_footer_offer_the_handoff() {
     let footer = screen.lines().last().unwrap();
     assert!(footer.contains("a hand-off"), "{footer}");
 }
+
+// ---- an empty hand-off prompt (doc/0033) ------------------------------------
+
+const NO_PROMPT_CONFIG: &str = r#"
+handoff_prompt = ""
+[[accounts]]
+name = "main"
+command = "claude"
+[[accounts]]
+name = "alt"
+command = "claude-alt"
+config_dir = "~/.claude-alt"
+"#;
+
+#[test]
+fn the_confirmation_names_the_prompt() {
+    let mut app = app_two_owned();
+    select(&mut app, "touch-config");
+    app.handle_key(ch('a'));
+    let screen = render(&mut app, 120, 30);
+    assert!(
+        screen.contains("Prompt: \"continue\", sent as the next turn under alt."),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("the session then gets the hand-off"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn an_empty_prompt_says_the_session_will_wait_for_you() {
+    let mut app = app_config(NO_PROMPT_CONFIG, owned_by_main());
+    select(&mut app, "touch-config");
+    assert!(app.handle_key(ch('a')).is_empty(), "asks first");
+    let screen = render(&mut app, 120, 30);
+    assert!(
+        screen.contains("Prompt: none. The session will wait for you under alt; no turn is"),
+        "{screen}"
+    );
+    assert!(screen.contains("started."), "{screen}");
+    // It was working (a permission prompt): the interrupt note says that it
+    // will not pick up by itself.
+    assert!(
+        screen.contains("Stopping interrupts the current turn; without a prompt the session"),
+        "{screen}"
+    );
+    assert!(screen.contains("working · idle"), "{screen}");
+    assert!(
+        !screen.contains("the session then gets the hand-off"),
+        "{screen}"
+    );
+    let job = handoff_of(&app.handle_key(ch('y'))).expect("y starts it");
+    assert_eq!(job.request.prompt_arg(), None);
+}
+
+/// One background row of `after-stop-all.json`'s project, live.
+fn live_row(id: &str, sid: &str, name: &str, state: &str, status: &str) -> String {
+    format!(
+        r#"{{"pid": 5100, "id": "{id}", "cwd": "/home/user/workspace/demo-app",
+            "kind": "background", "startedAt": 1767233000000, "sessionId": "{sid}",
+            "name": "{name}", "status": "{status}", "state": "{state}"}}"#
+    )
+}
+
+#[test]
+fn an_empty_prompt_hand_off_reports_waiting_and_raises_no_highlight() {
+    let mut app = app_config(NO_PROMPT_CONFIG, owned_by_main());
+    select(&mut app, "touch-config");
+    let job = confirmed(&mut app, ch('a')).unwrap();
+    let mut woke = continued("d4a1f7c8");
+    woke.name = Some("touch-config".into());
+    woke.idle = true;
+    let effects = app.handoff_finished(job, Ok(woke));
+    assert!(effects.contains(&Effect::PollNow), "{effects:?}");
+    let seg = &app.status_segments(Instant::now())[0];
+    assert_eq!(seg.severity, Severity::Info, "no prompt was the choice");
+    assert_eq!(
+        seg.text,
+        "continued touch-config under alt · waiting for your prompt"
+    );
+    assert_eq!(
+        app.sidecar.owner(TOUCH),
+        Some(("alt", &AccountSource::Handoff))
+    );
+
+    // The next poll shows it as Claude Code reports it: stopped mid-turn, it
+    // wakes `working` / `idle`; a `done` session woken the same way keeps
+    // `done` / `idle`. Neither is highlighted (doc/0007).
+    let rows = format!(
+        "[{}, {}]",
+        live_row("d4a1f7c8", TOUCH, "touch-config", "working", "idle"),
+        live_row("7b4d9f02", PRINT_DATE, "print-date", "done", "idle"),
+    );
+    for a in ["main", "alt"] {
+        app.apply_poll(PollUpdate {
+            account: a.into(),
+            cycle: 1,
+            result: Ok(parse_listing(&rows).unwrap()),
+        });
+    }
+    for (sid, group, detail) in [
+        (TOUCH, watchtower::groups::Group::Working, "idle"),
+        (
+            PRINT_DATE,
+            watchtower::groups::Group::ReadyForReview,
+            "done",
+        ),
+    ] {
+        let m = app
+            .sessions()
+            .iter()
+            .find(|m| m.session.session_id.as_deref() == Some(sid))
+            .unwrap();
+        assert_eq!(watchtower::groups::classify(&m.session), group, "{sid}");
+        assert_eq!(watchtower::groups::detail(&m.session), detail, "{sid}");
+        assert!(!watchtower::groups::spins(&m.session), "{sid}");
+        assert!(!app.is_highlighted(m), "{sid}");
+    }
+    assert_eq!(app.attention_count(), 0);
+}
+
+#[test]
+fn a_prompted_hand_off_that_woke_idle_still_warns() {
+    let mut app = app_two_owned();
+    select(&mut app, "touch-config");
+    let job = confirmed(&mut app, ch('a')).unwrap();
+    assert_eq!(job.request.prompt_arg(), Some("continue"));
+    let mut idle = continued("d4a1f7c8");
+    idle.idle = true;
+    app.handoff_finished(job, Ok(idle));
+    let seg = &app.status_segments(Instant::now())[0];
+    assert_eq!(seg.severity, Severity::Warning);
+    assert!(
+        !seg.text.contains("waiting for your prompt"),
+        "{}",
+        seg.text
+    );
+}

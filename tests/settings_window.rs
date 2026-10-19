@@ -285,10 +285,7 @@ fn text_fields_keep_cyrillic_as_typed() {
     let Mode::Input(input) = &win(&app).mode else {
         panic!("no input");
     };
-    assert_eq!(
-        input.error.as_deref(),
-        Some("hand-off prompt must not be empty")
-    );
+    assert_eq!(input.error, None, "an empty prompt is valid (doc/0033)");
     // `с`, `ы`, `н` and `е` are command keys elsewhere; here they are text.
     type_in(&mut app, "продолжай сейчас");
     press(&mut app, key(KeyCode::Enter));
@@ -910,4 +907,51 @@ fn saving_the_logs_follow_row_writes_only_its_line_and_applies_it() {
         )))]
     );
     assert_eq!(file(&env), CONFIG);
+}
+
+#[test]
+fn an_empty_hand_off_prompt_is_saved_and_shown_as_none() {
+    // doc/0033: empty means the hand-off passes no prompt.
+    let (env, mut app) = opened();
+    select(&mut app, "hand-off prompt");
+    press(&mut app, key(KeyCode::Enter));
+    press(&mut app, ctrl('u'));
+    type_in(&mut app, "   ");
+    let Mode::Input(input) = &win(&app).mode else {
+        panic!("no input");
+    };
+    assert_eq!(input.error, None, "blanks are valid");
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(
+        value(&app, SettingKey::HandoffPrompt),
+        text(""),
+        "kept trimmed"
+    );
+    let rows = screen(&mut app, 140, 40);
+    let row = line_with(&rows, "hand-off prompt  ");
+    assert!(row.contains("(none — waits for you)"), "{row}");
+    save(&mut app);
+    assert!(
+        notice(&app).starts_with("✓ Saved 1 change"),
+        "{}",
+        notice(&app)
+    );
+    assert!(
+        file(&env).contains("handoff_prompt = \"\"\n"),
+        "{}",
+        file(&env)
+    );
+    assert_eq!(app.config().handoff_prompt, "");
+
+    // A flag is still refused.
+    select(&mut app, "hand-off prompt");
+    press(&mut app, key(KeyCode::Enter));
+    type_in(&mut app, "-p");
+    let Mode::Input(input) = &win(&app).mode else {
+        panic!("no input");
+    };
+    assert_eq!(
+        input.error.as_deref(),
+        Some("hand-off prompt must not start with '-'")
+    );
 }

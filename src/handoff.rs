@@ -8,13 +8,16 @@
 //!    until the row is listed without a live process, or is missing from
 //!    two non-empty listings in a row ([`wait_until_stopped`],
 //!    [`HandoffTiming`]).
-//! 2. `<target command> --resume <sessionId> --bg <handoff_prompt>` with the
-//!    session's `cwd` as working directory. The prompt is always passed:
-//!    without it the woken session sits idle (reference doc).
-//! 3. stdout `backgrounded · <id> · <name>` is parsed and stderr `note:`
-//!    lines are collected ([`interpret_resume`]). The same short id means
-//!    the session continued ([`Outcome::Continued`]); a different one means
-//!    Claude Code started a copy ([`Outcome::Copied`]).
+//! 2. `<target command> --resume <sessionId> --bg [<handoff_prompt>]` with
+//!    the session's `cwd` as working directory. An empty `handoff_prompt`
+//!    (after trimming) passes no prompt: the woken session then waits for
+//!    the user under the target account and starts no turn (doc/0033).
+//! 3. stdout `backgrounded · <id> · <name>` is parsed, with or without the
+//!    `(idle — send a prompt to start)` suffix a wake without a prompt
+//!    prints, and stderr `note:` lines are collected ([`interpret_resume`]).
+//!    The same short id means the session continued
+//!    ([`Outcome::Continued`]); a different one means Claude Code started a
+//!    copy ([`Outcome::Copied`]).
 //!
 //! `Workspace not trusted` is reported as [`HandoffError::Untrusted`]; the
 //! UI then offers the trust flow of doc/0008 for the target account and
@@ -74,6 +77,8 @@ pub struct HandoffRequest {
     /// Whether the row has a live process, so it must be stopped first.
     pub live: bool,
     /// The prompt for the next turn (`handoff_prompt`, default `continue`).
+    /// Empty or blank: no prompt is passed and the session waits for the
+    /// user under the target account (doc/0033).
     pub prompt: String,
 }
 
@@ -103,19 +108,19 @@ impl HandoffRequest {
             .map(|a| actions::stop_command(a, &self.id))
     }
 
-    /// `<target command> --resume <sessionId> --bg <prompt>`, run in the
-    /// session's `cwd`. The prompt is trimmed and passed as one argument.
+    /// The prompt passed to `--resume`, trimmed; `None` when it is empty,
+    /// so the session wakes without a turn (doc/0033).
+    pub fn prompt_arg(&self) -> Option<&str> {
+        Some(self.prompt.trim()).filter(|p| !p.is_empty())
+    }
+
+    /// `<target command> --resume <sessionId> --bg [<prompt>]`, run in the
+    /// session's `cwd`. The prompt is trimmed and passed as one argument;
+    /// an empty one is left out ([`HandoffRequest::prompt_arg`]).
     pub fn resume_command(&self) -> CommandLine {
-        CommandLine::for_account(
-            &self.target,
-            [
-                "--resume",
-                self.session_id.as_str(),
-                "--bg",
-                self.prompt.trim(),
-            ],
-        )
-        .with_cwd(&self.cwd)
+        let mut args = vec!["--resume", self.session_id.as_str(), "--bg"];
+        args.extend(self.prompt_arg());
+        CommandLine::for_account(&self.target, args).with_cwd(&self.cwd)
     }
 
     /// What will happen, for the confirmation and the picker, e.g.
@@ -134,7 +139,8 @@ impl HandoffRequest {
     }
 
     /// Checks what can be checked before anything runs (doc/0004
-    /// preconditions): a valid short id and `sessionId`, a prompt, and an
+    /// preconditions): a valid short id and `sessionId`, a prompt that is
+    /// empty (no prompt, doc/0033) or does not start with `-`, and an
     /// existing `cwd`.
     pub fn validate(&self) -> Result<(), HandoffError> {
         if !actions::is_valid_id(&self.id) {
@@ -149,13 +155,7 @@ impl HandoffRequest {
                 self.session_id
             )));
         }
-        let prompt = self.prompt.trim();
-        if prompt.is_empty() {
-            return Err(HandoffError::Invalid(
-                "handoff_prompt is empty; without a prompt the session would wake idle".into(),
-            ));
-        }
-        if prompt.starts_with('-') {
+        if self.prompt_arg().is_some_and(|p| p.starts_with('-')) {
             return Err(HandoffError::Invalid(
                 "handoff_prompt must not start with '-'".into(),
             ));
@@ -203,7 +203,7 @@ pub struct Resumed {
     /// with its saved options (--name, --model).`
     pub notes: Vec<String>,
     /// The line ended in `(idle — send a prompt to start)`: the session
-    /// woke without a turn (only expected without a prompt).
+    /// woke without a turn (expected without a prompt, doc/0033).
     pub idle: bool,
 }
 

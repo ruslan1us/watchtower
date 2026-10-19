@@ -1,6 +1,6 @@
 # 0004. Continue a session under another account
 
-- Status: Accepted · 2026-10-18 · refined by [0018](0018-account-groups-and-handoff-guard.md)
+- Status: Accepted · 2026-10-18 · refined by [0018](0018-account-groups-and-handoff-guard.md) · an empty `handoff_prompt` (no prompt) allowed by [0033](0033-hand-off-without-a-prompt.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0018](0018-account-groups-and-handoff-guard.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -27,8 +27,8 @@ Key `a` on a row hands the session off. It is only ever a manual action.
 - **Confirmation**: always required ([0018](0018-account-groups-and-handoff-guard.md)). It also warns when the session is working (`state: working` or `status: busy`), since `stop` interrupts the current turn. The warning is shown for every row with a live process in the Working or Needs me group, where `s` asks too ([0009](0009-stop-remove-and-logs.md)): stopping a blocked session also drops its pending prompt. The prompt says what will happen, e.g. "stop under main, continue under alt", and names both accounts' groups.
 - **Steps**:
   1. If the session has a process (`pid` present), run `<owner> stop <id>`, then poll the listing until the process is gone (short timeout; abort with an error if it stays). Tower lists with the same command every 0.5 s for up to 10 s. The process counts as gone when the row is listed with neither `pid` nor `status`, or when two successful, non-empty listings in a row, neither of them partial (skipped rows), do not list it. An empty, partial or failed listing is no evidence and breaks such a run: a supervisor can answer with an empty list while the process still lives, and resuming then would start a copy.
-  2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`. The prompt is always passed: without one the woken session stays idle.
-  3. Parse `backgrounded · <id> · <name>` from stdout. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)). The stderr `note:` lines are kept for messages. A line that still ends in `(idle — send a prompt to start)` is reported as a warning.
+  2. Run `<target> --resume <sessionId> --bg "<handoff_prompt>"` with the working directory set to the row's `cwd`. `handoff_prompt` is configurable; the default is `continue`. The prompt is always passed: without one the woken session stays idle. *Amended by [0033](0033-hand-off-without-a-prompt.md):* an empty (or blank) `handoff_prompt` passes no prompt, and the session waits for the user under the target account.
+  3. Parse `backgrounded · <id> · <name>` from stdout. If the id equals the original, record the target account in the sidecar (`account_source: handoff`, [0002](0002-tech-stack-and-files.md)). The stderr `note:` lines are kept for messages. A line that still ends in `(idle — send a prompt to start)` is reported as a warning. *Amended by [0033](0033-hand-off-without-a-prompt.md):* only when a prompt was passed; without one the status line says `continued <name> under <target> · waiting for your prompt`.
   The sequence runs on a worker thread; the status line shows the current step. Any other failure is shown with the CLI's text, and the sidecar is not changed.
 - **While it runs**:
   - Attach, stop, remove and `a` on the session being handed off are refused with a status message until the hand-off reports back. An attach would wake it under the old owner's account, and a stop or remove would race the hand-off. Other rows work as usual; a second hand-off of any row waits too.
@@ -49,7 +49,7 @@ Moving a session to another account is the user's decision, made per session. To
 ## Consequences
 
 - The same short id, history and worktree continue under the target account and its terms; rows, logs and attach follow the new owner from the next poll.
-- The interrupted turn is lost; the hand-off prompt asks the agent to pick up where it stopped. A permission prompt that was pending is not shown again.
+- The interrupted turn is lost; the hand-off prompt asks the agent to pick up where it stopped. A permission prompt that was pending is not shown again. Without a prompt ([0033](0033-hand-off-without-a-prompt.md)) the session does not pick up by itself: one stopped mid-turn is listed `working` / `idle` and a `done` one `done` / `idle` until the user sends a message.
 - The permission mode carries over only when it was passed at dispatch. Tower always passes `--permission-mode` on dispatch ([0008](0008-new-session-dialog.md)), so its sessions keep their mode.
 - The hand-off depends on the target account seeing the session's transcript, so the config dirs must share their history (as in the verified setup).
 - If the target account's login has expired, the woken session shows `blocked` with no `waitingFor` (see the [CLI reference](reference/claude-code-cli.md)). Tower shows that state; logging in is up to the user (run the target command interactively). Tower never touches credentials.

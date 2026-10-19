@@ -371,7 +371,13 @@ fn offered_values_and_field_checks() {
             .set(SettingKey::DefaultModel, text("two words"))
             .is_err()
     );
-    assert!(session.set(SettingKey::HandoffPrompt, text("  ")).is_err());
+    // An empty hand-off prompt means no prompt (doc/0033); a flag does not.
+    assert!(session.set(SettingKey::HandoffPrompt, text("-p")).is_err());
+    assert!(
+        session
+            .set(SettingKey::HandoffPrompt, text(" --x"))
+            .is_err()
+    );
     let twice = SettingValue::Paths(vec!["~/a".into(), "~/a".into()]);
     assert!(session.set(SettingKey::ProjectRoots, twice).is_err());
     assert!(

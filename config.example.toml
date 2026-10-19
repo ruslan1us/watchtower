@@ -58,8 +58,11 @@ default_effort = "default"
 # Default: "auto"
 default_permission_mode = "auto"
 
-# Prompt sent when a session continues under another account (key `a`,
-# doc/0004). Without a prompt a woken session would sit idle.
+# Prompt sent as the next turn when a session continues under another
+# account (key `a`, doc/0004). Set it empty to wake the session without a
+# prompt: it then waits for you under the new account and starts no turn
+# (doc/0033):
+#   handoff_prompt = ""  # empty: don't prompt; the session waits for you
 # Default: "continue"
 handoff_prompt = "continue"
 

@@ -397,7 +397,9 @@ pub fn parse_backgrounded(stdout: &str) -> Option<Dispatched> {
         let rest = rest.trim_start().strip_prefix('·')?;
         let (id, name) = match rest.split_once('·') {
             Some((id, name)) => (id.trim(), Some(name.trim())),
-            None => (rest.trim(), None),
+            // Without a name, a wake without a prompt still ends in
+            // `(idle — send a prompt to start)` (doc/0033).
+            None => (strip_idle_suffix(rest.trim()), None),
         };
         if id.is_empty() || id.contains(char::is_whitespace) {
             return None;

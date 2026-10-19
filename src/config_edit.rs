@@ -231,7 +231,8 @@ impl SettingKey {
                  clone."
             }
             SettingKey::HandoffPrompt => {
-                "The prompt sent when a session continues under another account."
+                "The prompt sent as the next turn when a session continues under another \
+                 account. Empty: no prompt; the session waits for you there."
             }
             SettingKey::AllowCrossGroupHandoff => {
                 "Let a hand-off move a session to an account of another group, under that \
@@ -312,7 +313,8 @@ pub enum SettingKind {
         min: i64,
         max: i64,
     },
-    /// Text that is not blank.
+    /// Free text (the hand-off prompt): may be empty, which means no
+    /// prompt (doc/0033), but must not start with `-`.
     Text,
     /// A list of folders, `~` allowed; entries not blank and not repeated.
     Paths,
@@ -758,8 +760,8 @@ impl EditSession {
                 }
             }
             (SettingKind::Text, SettingValue::Text(v)) => {
-                if v.trim().is_empty() {
-                    Err(format!("{} must not be empty", key.label()))
+                if v.trim_start().starts_with('-') {
+                    Err(format!("{} must not start with '-'", key.label()))
                 } else {
                     Ok(())
                 }

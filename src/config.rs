@@ -224,6 +224,8 @@ pub struct Config {
     /// Dialog default for `--permission-mode`.
     pub default_permission_mode: String,
     /// Prompt used when a session continues under another account (doc/0004).
+    /// Empty or blank means no prompt: the session wakes and waits for the
+    /// user (doc/0033).
     pub handoff_prompt: String,
     /// Whether a hand-off may go to an account of another group (doc/0004).
     /// Default `false`: only accounts of the owner's group are targets.

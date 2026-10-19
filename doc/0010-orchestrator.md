@@ -88,5 +88,5 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
 
 ## Open items
 
-- Whether sessions hosted by another account's supervisor appear in `ListAgents` and receive `SendMessage` and `notify_when_idle`. Until then, relaying may work only within the orchestrator's own account.
+- ~~Whether sessions hosted by another account's supervisor appear in `ListAgents` and receive `SendMessage` and `notify_when_idle`. Until then, relaying may work only within the orchestrator's own account.~~ Verified 2026-10-19 (Claude Code 2.1.303), with accounts that share their session lists: the orchestrator on `main` messages a session hosted by `alt`'s supervisor with `SendMessage` and gets the reply, so relaying works across accounts ([CLI reference](reference/claude-code-cli.md#cross-session-messaging)). Still open: `notify_when_idle` across accounts.
 - Whether the instruction text and start prompt need tuning after real use (see `assets/orchestrator/CLAUDE.md`).

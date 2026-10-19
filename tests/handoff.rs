@@ -183,6 +183,28 @@ fn resume_command_is_target_resume_bg_prompt_in_cwd() {
 }
 
 #[test]
+fn an_empty_prompt_passes_no_prompt_argument() {
+    // doc/0033: empty or blank `handoff_prompt` wakes the session without a
+    // prompt, so it waits for the user under the target account.
+    let alt = account("alt", "claude-alt");
+    for prompt in ["", "   ", " \n\t"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(dir.path(), None, alt.clone(), false);
+        req.prompt = prompt.into();
+        assert_eq!(req.prompt_arg(), None, "{prompt:?}");
+        assert_eq!(
+            req.resume_command().argv(),
+            strings(&["claude-alt", "--resume", SID, "--bg"]),
+            "{prompt:?}"
+        );
+        assert!(req.validate().is_ok(), "{prompt:?}");
+    }
+    let mut req = request(Path::new("/tmp"), None, alt, false);
+    req.prompt = " continue ".into();
+    assert_eq!(req.prompt_arg(), Some("continue"));
+}
+
+#[test]
 fn stop_account_owner_target_or_none() {
     let main = account("main", "claude");
     let alt = account("alt", "claude-alt");
@@ -236,6 +258,39 @@ fn captured_resume_without_prompt_is_continued_but_idle() {
         [format!(
             "note: woke session {ID} with its saved options (--name, --permission-mode, --model)."
         )]
+    );
+}
+
+#[test]
+fn the_idle_suffix_is_parsed_with_or_without_a_name() {
+    // The stdout form of a wake without a prompt (doc/0033): the short id
+    // still matches, so it is a continuation, not a copy.
+    let note = format!("note: woke session {ID} with its saved options (--name, --model).\n");
+    for (stdout, name) in [
+        (
+            format!("backgrounded · {ID} · touch-config (idle — send a prompt to start)\n"),
+            Some("touch-config"),
+        ),
+        (
+            format!("backgrounded · {ID} (idle — send a prompt to start)\n"),
+            None,
+        ),
+    ] {
+        let r = interpret_resume(&out(0, &stdout, &note), ID, Path::new("/tmp")).unwrap();
+        assert_eq!(r.id, ID, "{stdout}");
+        assert_eq!(r.name.as_deref(), name, "{stdout}");
+        assert_eq!(r.outcome, Outcome::Continued, "{stdout}");
+        assert!(r.idle, "{stdout}");
+        assert_eq!(r.notes, [note.trim()]);
+    }
+    // A copy that woke idle is still a copy.
+    let stdout = "backgrounded · 0f1e2d3c · touch-config (idle — send a prompt to start)\n";
+    let r = interpret_resume(&out(0, stdout, ""), ID, Path::new("/tmp")).unwrap();
+    assert_eq!(
+        r.outcome,
+        Outcome::Copied {
+            new_id: "0f1e2d3c".into()
+        }
     );
 }
 
@@ -406,6 +461,41 @@ fn no_live_process_skips_the_stop() {
         alt_fake.all_argv(),
         [strings(&["--resume", SID, "--bg", "continue"])]
     );
+}
+
+#[test]
+fn an_empty_prompt_stops_then_wakes_without_a_prompt() {
+    let _l = lock();
+    let world = World::new();
+    let main_fake = Fake::new("claude", &world.stopper_body(1));
+    let alt_fake = Fake::new(
+        "claude-alt",
+        &resumer_body(
+            Some("cli-output/resume-noprompt.stdout"),
+            Some("cli-output/resume-noprompt.stderr"),
+            0,
+        ),
+    );
+    let mut req = request(
+        &world.project(),
+        Some(main_fake.account_named("main", None)),
+        alt_fake.account_named("alt", Some("~/.claude-alt")),
+        true,
+    );
+    req.prompt = "  ".into();
+    let (result, steps) = run(&req, &until_stopped());
+    let r = result.unwrap();
+    assert_eq!(r.outcome, Outcome::Continued);
+    assert!(r.idle, "woke without a turn");
+    assert_eq!(r.name.as_deref(), Some("touch-config"));
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    assert_eq!(main_fake.argv_of(1), strings(&["stop", ID]));
+    assert_eq!(
+        alt_fake.all_argv(),
+        [strings(&["--resume", SID, "--bg"])],
+        "no prompt argument"
+    );
+    assert_eq!(alt_fake.cwd_of(1), canon(&world.project()));
 }
 
 #[test]
@@ -740,7 +830,8 @@ fn preconditions_are_checked_before_anything_runs() {
         run(&missing, &until_stopped()).0,
         Err(HandoffError::CwdMissing(_))
     ));
-    for prompt in ["", "   ", "-p"] {
+    // An empty prompt is valid (doc/0033); one that reads as a flag is not.
+    for prompt in ["-p", "  --model x"] {
         let mut req = request(&world.project(), Some(main.clone()), alt.clone(), true);
         req.prompt = prompt.into();
         assert!(

@@ -881,17 +881,36 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm, area: Rect, look: Look) {
                 ),
                 format!("From: {from}   To: {to}"),
                 format!("Plan: {}.", r.plan()),
+                match r.prompt_arg() {
+                    Some(prompt) => format!(
+                        "Prompt: \"{prompt}\", sent as the next turn under {}.",
+                        r.target.name
+                    ),
+                    // An empty `handoff_prompt` (doc/0033).
+                    None => format!(
+                        "Prompt: none. The session will wait for you under {}; no turn is \
+                         started.",
+                        r.target.name
+                    ),
+                },
                 format!(
                     "The full conversation and project context will continue under {to} and \
                      its terms."
                 ),
             ];
             if *interrupts {
-                text.push(
+                text.push(if r.prompt_arg().is_some() {
                     "Stopping interrupts the current turn; the session then gets the hand-off \
                      prompt and picks up from there."
-                        .to_owned(),
-                );
+                        .to_owned()
+                } else {
+                    format!(
+                        "Stopping interrupts the current turn; without a prompt the session \
+                         does not pick up by itself and may show as working · idle under {} \
+                         until you send one.",
+                        r.target.name
+                    )
+                });
                 if detail == "permission prompt" {
                     text.push(
                         "The pending permission prompt is not shown again after the wake."
@@ -905,9 +924,9 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm, area: Rect, look: Look) {
     text.push(String::new());
     let w = area.width.saturating_sub(4).min(76);
     let inner_w = usize::from(w.saturating_sub(4)).max(1);
-    // The hand-off's `From:`, `To:` and `Plan:` are labels.
+    // The hand-off's `From:`, `To:`, `Plan:` and `Prompt:` are labels.
     let labels: &[&str] = if matches!(confirm, Confirm::Handoff { .. }) {
-        &["From:", "To:", "Plan:"]
+        &["From:", "To:", "Plan:", "Prompt:"]
     } else {
         &[]
     };
