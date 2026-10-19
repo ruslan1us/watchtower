@@ -1,13 +1,14 @@
 //! Background jobs: the CLI calls behind the app's [`Effect`]s that can take
 //! a while — dispatch (`claude --bg`, which may first start a supervisor),
-//! the orchestrator's start, `stop`, `rm`, `logs` and the hand-off sequence
-//! — and the file work that
+//! the orchestrator's start, `stop`, `rm`, `logs`, the hand-off sequence
+//! and the rename of a stopped session — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
 //! reloads, the project scan — each run on its own short-lived worker
 //! thread so the UI never blocks (doc/0001, doc/0002, doc/0004, doc/0008,
-//! doc/0009). Results come back over a channel as [`JobResult`]s;
-//! [`JobResult::apply`] hands them to the [`App`]. A hand-off also reports
-//! each step as it starts ([`JobResult::HandoffStep`]).
+//! doc/0009, doc/0027). Results come back over a channel as [`JobResult`]s;
+//! [`JobResult::apply`] hands them to the [`App`]. A hand-off and a rename
+//! also report each step as it starts ([`JobResult::HandoffStep`],
+//! [`JobResult::RenameStep`]).
 //!
 //! Like every background call, these run with stdin null and captured
 //! output ([`CliRunner`]), so nothing can touch the terminal (doc/0005).
@@ -35,7 +36,7 @@ use std::time::Duration;
 use crate::actions::{self, RemoveError, StopError};
 use crate::app::{
     App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, LogsTarget, OrchestratorJob, ProjectScan,
-    SessionAction, SidecarJob,
+    RenameJob, SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::config::ConfigError;
@@ -47,6 +48,7 @@ use crate::merge::ProcEnviron;
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
 use crate::ptysize::{self, TerminalReader, TtyProbe};
+use crate::rename::{self, RenameError, RenameStep, RenameTiming, Renamed};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 
@@ -69,6 +71,11 @@ pub enum JobResult {
     /// A finished hand-off (doc/0004). The job is boxed to keep the enum
     /// small.
     Handoff(Box<HandoffJob>, Result<Resumed, HandoffError>),
+    /// A step of a running rename has started (doc/0027).
+    RenameStep(RenameStep),
+    /// A finished rename of a stopped session (doc/0027), boxed to keep
+    /// the enum small.
+    Rename(Box<RenameJob>, Result<Renamed, RenameError>),
     /// A finished sidecar save, with its job number (doc/0002).
     Saved(u64, SaveJob, io::Result<Saved>),
     /// A finished look for other towers' sidecar changes (doc/0017).
@@ -99,6 +106,11 @@ impl JobResult {
                 Vec::new()
             }
             JobResult::Handoff(job, result) => app.handoff_finished(*job, result),
+            JobResult::RenameStep(step) => {
+                app.rename_step(step);
+                Vec::new()
+            }
+            JobResult::Rename(job, result) => app.rename_finished(*job, result),
             JobResult::Saved(seq, job, result) => app.sidecar_saved(seq, &job, result),
             JobResult::Checked(seq, result) => app.sidecar_checked(seq, result),
             JobResult::Projects(id, list) => {
@@ -124,6 +136,7 @@ fn spawn_thread(name: String, body: Box<dyn FnOnce() + Send>) -> io::Result<()> 
 pub struct Jobs {
     runner: Arc<CliRunner>,
     handoff_timing: HandoffTiming,
+    rename_timing: RenameTiming,
     /// The sidecar file a hand-off checks before waking (doc/0017).
     state_file: Option<PathBuf>,
     spawner: ThreadSpawner,
@@ -140,6 +153,7 @@ impl Jobs {
         Jobs {
             runner: Arc::new(runner),
             handoff_timing: HandoffTiming::default(),
+            rename_timing: RenameTiming::default(),
             state_file: None,
             spawner: spawn_thread,
             terminal: Arc::new(ProcEnviron),
@@ -158,6 +172,12 @@ impl Jobs {
     /// Uses `timing` for the stop wait of hand-offs (tests).
     pub fn with_handoff_timing(mut self, timing: HandoffTiming) -> Jobs {
         self.handoff_timing = timing;
+        self
+    }
+
+    /// Uses `timing` for the name confirmation of renames (tests).
+    pub fn with_rename_timing(mut self, timing: RenameTiming) -> Jobs {
+        self.rename_timing = timing;
         self
     }
 
@@ -258,6 +278,29 @@ impl Jobs {
             let result =
                 handoff::run_checked(runner, &job.request, &timing, &mut progress, &mut check);
             JobResult::Handoff(Box::new(job), result)
+        });
+    }
+
+    /// Runs the rename of a stopped session (doc/0027): wake it with
+    /// `/rename` under its owner, wait for the new name, stop it again.
+    /// Each step is reported as it starts. Right before the wake the
+    /// session's record in the state file is compared with
+    /// [`RenameJob::recorded`], as for a hand-off (doc/0017 section 8). A
+    /// failed worker counts as a failed wake.
+    pub fn rename(&self, job: RenameJob) {
+        let timing = self.rename_timing;
+        let state_file = self.state_file.clone();
+        let fail = |job, err| JobResult::Rename(Box::new(job), Err(RenameError::ResumeCli(err)));
+        self.launch("rename", job, fail, move |runner, tx, job| {
+            let mut progress = |step: RenameStep| {
+                let _ = tx.send(JobResult::RenameStep(step));
+            };
+            let mut check = || match &state_file {
+                Some(path) => rename_owner_unchanged(path, &job),
+                None => Ok(()),
+            };
+            let result = rename::run(runner, &job.request, &timing, &mut progress, &mut check);
+            JobResult::Rename(Box::new(job), result)
         });
     }
 
@@ -404,6 +447,26 @@ fn owner_unchanged(
         return Ok(());
     }
     Err(HandoffError::OwnerChanged { account, stopped })
+}
+
+/// The rename's guard, as [`owner_unchanged`] for a hand-off: an error when
+/// the state file now records the session under another account than the
+/// owner the rename wakes it with, and the record differs from the one this
+/// tower planned with. An unreadable file gives no evidence.
+fn rename_owner_unchanged(path: &std::path::Path, job: &RenameJob) -> Result<(), RenameError> {
+    let Ok(now) = sidecar::read_owner(path, &job.request.session_id) else {
+        return Ok(());
+    };
+    if now == job.recorded {
+        return Ok(());
+    }
+    let Some(account) = now.and_then(|r| r.account) else {
+        return Ok(());
+    };
+    if account == job.request.owner.name {
+        return Ok(());
+    }
+    Err(RenameError::OwnerChanged { account })
 }
 
 fn worker_error(job: &str, message: String) -> CliError {

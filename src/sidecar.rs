@@ -818,6 +818,22 @@ impl Sidecar {
         }
     }
 
+    /// Takes `tuple` as `key`'s last observed tuple without counting it as
+    /// a change: `last_change_ms` and `acknowledged` stay as they are. For
+    /// a session tower woke and stopped again to rename it (doc/0027), so
+    /// the wake does not move its activity time. Returns true when the
+    /// state changed.
+    pub fn rebase_state(&mut self, key: &str, tuple: &StateTuple) -> bool {
+        let Some(rec) = self.sessions.get_mut(key) else {
+            return false;
+        };
+        if rec.last_state.as_ref() == Some(tuple) {
+            return false;
+        }
+        rec.last_state = Some(tuple.clone());
+        true
+    }
+
     /// Stores `tuple` as the one the user acknowledged for `key`, by
     /// attaching or with `m` (doc/0007). Returns true when the state
     /// changed.

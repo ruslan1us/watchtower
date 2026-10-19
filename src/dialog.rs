@@ -915,3 +915,85 @@ impl ResumeWindow {
         ResumeAction::None
     }
 }
+
+/// What a key in the rename window asks the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameAction {
+    /// Nothing beyond the window's own state change.
+    None,
+    /// Close the window.
+    Cancel,
+    /// Quit tower (`Ctrl+C`).
+    Quit,
+    /// Check the name and rename (stopped row) or attach (running row).
+    Confirm,
+}
+
+/// The rename window of `e` (doc/0027): one `Name` field, prefilled with
+/// the session's current name, cursor at the end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameWindow {
+    /// Sidecar key of the session (`sessionId`, or the short id).
+    pub key: String,
+    /// The short id.
+    pub id: String,
+    /// The current name, as listed (the short id when unnamed).
+    pub old_name: String,
+    /// The name being typed.
+    pub name: LineInput,
+    /// The row has a live process: Claude Code renames it from inside, so
+    /// `Enter` attaches (doc/0027).
+    pub running: bool,
+    /// The owning account's name, `None` when unknown (`?`).
+    pub owner: Option<String>,
+    /// Why `Enter` did nothing, shown until the next key.
+    pub error: Option<String>,
+}
+
+impl RenameWindow {
+    /// A window for the session `key` / `id` named `old_name`, with the
+    /// name prefilled.
+    pub fn new(
+        key: String,
+        id: String,
+        old_name: String,
+        running: bool,
+        owner: Option<String>,
+    ) -> RenameWindow {
+        RenameWindow {
+            key,
+            id,
+            name: LineInput::new(&old_name),
+            old_name,
+            running,
+            owner,
+            error: None,
+        }
+    }
+
+    /// Handles one key: the single-line editing keys of every text field
+    /// (doc/0011), `Ctrl+U` empties it, `Enter` confirms, `Esc` cancels,
+    /// `Ctrl+C` quits. Typed text is never translated from a Cyrillic
+    /// layout.
+    pub fn handle_key(&mut self, key: KeyEvent) -> RenameAction {
+        let key = layout::shortcut_key(key);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
+            return RenameAction::Quit;
+        }
+        match key.code {
+            KeyCode::Esc => return RenameAction::Cancel,
+            KeyCode::Enter => return RenameAction::Confirm,
+            KeyCode::Char('u' | 'U') if ctrl => {
+                self.name.set("");
+                self.error = None;
+                return RenameAction::None;
+            }
+            _ => {}
+        }
+        if self.name.key(&key) == KeyUse::Changed {
+            self.error = None;
+        }
+        RenameAction::None
+    }
+}

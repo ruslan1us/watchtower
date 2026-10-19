@@ -6,3 +6,4 @@
 
 # Rust build output
 /target/
+/.claude/worktrees/

@@ -1,6 +1,6 @@
 # 0006. Session states, grouping and activity times
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -151,6 +151,9 @@ row or group.
   `last_state` and `last_change_ms` ([0002](0002-tech-stack-and-files.md)).
 - A changed tuple on a poll sets the change time to the poll time. A changed
   tuple also drops the session's `acknowledged` tuple ([0007](0007-visual-only-attention.md)).
+  *Amended by [0027](0027-rename-sessions.md):* while tower wakes a stopped
+  session to rename it, its tuples are not recorded; once it is listed stopped
+  again, that tuple is taken without a new change time.
 - On the first sighting of a session (no record, or a record without
   `last_state`) the change time is `startedAt`, or the poll time when the row
   has none.

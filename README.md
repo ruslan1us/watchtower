@@ -265,6 +265,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `i` | Show / hide interactive sessions |
 | `r` | Refresh now |
 | `c` | Settings window ([0024](doc/0024-settings-window.md)) |
+| `e` | Rename the session: a stopped one is woken with `/rename` and stopped again, without attaching; for a running one tower attaches and you type `/rename <name>` there, then `Ctrl+Z` ([0027](doc/0027-rename-sessions.md)) |
 | `?` | Help |
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |

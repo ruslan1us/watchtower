@@ -1,6 +1,6 @@
 # 0007. Attention is visual only
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · a rename's wake is never highlighted, amended by [0027](0027-rename-sessions.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
@@ -77,6 +77,8 @@ running is noticed at the first poll after startup, against the sidecar's
 
 Highlights are computed from polling, which continues while the user is
 attached to another session, so new highlights are already there on return.
+*Amended by [0027](0027-rename-sessions.md):* a session tower wakes to rename
+it is not highlighted while the rename runs.
 
 **What tower never does.** It never writes BEL (`\a`), never plays sound,
 never emits OSC 9, OSC 777 or OSC 99 desktop-notification sequences, and does

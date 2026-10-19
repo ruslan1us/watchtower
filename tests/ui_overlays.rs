@@ -278,6 +278,38 @@ config_dir = "~/.claude-spare"
     app.projects_found(scan.id, projects(root, &["web", "api", "demo-app"]));
     out.push(("resume", app));
 
+    // The rename window of `e` (doc/0027): a running row, a stopped row
+    // with an error, and the trust window of a stopped row's rename.
+    let mut app = app_two_owned();
+    common::select_name(&mut app, "print-date");
+    app.handle_key(ch('e'));
+    type_text(&mut app, "-v2");
+    out.push(("rename", app));
+
+    let mut app = app_two_owned();
+    common::select_name(&mut app, "say-ok");
+    app.handle_key(ch('e'));
+    app.handle_key(ctrl('u'));
+    app.handle_key(key(KeyCode::Enter));
+    out.push(("rename-stopped", app));
+
+    let mut app = app_two_owned();
+    common::select_name(&mut app, "say-ok");
+    app.handle_key(ch('e'));
+    type_text(&mut app, "-v2");
+    let effects = app.handle_key(key(KeyCode::Enter));
+    let [Effect::Rename(job)] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    app.rename_finished(
+        job.clone(),
+        Err(watchtower::rename::RenameError::Untrusted {
+            dir: PathBuf::from(format!("{HOME}/workspace/demo-app")),
+            message: "Workspace not trusted. Run `claude` there once.".into(),
+        }),
+    );
+    out.push(("rename-untrusted", app));
+
     (out, dir)
 }
 
@@ -387,7 +419,7 @@ const EXPECT: [Expect; 4] = [
 ];
 
 /// Windows and their titles.
-const TITLED: [(&str, &str); 11] = [
+const TITLED: [(&str, &str); 14] = [
     ("dialog", "New session"),
     ("resume", "Resume a past conversation"),
     ("stop", "Stop session?"),
@@ -399,6 +431,9 @@ const TITLED: [(&str, &str); 11] = [
     ("popup", "say-ok"),
     ("quit", "Quit tower?"),
     ("orchestrator-untrusted", "Not trusted by"),
+    ("rename", "Rename session"),
+    ("rename-stopped", "Rename session"),
+    ("rename-untrusted", "Not trusted by"),
 ];
 
 #[test]
@@ -467,6 +502,9 @@ fn errors_are_red_and_warnings_amber() {
         assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
         let (x, y) = cell_at(&buf, "⚠ auto mode");
         assert_eq!(buf[(x, y)].fg, e.amber, "{theme:?} warning");
+        let (buf, _dir) = window("rename-stopped", UiStyle::Dashboard, theme, true);
+        let (x, y) = cell_at(&buf, "the name must not be empty");
+        assert_eq!(buf[(x, y)].fg, e.red, "{theme:?} rename error");
     }
 }
 

@@ -1,6 +1,6 @@
-//! Rendering of the new-session dialog (doc/0008) and of the resume window
-//! of `R` (doc/0019). Pure drawing from the [`Dialog`] and [`ResumeWindow`]
-//! state.
+//! Rendering of the new-session dialog (doc/0008), the resume window of
+//! `R` (doc/0019) and the rename window of `e` (doc/0027). Pure drawing
+//! from the [`Dialog`], [`ResumeWindow`] and [`RenameWindow`] state.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -12,7 +12,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::theme::Look;
 use crate::app::App;
 use crate::dialog::{
-    Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, ResumeField, ResumeWindow,
+    Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, RenameWindow, ResumeField,
+    ResumeWindow,
 };
 use crate::dispatch::MODEL_CHOICES;
 
@@ -706,6 +707,116 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         p.line(look.hint_line(row));
     }
 
+    if let Some(pos) = cursor
+        && pos.x < inner.x + inner.width
+        && pos.y < inner.y + inner.height
+    {
+        p.frame.set_cursor_position(pos);
+    }
+}
+
+/// The rename window's explanation of what `Enter` does (doc/0027), for a
+/// stopped session: tower wakes it with `/rename` and stops it again.
+pub fn rename_stopped_note(old: &str, owner: Option<&str>) -> String {
+    let who = match owner {
+        Some(owner) => format!("under {owner}"),
+        None => "with the account you pick (its owner is unknown)".to_owned(),
+    };
+    format!(
+        "{old} is stopped. Enter wakes it {who} in the background without attaching, runs \
+         /rename there (a local command, no model turn), waits until the list shows the new \
+         name and stops it again."
+    )
+}
+
+/// Draws the rename window of `e` centred in `area` (doc/0027): the name
+/// field, what `Enter` does, an error and the keys.
+pub fn draw_rename(frame: &mut Frame, _app: &App, window: &RenameWindow, area: Rect, look: Look) {
+    let w = area.width.saturating_sub(4).clamp(1, 80);
+    let width = usize::from(w.saturating_sub(4)).max(1);
+    let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
+    let typed = window.name.text();
+    let mut body: Vec<Line> = Vec::new();
+    if window.running {
+        let intro = format!(
+            "Claude Code renames a running session from inside it. Enter attaches to {} (as \
+             Enter on its row); type there:",
+            window.old_name
+        );
+        for row in wrap(&intro, width) {
+            body.push(Line::styled(row, look.text()));
+        }
+        let command = crate::rename::rename_prompt(&typed);
+        for row in wrap(&command, width.saturating_sub(4).max(1)) {
+            body.push(Line::styled(format!("    {row}"), look.strong()));
+        }
+        for row in wrap(
+            "and press Enter, then Ctrl+Z to come back to tower; tower then checks the name.",
+            width,
+        ) {
+            body.push(Line::styled(row, look.text()));
+        }
+    } else {
+        let note = rename_stopped_note(&window.old_name, window.owner.as_deref());
+        for row in wrap(&note, width) {
+            body.push(Line::styled(row, look.text()));
+        }
+    }
+    if let Some(err) = &window.error {
+        body.push(Line::raw(""));
+        for row in wrap(err, width) {
+            body.push(Line::styled(row, look.error()));
+        }
+    }
+    let enter = if window.running {
+        "Enter attach"
+    } else {
+        "Enter rename"
+    };
+    let footer = wrap(&format!("{enter} · Ctrl+U clear · Esc cancel"), width);
+
+    // Name, blank, body, blank, footer.
+    let wanted = 2 + body.len() + 1 + footer.len();
+    let h = (wanted as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(1);
+    let rect = super::centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let block = look
+        .overlay_block(" Rename session ")
+        .title_bottom(look.hint_line(" Esc cancel "));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // One column of padding inside the border, as the other windows.
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
+    let mut p = Painter {
+        frame,
+        area: inner,
+        y: inner.y,
+    };
+    let (shown, cx) = input_window(&window.name, value_w);
+    let cursor = p
+        .has_room()
+        .then(|| Position::new(inner.x + LABEL_W + cx as u16, p.y));
+    p.line(Line::from(vec![
+        label(Field::Name, Field::Name, look),
+        Span::styled(shown, look.text()),
+    ]));
+    p.line(Line::raw(""));
+    for line in body {
+        p.line(line);
+    }
+    p.line(Line::raw(""));
+    for row in footer {
+        p.line(look.hint_line(row));
+    }
     if let Some(pos) = cursor
         && pos.x < inner.x + inner.width
         && pos.y < inner.y + inner.height

@@ -4,6 +4,7 @@
 //! selection over headers and rows, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
 //! logs panel (doc/0009), the hand-off to another account (doc/0004), the
+//! rename window of `e` (doc/0027), the
 //! orchestrator key `o` (doc/0010), the tracked activity times and the
 //! attention highlight with `m` (doc/0006, doc/0007, via
 //! [`crate::activity`]), and the key table (doc/0011).
@@ -13,7 +14,7 @@
 //! accounts' config dirs once when the app is created). Key presses, poll
 //! results and the outcomes of background jobs go in; [`Effect`]s come out
 //! and the runtime (`tui`, `jobs`) carries them out. Every CLI call that can
-//! take a while (dispatch, stop, remove, logs, hand-off) and every file
+//! take a while (dispatch, stop, remove, logs, hand-off, rename) and every file
 //! operation (sidecar saves and reloads, the project scan) is an effect the
 //! runtime runs on a worker thread, reporting back through the `*_finished`
 //! / [`App::logs_fetched`] / `sidecar_*` methods. That keeps the whole flow
@@ -35,7 +36,10 @@ use crate::activity;
 use crate::config::ConfigError;
 use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
 use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, EditSession, SaveError, SaveOutcome};
-use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
+use crate::dialog::{
+    Dialog, DialogAction, DialogStatus, Field, RenameAction, RenameWindow, ResumeAction,
+    ResumeWindow,
+};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
@@ -50,6 +54,7 @@ use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
 use crate::ptysize::TtyProbe;
+use crate::rename::{self, NameCheck, RenameError, RenameRequest, RenameStep, Renamed};
 use crate::settings::{FolderResult, SettingsAction, SettingsWindow};
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
@@ -157,6 +162,21 @@ pub enum Effect {
     /// worker thread ([`crate::settings::FolderJob::run`]), then call
     /// [`App::folders_checked`] (doc/0024).
     CheckFolders(crate::settings::FolderJob),
+    /// Rename a stopped session on a worker thread ([`rename::run`]):
+    /// wake it with `/rename`, confirm the name, stop it again; report
+    /// steps to [`App::rename_step`], then call [`App::rename_finished`]
+    /// (doc/0027).
+    Rename(RenameJob),
+    /// Suspend tower like an attach and run the owner's interactive
+    /// command in the session's folder ([`dispatch::trust_command`]), then
+    /// call [`App::rename_trust_finished`], which retries the rename once
+    /// (doc/0008, doc/0027).
+    RenameTrust(RenameJob),
+    /// Poll every account now and report the poll's cycle to
+    /// [`App::rename_poll_started`]: after an attach to rename a running
+    /// session, tower compares the name a listing from that cycle shows
+    /// with the requested one (doc/0027).
+    PollForRename,
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -206,6 +226,29 @@ pub struct HandoffJob {
     /// compares the file with it and does not wake the session when
     /// another tower recorded another owner meanwhile (doc/0017 section 8).
     pub recorded: Option<OwnerRecord>,
+}
+
+/// The rename of a stopped session (doc/0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameJob {
+    /// What to wake, rename and stop, with the owner's command.
+    pub request: RenameRequest,
+    /// This is the retry after the trust flow.
+    pub after_trust: bool,
+    /// The session's owner record as this tower last read or wrote it in
+    /// the sidecar file; right before the wake the job compares the file
+    /// with it, as a hand-off does (doc/0017 section 8).
+    pub recorded: Option<OwnerRecord>,
+}
+
+/// A rename that failed with `Workspace not trusted` (doc/0027): `Ctrl+T`
+/// runs the trust flow for the owner and retries once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedRename {
+    /// The rename to retry.
+    pub job: RenameJob,
+    /// The CLI's message.
+    pub message: String,
 }
 
 /// Sidecar file work the runtime runs on a worker thread (doc/0002): at
@@ -372,6 +415,8 @@ pub struct Picker {
     pub selected: usize,
     /// What happens with the chosen account.
     pub purpose: Purpose,
+    /// For [`Purpose::Rename`]: the new name.
+    pub rename_to: Option<String>,
 }
 
 /// What a row action asks the account picker for.
@@ -383,15 +428,19 @@ pub enum Purpose {
     Stop,
     /// Remove (doc/0009).
     Remove,
+    /// Rename a stopped session: wake it under the chosen account
+    /// (doc/0027).
+    Rename,
 }
 
 impl Purpose {
-    /// The verb for messages: `attach`, `stop`, `remove`.
+    /// The verb for messages: `attach`, `stop`, `remove`, `rename`.
     pub fn verb(self) -> &'static str {
         match self {
             Purpose::Attach => "attach",
             Purpose::Stop => "stop",
             Purpose::Remove => "remove",
+            Purpose::Rename => "rename",
         }
     }
 }
@@ -426,6 +475,53 @@ struct HandoffProgress {
     /// Its `sessionId`.
     session_id: String,
     text: String,
+}
+
+/// A running rename of a stopped session, for the status line and the
+/// row-action guard (doc/0027).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenameProgress {
+    /// The current name.
+    name: String,
+    /// Short id of the session.
+    id: String,
+    /// Its `sessionId`.
+    session_id: String,
+    /// `renaming <old> → <new>`.
+    head: String,
+    text: String,
+}
+
+/// A session whose wake for a rename is not tracked as activity
+/// (doc/0027): its state tuples are not recorded while the rename runs,
+/// and once it is listed stopped again its last tuple is taken without a
+/// new change time. `done`: the rename reported back at that time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Quiet {
+    done: Option<Instant>,
+}
+
+/// How long a finished rename keeps a session quiet while waiting for a
+/// listing that shows it stopped again.
+const QUIET_LINGER: Duration = Duration::from_secs(30);
+
+/// A rename of a running session through an attach (doc/0027): once tower
+/// is back, a listing from a poll started after the attach is compared
+/// with the requested name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenameIntent {
+    /// Sidecar key of the session.
+    key: String,
+    /// Its short id.
+    id: String,
+    /// The name before.
+    old: String,
+    /// The requested name.
+    new: String,
+    /// The account whose command attached, once the attach is back.
+    account: Option<String>,
+    /// Cycle of the poll started after the attach, once reported.
+    cycle: Option<u64>,
 }
 
 /// The question asked when the user quits while a hand-off runs (doc/0004,
@@ -493,6 +589,8 @@ pub enum Overlay {
     Untrusted(Box<UntrustedHandoff>),
     /// The orchestrator's folder is not trusted by its account.
     OrchestratorUntrusted(Box<UntrustedOrchestrator>),
+    /// A rename stopped at `Workspace not trusted` (doc/0027).
+    RenameUntrusted(Box<UntrustedRename>),
 }
 
 /// A scrollable text window above everything else, e.g. the full text of
@@ -740,6 +838,8 @@ pub enum Action {
     ToggleGroup,
     /// `c`: the Settings window (doc/0024).
     Settings,
+    /// `e`: rename the session (doc/0027).
+    Rename,
 }
 
 /// Keys of the session list (doc/0011), for the help. Short enough that
@@ -756,7 +856,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("p, i", "group by state / project; show / hide interactive"),
     ("n, o", "new session; attach to the orchestrator (start it)"),
     ("R", "resume a past conversation (claude --resume)"),
-    ("a", "continue under another account (hand-off)"),
+    ("a, e", "continue under another account (hand-off); rename"),
     ("s, d", "stop (confirm when working or blocked); remove"),
     ("m", "mark the highlighted session as seen"),
     ("Space, Esc", "toggle / close the logs panel"),
@@ -816,6 +916,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('i') => Action::ToggleInteractive,
         KeyCode::Tab => Action::ToggleGroup,
         KeyCode::Char('c') => Action::Settings,
+        KeyCode::Char('e') => Action::Rename,
         _ => return None,
     };
     Some(action)
@@ -859,6 +960,15 @@ pub struct App {
     dialog: Option<Dialog>,
     /// The resume window of `R` (doc/0019), when open.
     resume: Option<ResumeWindow>,
+    /// The rename window of `e` (doc/0027), when open.
+    rename: Option<RenameWindow>,
+    /// The rename of a stopped session running on a worker thread.
+    renaming: Option<RenameProgress>,
+    /// Sessions whose rename wake is not tracked as activity, by key.
+    quiet: HashMap<String, Quiet>,
+    /// A running session's rename through an attach, until the name is
+    /// compared after it.
+    rename_attach: Option<RenameIntent>,
     /// Where the config came from, once the runtime says
     /// ([`App::set_config_source`]).
     config_source: Option<ConfigSource>,
@@ -972,6 +1082,10 @@ impl App {
             overlay: Overlay::None,
             dialog: None,
             resume: None,
+            rename: None,
+            renaming: None,
+            quiet: HashMap::new(),
+            rename_attach: None,
             config_source: None,
             logs: None,
             popup: None,
@@ -1258,11 +1372,16 @@ impl App {
     /// When the session last changed state, Unix ms (doc/0006): the same
     /// value `tower status --json` reports as `lastChangeAt`.
     pub fn last_change_at(&self, m: &MergedSession, now_ms: i64) -> Option<i64> {
-        activity::last_change_at(&m.session, &self.sidecar, now_ms)
+        change_at(&self.quiet, &self.sidecar, &m.session, now_ms)
     }
 
-    /// Whether the row is highlighted for attention (doc/0007).
+    /// Whether the row is highlighted for attention (doc/0007). A session
+    /// tower wakes to rename it is never highlighted for that wake
+    /// (doc/0027).
     pub fn is_highlighted(&self, m: &MergedSession) -> bool {
+        if m.session.key().is_some_and(|k| self.quiet.contains_key(k)) {
+            return false;
+        }
         activity::highlighted(&m.session, &self.sidecar)
     }
 
@@ -1415,6 +1534,13 @@ impl App {
                 severity: Severity::Info,
             });
         }
+        // And a rename of a stopped session (doc/0027).
+        if let Some(r) = &self.renaming {
+            out.push(StatusSegment {
+                text: r.text.clone(),
+                severity: Severity::Info,
+            });
+        }
         // So is an attach waiting for its refresh (doc/0005).
         if let Some(p) = &self.pending_attach {
             out.push(StatusSegment {
@@ -1530,6 +1656,27 @@ impl App {
             };
             p.listed.push((update.account.clone(), listed));
         }
+        // The listing a rename through an attach waits for (doc/0027): the
+        // attaching account's, from a poll started after the attach.
+        let rename_check = match &self.rename_attach {
+            Some(i)
+                if i.account.as_deref() == Some(update.account.as_str())
+                    && i.cycle.is_some_and(|c| update.cycle >= c) =>
+            {
+                Some(match &update.result {
+                    Ok(listing) => Ok(listing
+                        .sessions
+                        .iter()
+                        .find(|s| {
+                            s.key() == Some(i.key.as_str())
+                                || s.id.as_deref() == Some(i.id.as_str())
+                        })
+                        .map(Session::display_name)),
+                    Err(err) => Err(err.clone()),
+                })
+            }
+            _ => None,
+        };
         let mut changed = false;
         let listed_ok = update.result.is_ok();
         let fresh = listed_ok.then(|| update.account.clone());
@@ -1572,7 +1719,56 @@ impl App {
             .is_some_and(|t| t.account.name == update.account);
         effects.extend(self.logs_follow(refresh));
         effects.extend(self.attach_progress(Instant::now()));
+        if let Some(check) = rename_check
+            && let Some(intent) = self.rename_attach.take()
+        {
+            self.report_rename_attach(&intent, check);
+        }
         effects
+    }
+
+    /// After an attach to rename a running session (doc/0027): says
+    /// whether the listing shows the requested name.
+    fn report_rename_attach(
+        &mut self,
+        intent: &RenameIntent,
+        listed: Result<Option<String>, String>,
+    ) {
+        let (old, new) = (&intent.old, &intent.new);
+        let account = intent.account.as_deref().unwrap_or("?");
+        match listed {
+            Ok(Some(name)) if name == *new => {
+                self.set_message(format!("renamed {old} → {new}"), Severity::Info);
+            }
+            Ok(Some(name)) => self.set_message(
+                format!(
+                    "name unchanged: {name} (to rename it, type {} inside the session)",
+                    rename::rename_prompt(new)
+                ),
+                Severity::Info,
+            ),
+            Ok(None) => self.set_message(
+                format!("cannot check the new name: {account} no longer lists {old}"),
+                Severity::Info,
+            ),
+            Err(err) => self.set_message(
+                format!(
+                    "cannot check the new name of {old}: {account} could not be listed ({})",
+                    one_line(&err)
+                ),
+                Severity::Warning,
+            ),
+        }
+    }
+
+    /// The runtime started the poll of [`Effect::PollForRename`]: its
+    /// listings show whether a rename through an attach worked (doc/0027).
+    pub fn rename_poll_started(&mut self, cycle: u64) {
+        if let Some(i) = self.rename_attach.as_mut()
+            && i.cycle.is_none()
+        {
+            i.cycle = Some(cycle);
+        }
     }
 
     /// Merges the accounts' last listings with the sidecar and rebuilds the
@@ -1612,16 +1808,35 @@ impl App {
                 .iter()
                 .filter(|m| m.seen_in.iter().any(|a| a == account))
             {
-                if let Some(key) = m.session.key() {
-                    activity |= self.sidecar.observe_state_at(
-                        key,
-                        &StateTuple::of(&m.session),
-                        m.session.started_at,
-                        now_ms,
-                    );
+                let Some(key) = m.session.key() else {
+                    continue;
+                };
+                let tuple = StateTuple::of(&m.session);
+                match self.quiet.get(key) {
+                    // A rename's wake is not activity (doc/0027): nothing
+                    // is recorded while it runs, and the tuple of the
+                    // stopped row after it is taken without a change time.
+                    Some(Quiet { done: Some(_) }) if !m.session.has_live_process() => {
+                        activity |= self.sidecar.rebase_state(key, &tuple);
+                        self.quiet.remove(key);
+                    }
+                    Some(_) => {}
+                    None => {
+                        activity |= self.sidecar.observe_state_at(
+                            key,
+                            &tuple,
+                            m.session.started_at,
+                            now_ms,
+                        );
+                    }
                 }
             }
         }
+        let now = Instant::now();
+        self.quiet.retain(|_, q| {
+            q.done
+                .is_none_or(|at| now.saturating_duration_since(at) < QUIET_LINGER)
+        });
         // Last-seen times and pruning (doc/0017 section 9): rows of every
         // good listing count as seen; pruning only while every account's
         // latest poll succeeded with a full listing.
@@ -1652,6 +1867,12 @@ impl App {
     /// with the tuple it had (doc/0007).
     pub fn attach_finished(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // A rename through this attach (doc/0027): after a clean return the
+        // name is compared once a poll started now has listed it.
+        let intent = self.rename_attach.take().filter(|i| {
+            self.attached_id.as_deref() == Some(i.id.as_str())
+                && matches!(outcome.result, Ok(Some(0)))
+        });
         if let Some(id) = self.attached_id.take()
             && matches!(outcome.result, Ok(Some(0)))
             && let Some(key) = self
@@ -1664,7 +1885,22 @@ impl App {
         {
             effects.push(Effect::SaveSidecar);
         }
-        effects.extend(self.attach_report(outcome));
+        let account = outcome.account.clone();
+        let report = self.attach_report(outcome);
+        match intent {
+            Some(intent) => {
+                self.rename_attach = Some(RenameIntent {
+                    account: Some(account),
+                    cycle: None,
+                    ..intent
+                });
+                effects.extend(report.into_iter().map(|e| match e {
+                    Effect::PollNow => Effect::PollForRename,
+                    other => other,
+                }));
+            }
+            None => effects.extend(report),
+        }
         effects
     }
 
@@ -2021,6 +2257,7 @@ impl App {
         let text_input = self.popup.is_none()
             && (self.dialog.is_some()
                 || self.resume.is_some()
+                || self.rename.is_some()
                 || self
                     .settings
                     .as_ref()
@@ -2040,6 +2277,9 @@ impl App {
         if self.resume.is_some() {
             return self.resume_key(key);
         }
+        if self.rename.is_some() {
+            return self.rename_key(key);
+        }
         if self.settings.is_some() {
             return self.settings_key(key);
         }
@@ -2050,6 +2290,7 @@ impl App {
             Overlay::Target(picker) => self.target_key(key, picker),
             Overlay::Untrusted(untrusted) => self.untrusted_key(key, *untrusted),
             Overlay::OrchestratorUntrusted(u) => self.orchestrator_untrusted_key(key, *u),
+            Overlay::RenameUntrusted(u) => self.rename_untrusted_key(key, *u),
             Overlay::None if self.filter.editing => self.filter_key(key),
             Overlay::None => self.list_key(key),
         }
@@ -2217,6 +2458,7 @@ impl App {
             _ if ctrl => {}
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.overlay = Overlay::None;
+                self.rename_attach = None;
                 self.set_message(
                     format!("{} cancelled", picker.purpose.verb()),
                     Severity::Info,
@@ -2322,6 +2564,10 @@ impl App {
             Purpose::Attach => {}
             Purpose::Stop => effects.extend(self.stop_or_confirm(action, confirm_stop)),
             Purpose::Remove => self.confirm_remove(action),
+            Purpose::Rename => {
+                let new = picker.rename_to.clone().unwrap_or_default();
+                effects.extend(self.start_rename(&picker.key, action.account, new));
+            }
         }
         effects.extend(self.logs_follow(false));
         effects
@@ -2377,6 +2623,7 @@ impl App {
             Action::Orchestrator => effects = self.request_orchestrator(),
             Action::ResumePast => return self.open_resume(),
             Action::Settings => return self.request_settings(),
+            Action::Rename => effects = self.request_rename(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
@@ -2394,6 +2641,7 @@ impl App {
             }
             Action::Close => {
                 if let Some(p) = self.pending_attach.take() {
+                    self.rename_attach = None;
                     self.set_message(
                         format!("attach to {} cancelled", p.request.name),
                         Severity::Info,
@@ -2487,6 +2735,14 @@ impl App {
             );
             return Vec::new();
         }
+        if self.renaming_row(&m.session) {
+            // Tower wakes and stops it for the rename (doc/0027).
+            self.set_message(
+                format!("{name} is being renamed; wait until it finishes"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
         let confirm_stop = stop_needs_confirmation(&m.session);
         match &m.owner {
             Ownership::Known { account, .. } => {
@@ -2514,6 +2770,8 @@ impl App {
                         self.confirm_remove(action);
                         Vec::new()
                     }
+                    // Renames start from the rename window (doc/0027).
+                    Purpose::Rename => Vec::new(),
                 }
             }
             Ownership::Unknown { config_dir } => {
@@ -2531,9 +2789,443 @@ impl App {
                     config_dir: config_dir.clone(),
                     selected,
                     purpose,
+                    rename_to: None,
                 });
                 Vec::new()
             }
+        }
+    }
+
+    // ---- renaming a session (doc/0027) -------------------------------------
+
+    /// The rename window of `e`, when open.
+    pub fn rename_window(&self) -> Option<&RenameWindow> {
+        self.rename.as_ref()
+    }
+
+    /// The text of a running rename of a stopped session, if any.
+    pub fn rename_progress(&self) -> Option<&str> {
+        self.renaming.as_ref().map(|r| r.text.as_str())
+    }
+
+    /// Whether `s` is the session of the running rename, by `sessionId` or
+    /// short id.
+    fn renaming_row(&self, s: &Session) -> bool {
+        self.renaming.as_ref().is_some_and(|r| {
+            s.session_id.as_deref() == Some(r.session_id.as_str())
+                || s.id.as_deref() == Some(r.id.as_str())
+        })
+    }
+
+    /// Why `e` is not offered on `m`, if it is not (doc/0027): an
+    /// interactive row, a row without a short id, the orchestrator, a row
+    /// with a hand-off, a rename or an attach in flight, any rename while
+    /// one runs, and a stopped row without a `sessionId` to wake.
+    fn rename_refusal(&self, m: &MergedSession) -> Option<String> {
+        let s = &m.session;
+        let name = s.display_name();
+        if s.is_interactive() {
+            return Some(format!(
+                "{name} runs in another terminal — rename it there with /rename <name>"
+            ));
+        }
+        if s.id.is_none() {
+            return Some(format!("{name} has no short id; tower cannot rename it"));
+        }
+        if orchestrator::is_orchestrator(s) {
+            return Some(format!(
+                "tower knows the orchestrator by its name `{}` (its group, o); renamed, it \
+                would be an ordinary session and o would start a new orchestrator",
+                orchestrator::NAME
+            ));
+        }
+        if self.handing_off(s) {
+            return Some(format!(
+                "{name} is being handed off to another account; wait until it finishes"
+            ));
+        }
+        if let Some(r) = &self.renaming {
+            return Some(if self.renaming_row(s) {
+                format!("{name} is being renamed; wait until it finishes")
+            } else {
+                format!(
+                    "a rename is already running ({}); wait until it finishes",
+                    r.name
+                )
+            });
+        }
+        if let Some(p) = &self.pending_attach
+            && s.key() == Some(p.key.as_str())
+        {
+            return Some(format!(
+                "tower is about to attach to {name}; wait, or Esc to cancel the attach first"
+            ));
+        }
+        if !s.has_live_process() && s.session_id.is_none() {
+            return Some(format!(
+                "{name} has no sessionId; tower cannot wake it to rename it"
+            ));
+        }
+        None
+    }
+
+    /// `e` on the selected row: opens the rename window with the current
+    /// name, or says why the row cannot be renamed (doc/0027).
+    fn request_rename(&mut self) -> Vec<Effect> {
+        let Some(m) = self.selected_session() else {
+            return Vec::new();
+        };
+        if let Some(refusal) = self.rename_refusal(m) {
+            self.set_message(refusal, Severity::Info);
+            return Vec::new();
+        }
+        let (Some(key), Some(id)) = (m.session.key(), m.session.id.clone()) else {
+            return Vec::new();
+        };
+        self.rename = Some(RenameWindow::new(
+            key.to_owned(),
+            id,
+            m.session.display_name(),
+            m.session.has_live_process(),
+            m.owner.account().map(str::to_owned),
+        ));
+        Vec::new()
+    }
+
+    fn rename_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(window) = self.rename.as_mut() else {
+            return Vec::new();
+        };
+        match window.handle_key(key) {
+            RenameAction::None => Vec::new(),
+            RenameAction::Quit => vec![Effect::Quit],
+            RenameAction::Cancel => {
+                self.rename = None;
+                self.set_message("rename cancelled", Severity::Info);
+                Vec::new()
+            }
+            RenameAction::Confirm => self.confirm_rename(),
+        }
+    }
+
+    /// `Enter` in the rename window: checks the name, then renames a
+    /// stopped row from tower or attaches to a running one, where the user
+    /// types `/rename` (doc/0027). An unchanged name closes the window and
+    /// runs nothing.
+    fn confirm_rename(&mut self) -> Vec<Effect> {
+        let Some(window) = self.rename.as_mut() else {
+            return Vec::new();
+        };
+        let new = match rename::check_name(&window.name.text(), &window.old_name) {
+            Err(message) => {
+                window.error = Some(message);
+                return Vec::new();
+            }
+            Ok(NameCheck::Unchanged) => {
+                let name = window.old_name.clone();
+                self.rename = None;
+                self.set_message(
+                    format!("{name} keeps its name; nothing to do"),
+                    Severity::Info,
+                );
+                return Vec::new();
+            }
+            Ok(NameCheck::Rename(new)) => new,
+        };
+        let key = window.key.clone();
+        let Some(index) = self
+            .sessions
+            .iter()
+            .position(|m| m.session.key() == Some(key.as_str()))
+        else {
+            let name = window.old_name.clone();
+            self.rename = None;
+            self.set_message(format!("session no longer listed: {name}"), Severity::Info);
+            return Vec::new();
+        };
+        let m = &self.sessions[index];
+        if let Some(refusal) = self.rename_refusal(m) {
+            self.rename = None;
+            self.set_message(refusal, Severity::Info);
+            return Vec::new();
+        }
+        let running = m.session.has_live_process();
+        let Some(window) = self.rename.as_mut() else {
+            return Vec::new();
+        };
+        if running != window.running {
+            // The poll changed the row under the window: say what Enter
+            // does now.
+            window.running = running;
+            window.error = Some(if running {
+                "the session is running now: Enter attaches, and you rename it inside".to_owned()
+            } else {
+                "the session has stopped meanwhile: Enter renames it from tower".to_owned()
+            });
+            return Vec::new();
+        }
+        let old = window.old_name.clone();
+        let id = window.id.clone();
+        self.rename = None;
+        if running {
+            self.rename_attach = Some(RenameIntent {
+                key: key.clone(),
+                id,
+                old,
+                new,
+                account: None,
+                cycle: None,
+            });
+            let mut effects = self.request_action_on(index, Purpose::Attach);
+            if effects.is_empty() && !matches!(self.overlay, Overlay::Picker(_)) {
+                self.rename_attach = None;
+            }
+            effects.extend(self.logs_follow(false));
+            return effects;
+        }
+        match self.sessions[index].owner.clone() {
+            Ownership::Known { account, .. } => {
+                let Some(account) = self.config.account(&account).cloned() else {
+                    self.set_message(
+                        format!("account `{account}` is not configured"),
+                        Severity::Error,
+                    );
+                    return Vec::new();
+                };
+                self.start_rename(&key, account, new)
+            }
+            Ownership::Unknown { config_dir } => {
+                let selected = self
+                    .config
+                    .accounts
+                    .iter()
+                    .position(|a| a.name == self.config.default_account)
+                    .unwrap_or(0);
+                self.overlay = Overlay::Picker(Picker {
+                    key,
+                    id,
+                    name: old,
+                    config_dir,
+                    selected,
+                    purpose: Purpose::Rename,
+                    rename_to: Some(new),
+                });
+                Vec::new()
+            }
+        }
+    }
+
+    /// Starts the rename of the stopped session `key` to `new` with the
+    /// owner `account` (doc/0027): its wake is kept out of activity
+    /// tracking and attention.
+    fn start_rename(&mut self, key: &str, account: Account, new: String) -> Vec<Effect> {
+        let Some(m) = self.sessions.iter().find(|m| m.session.key() == Some(key)) else {
+            self.set_message("session no longer listed", Severity::Info);
+            return Vec::new();
+        };
+        let s = &m.session;
+        let name = s.display_name();
+        if s.has_live_process() {
+            self.set_message(
+                format!("{name} is running now; press e again to rename it inside the session"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let (Some(id), Some(session_id)) = (s.id.clone(), s.session_id.clone()) else {
+            self.set_message(
+                format!("{name} has no sessionId; tower cannot wake it to rename it"),
+                Severity::Info,
+            );
+            return Vec::new();
+        };
+        let request = RenameRequest {
+            id,
+            session_id,
+            old_name: name,
+            new_name: new,
+            cwd: paths::expand_tilde(&s.cwd, &self.home),
+            owner: account,
+        };
+        let job = RenameJob {
+            recorded: self.sidecar.base_owner(&request.session_id),
+            request,
+            after_trust: false,
+        };
+        self.run_rename(job)
+    }
+
+    fn run_rename(&mut self, job: RenameJob) -> Vec<Effect> {
+        let r = &job.request;
+        let head = format!("renaming {} → {}", r.old_name, r.new_name);
+        self.renaming = Some(RenameProgress {
+            name: r.old_name.clone(),
+            id: r.id.clone(),
+            session_id: r.session_id.clone(),
+            text: format!("{head}: waking it under {}…", r.owner.name),
+            head,
+        });
+        self.quiet
+            .insert(r.session_id.clone(), Quiet { done: None });
+        vec![Effect::Rename(job)]
+    }
+
+    /// A step of the running rename has started (doc/0027).
+    pub fn rename_step(&mut self, step: RenameStep) {
+        let Some(r) = self.renaming.as_mut() else {
+            return;
+        };
+        let what = match step {
+            RenameStep::Waking { account } => format!("waking it under {account}"),
+            RenameStep::Confirming => "waiting for the new name in the list".to_owned(),
+            RenameStep::Stopping { account } => format!("stopping it again under {account}"),
+        };
+        r.text = format!("{}: {what}…", r.head);
+    }
+
+    /// Reports a finished rename (doc/0027). Success says `renamed <old> →
+    /// <new>`; the session is stopped again, and the stopped row's tuple
+    /// is taken without a new change time once a listing shows it. A copy
+    /// is reported and left alone (its owner recorded as `started`, as for
+    /// a dispatch); `Workspace not trusted` offers the trust flow. Every
+    /// outcome polls.
+    pub fn rename_finished(
+        &mut self,
+        job: RenameJob,
+        result: Result<Renamed, RenameError>,
+    ) -> Vec<Effect> {
+        self.renaming = None;
+        let r = &job.request;
+        let (old, new, owner) = (&r.old_name, &r.new_name, &r.owner.name);
+        let mut effects = Vec::new();
+        match &result {
+            Ok(_) => {
+                if let Some(q) = self.quiet.get_mut(&r.session_id) {
+                    q.done = Some(Instant::now());
+                }
+            }
+            Err(_) => {
+                self.quiet.remove(&r.session_id);
+            }
+        }
+        match result {
+            Ok(_) => self.set_message(format!("renamed {old} → {new}"), Severity::Info),
+            Err(RenameError::Untrusted { message, .. }) => {
+                let mut message = message;
+                if job.after_trust {
+                    message.push_str(&format!(
+                        "\n(still not trusted after running {} there)",
+                        r.owner.command
+                    ));
+                }
+                self.set_message(
+                    format!("{owner} has not trusted {old}'s folder; Ctrl+T to trust it and retry"),
+                    Severity::Warning,
+                );
+                let overlay = Overlay::RenameUntrusted(Box::new(UntrustedRename {
+                    job: job.clone(),
+                    message,
+                }));
+                self.open_late(Waiting::Overlay(Box::new(overlay)));
+            }
+            Err(RenameError::Copied { new_id, notes }) => {
+                if self.sidecar.record_started(&new_id, owner) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                let note = notes
+                    .first()
+                    .map(|n| format!(" ({})", one_line(n)))
+                    .unwrap_or_default();
+                self.set_message(
+                    format!(
+                        "--resume started a copy {new_id} of {old} under {owner} instead of \
+                        waking {}; the copy got the new name and keeps running, nothing was \
+                        stopped or removed{note}",
+                        r.id
+                    ),
+                    Severity::Warning,
+                );
+            }
+            Err(RenameError::NotConfirmed { last_name, .. }) => {
+                let shown = last_name.map_or_else(String::new, |n| format!(" (it shows {n})"));
+                self.set_message(
+                    format!(
+                        "rename of {old} to {new} not confirmed: the list did not show the new \
+                        name within {}s{shown}; the session was woken and is left running",
+                        rename::RenameTiming::default().confirm_timeout.as_secs()
+                    ),
+                    Severity::Warning,
+                );
+            }
+            Err(RenameError::Stop(err)) => self.set_message(
+                format!(
+                    "renamed {old} → {new}, but stopping it again failed: {}; it is running",
+                    one_line(&err.to_string())
+                ),
+                Severity::Warning,
+            ),
+            Err(RenameError::OwnerChanged { account }) => {
+                self.set_message(
+                    format!(
+                        "another tower recorded {old} under {account} meanwhile; nothing was \
+                        run — check the row and retry"
+                    ),
+                    Severity::Warning,
+                );
+                effects.push(Effect::CheckSidecar);
+            }
+            Err(err) => self.set_message(
+                format!("cannot rename {old}: {}", one_line(&err.to_string())),
+                Severity::Error,
+            ),
+        }
+        effects.push(Effect::PollNow);
+        effects.extend(self.logs_follow(false));
+        effects
+    }
+
+    /// Reports the end of a rename's trust flow (doc/0027): the owner's
+    /// interactive command exited, so the rename is retried once. When it
+    /// could not run at all the trust window shows why.
+    pub fn rename_trust_finished(
+        &mut self,
+        job: RenameJob,
+        result: Result<Option<i32>, String>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(_) => self.run_rename(RenameJob {
+                after_trust: true,
+                ..job
+            }),
+            Err(err) => {
+                let overlay =
+                    Overlay::RenameUntrusted(Box::new(UntrustedRename { job, message: err }));
+                self.open_late(Waiting::Overlay(Box::new(overlay)));
+                Vec::new()
+            }
+        }
+    }
+
+    fn rename_untrusted_key(&mut self, key: KeyEvent, untrusted: UntrustedRename) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => vec![Effect::Quit],
+            KeyCode::Char('t' | 'T') if ctrl => {
+                self.overlay = Overlay::None;
+                vec![Effect::RenameTrust(untrusted.job)]
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') if !ctrl => {
+                self.overlay = Overlay::None;
+                self.set_message(
+                    format!(
+                        "rename cancelled; {} stays stopped as it was",
+                        untrusted.job.request.old_name
+                    ),
+                    Severity::Info,
+                );
+                Vec::new()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2816,6 +3508,18 @@ impl App {
     /// unknown. The fresh listing checked is that of the account whose
     /// command attaches.
     fn finish_attach(&mut self, p: PendingAttach, timed_out: bool) -> Vec<Effect> {
+        let effects = self.finish_attach_now(p, timed_out);
+        // An attach for a rename that does not happen drops the rename
+        // (doc/0027); the account picker carries it on.
+        if !effects.iter().any(|e| matches!(e, Effect::Attach(_)))
+            && !matches!(self.overlay, Overlay::Picker(_))
+        {
+            self.rename_attach = None;
+        }
+        effects
+    }
+
+    fn finish_attach_now(&mut self, p: PendingAttach, timed_out: bool) -> Vec<Effect> {
         let name = p.request.name.clone();
         let asked_for = p.request.account.name.clone();
         if self.window_open() {
@@ -2836,6 +3540,13 @@ impl App {
         if self.handing_off(&m.session) {
             self.set_message(
                 format!("{name} is being handed off to another account; wait until it finishes"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        if self.renaming_row(&m.session) {
+            self.set_message(
+                format!("{name} is being renamed; wait until it finishes"),
                 Severity::Info,
             );
             return Vec::new();
@@ -2901,6 +3612,7 @@ impl App {
                 config_dir,
                 selected,
                 purpose: Purpose::Attach,
+                rename_to: None,
             });
             return Vec::new();
         }
@@ -2943,6 +3655,7 @@ impl App {
         self.popup.is_some()
             || self.dialog.is_some()
             || self.resume.is_some()
+            || self.rename.is_some()
             || self.settings.is_some()
             || self.overlay != Overlay::None
             || self.quit_prompt.is_some()
@@ -3658,6 +4371,13 @@ impl App {
             self.set_message(interactive_hint(&name), Severity::Info);
             return Vec::new();
         }
+        if self.renaming_row(&m.session) {
+            self.set_message(
+                format!("{name} is being renamed; wait until it finishes"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
         if m.session.id.is_none() {
             self.set_message(
                 format!("{name} has no short id; tower cannot hand it off"),
@@ -4175,7 +4895,7 @@ impl App {
         let now_ms = sidecar::now_ms();
         let all = std::mem::take(&mut self.sessions);
         let grouped = groups::group_with(self.grouping, &all, &self.home, |m| {
-            activity::last_change_at(&m.session, &self.sidecar, now_ms)
+            change_at(&self.quiet, &self.sidecar, &m.session, now_ms)
         });
         let order: Vec<(GroupKey, Vec<MergedSession>)> = grouped
             .into_iter()
@@ -4248,6 +4968,24 @@ impl App {
         };
         self.select(index);
     }
+}
+
+/// When the session last changed state (see [`activity::last_change_at`]);
+/// while tower wakes it for a rename, the time recorded before the wake
+/// (doc/0027).
+fn change_at(
+    quiet: &HashMap<String, Quiet>,
+    sidecar: &Sidecar,
+    s: &Session,
+    now_ms: i64,
+) -> Option<i64> {
+    if let Some(key) = s.key()
+        && quiet.contains_key(key)
+        && let Some(ms) = sidecar.sessions.get(key).and_then(|r| r.last_change_ms)
+    {
+        return Some(ms);
+    }
+    activity::last_change_at(s, sidecar, now_ms)
 }
 
 /// The message when a poll learned the owner of a session the picker was

@@ -1,6 +1,7 @@
 # Claude Code CLI behaviour Watchtower relies on
 
-Verified against Claude Code 2.1.302 on 2026-10-18; re-verify after upgrades.
+Verified against Claude Code 2.1.302 on 2026-10-18; facts marked 2.1.303 were verified
+with that version (renaming on 2026-10-19). Re-verify after upgrades.
 
 This page collects the facts about Claude Code that Watchtower's design depends on. Each
 fact is marked:
@@ -34,7 +35,7 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 | Command | Behaviour | Source |
 |---|---|---|
 | `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
-| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. | CLI help, verified (stopped case) |
+| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. On a stopped session, flags beyond `--bg` (e.g. `--name X`) or the short id in place of the full `sessionId` also start a copy instead of waking it; a prompt such as `"/rename X"` does not ([Renaming a session](#renaming-a-session), 2.1.303). | CLI help, verified (stopped case) |
 | `claude --resume` (no argument) | Opens the interactive session picker for the current folder (its worktree; background sessions marked `bg`). In the picker `Ctrl+A` shows every project on the machine, `Ctrl+W` every worktree of the repository, `Esc` leaves. Picking a conversation of a background session that is still running attaches to it (v2.1.285+); picking one of an unrelated project copies a `cd` and resume command to the clipboard instead of resuming. A conversation picked here starts in the permission mode a new session would, except plan mode. Picking an ended conversation opens it in the foreground; backgrounding it then starts a copy under a new session id (see [Attach and detach keys](#attach-and-detach-keys)). Used by `R` ([0019](../0019-resume-past-sessions.md)). | documented ([sessions](https://code.claude.com/docs/en/sessions)); ended case verified (2.1.303) |
 | `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions, including sessions stopped with `claude stop`, which are missing without it; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
@@ -127,9 +128,13 @@ Observed oddities (verified):
 - The short `id` was observed to equal the first 8 characters of `sessionId`. This is
   undocumented; do not rely on it.
 - `startedAt` is reset when a session is woken; it is not the session's creation time.
-- `state: "stopped"` was not seen after `claude stop`. The stopped session disappears from
-  `--json` and appears only in `--json --all`, keeping its last `state`, with no `pid` and no
-  `status`. While every session was alive, `--json` and `--json --all` returned the same rows.
+- `state: "stopped"` was seen once (2.1.303): after `claude stop` of a session that had been
+  woken with `--resume <sessionId> --bg "/rename X"` and had run no model turn since, the row
+  was listed with `state: "stopped"`, no `pid`, no `status`. Sessions stopped after a finished
+  turn kept their last value (below).
+- `state: "stopped"` was not seen after `claude stop` of a session that had finished a
+  turn. The stopped session disappears from `--json` and appears only in `--json --all`,
+  keeping its last `state`, with no `pid` and no `status`. While every session was alive, `--json` and `--json --all` returned the same rows.
   A row without a live process is therefore recognised by the missing `pid` and `status`, not
   by its `state`.
 
@@ -211,6 +216,36 @@ an ended one opened from the `claude --resume` picker, verified with Claude Code
   does not change it ([0016](../0016-do-not-change-claude-code-defaults.md)).
 
 How Watchtower uses it: [0005](../0005-attach-and-detach.md).
+
+## Renaming a session
+
+Verified with Claude Code 2.1.303 on Linux:
+
+- There is no rename command or option: `claude --help`, `claude agents --help`,
+  `claude attach --help` and `claude respawn --help` list none.
+- Inside a session (here an attached background session), `/rename <name>` prints
+  `⎿  Session renamed to: <name>`. It is a local command: no model turn. The `name` in
+  `claude agents --json` changes at once, and the prompt box's top rule shows the new name.
+  A name with spaces (`/rename two words`) is taken whole.
+- The new name survives a stop and a wake: `--resume <sessionId> --bg` afterwards printed
+  `note: woke session <id> with its saved options (--model, --name).` and
+  `backgrounded · <id> · <new name> (idle — send a prompt to start)`.
+- `--resume <sessionId> --bg "/rename X"` on a stopped session wakes it under the running
+  command's account (stderr `note: woke session <id> with its saved options (--name, --model).`,
+  stdout `backgrounded · <id> · <old name>`), runs `/rename` without a model turn, and the
+  listing then shows `name: X`, `state: working`, `status: idle`. The first listing right
+  after the wake may still show the old name. A `claude stop <id>` afterwards stops it; it was
+  then listed with `state: "stopped"`.
+- `--resume <sessionId> --bg --name X` on a stopped session does **not** rename it: stderr
+  `note: background session <id> keeps its own saved options, so the flags you passed started a
+  copy as <copy id>. Without flags, the same command continues <id> itself.`, stdout
+  `backgrounded · <copy id> · X (idle — send a prompt to start)`.
+- `--resume <short id> --bg` starts a copy too: ``note: started a copy of that conversation
+  as <copy id>. To continue a session under its own id, pass its full session id (lowercase,
+  as `claude agents --json` prints it) to --resume.`` A copy started without a name is listed
+  with its short id as its name.
+
+How Watchtower uses it: [0027](../0027-rename-sessions.md).
 
 ## Supervisor lifecycle
 
@@ -329,10 +364,15 @@ Not verified: what a subagent's permission prompt looks like in the listing.
 | `--bg` with an unknown `--model` name | as `--bg` success; the session then turns `failed` | 0 | verified |
 | `--bg` in an untrusted folder | stderr ``Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry.``; empty stdout | 1 | verified |
 | `--resume <sessionId> --bg` without a prompt (stopped session) | stdout `backgrounded · <id> · <name> (idle — send a prompt to start)`; stderr `note: woke session <id> with its saved options (…).` | 0 | verified |
+| `--resume <sessionId> --bg "/rename X"` (stopped session) | stdout `backgrounded · <id> · <old name>`; stderr `note: woke session <id> with its saved options (--name, --model).` | not captured | verified (2.1.303) |
+| `--resume <sessionId> --bg --name X` (stopped session) | stdout `backgrounded · <copy id> · X (idle — …)`; stderr `note: background session <id> keeps its own saved options, so the flags you passed started a copy as <copy id>. …` | not captured | verified (2.1.303) |
+| `/rename <name>` inside a session | `⎿  Session renamed to: <name>` | — | verified (2.1.303) |
 | `logs` on a stopped session | stderr `Couldn't read logs for <id> — job not found — it may have already exited`; empty stdout | 1 | verified |
 | `logs` with another account's command | `job not found` | not captured | verified (output) |
 
 ## Not yet verified
+
+- Whether Claude Code limits the length or characters of a session name set with `/rename`.
 
 - Exact format of the `rm` refusal message and its exit code.
 - What a subagent's permission prompt looks like in `claude agents --json` (see

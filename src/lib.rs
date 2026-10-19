@@ -31,6 +31,8 @@
 //! - [`actions`]: `stop` and `rm` of a session (doc/0009).
 //! - [`handoff`]: continuing a session under another account (milestone 3,
 //!   doc/0004).
+//! - [`rename`]: renaming a stopped session with `/rename` without
+//!   attaching (doc/0027).
 //!
 //! The TUI (milestones 1–5, doc/0014):
 //!
@@ -42,7 +44,7 @@
 //! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
-//! - [`jobs`]: runs dispatch, stop, remove, hand-off and logs on worker
+//! - [`jobs`]: runs dispatch, stop, remove, hand-off, rename and logs on worker
 //!   threads.
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
 //!   also used for the editor and the trust flow.
@@ -78,6 +80,7 @@ pub mod paths;
 pub mod poller;
 pub mod projects;
 pub mod ptysize;
+pub mod rename;
 pub mod settings;
 pub mod sidecar;
 pub mod status;
