@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
 - Status: Accepted · 2026-10-18
-- Related: [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)
+- Related: [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
 
@@ -28,6 +28,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
 | `a` | Continue under another of the user's accounts ([0004](0004-account-hand-off.md)); always confirm, same group only unless `allow_cross_group_handoff = true` ([0018](0018-account-groups-and-handoff-guard.md)) |
 | `o` | Attach to the orchestrator as `Enter` on its row would, starting it if missing ([0010](0010-orchestrator.md)); after a `Workspace not trusted` start a window offers `Ctrl+T` (run the account's command in its folder, then retry once) and `Esc` |
+| `R` | Resume a past conversation into the background: a window picks the account and project folder, then Claude Code's own `--resume` picker runs there ([0019](0019-resume-past-sessions.md)) |
 | `s` | Stop the session (confirm when working or blocked) |
 | `d` | Remove the session (confirm) |
 | `m` | Mark the selected highlighted session as seen: stores its current tuple as acknowledged, so the highlight clears until its next transition ([0007](0007-visual-only-attention.md)); on a row that is not highlighted the status line says so |
@@ -87,6 +88,12 @@ handed off are refused until it reports back.
 | `Ctrl+Enter`, fallback `Alt+Enter` | Dispatch and attach immediately |
 | `Ctrl+T` | After a `Workspace not trusted` error: suspend tower and run the account's interactive command in the project to accept trust, then retry the dispatch ([0008](0008-new-session-dialog.md)) |
 | `Esc` | Cancel (confirm if the task is not empty) |
+
+**Resume window** (`R`, [0019](0019-resume-past-sessions.md)): `Tab` /
+`Shift+Tab` switch between the project and account fields; in the project
+field typed characters filter and `↑` / `↓` choose, in the account field
+`←` / `→` (or `↑` / `↓`) change it; `Enter` runs the picker, `Esc` cancels,
+`Ctrl+C` quits as in the list.
 
 In the project field, typed characters filter the list and `↑` / `↓` choose
 a project; in the model field `↑` / `↓` step through the presets and typing

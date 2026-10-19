@@ -35,6 +35,7 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 |---|---|---|
 | `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
 | `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. | CLI help, verified (stopped case) |
+| `claude --resume` (no argument) | Opens the interactive session picker for the current folder (its worktree; background sessions marked `bg`). In the picker `Ctrl+A` shows every project on the machine, `Ctrl+W` every worktree of the repository, `Esc` leaves. Picking a conversation of a background session that is still running attaches to it (v2.1.285+); picking one of an unrelated project copies a `cd` and resume command to the clipboard instead of resuming. A conversation picked here starts in the permission mode a new session would, except plan mode. Used by `R` ([0019](../0019-resume-past-sessions.md)). | documented ([sessions](https://code.claude.com/docs/en/sessions)) |
 | `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions, including sessions stopped with `claude stop`, which are missing without it; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude logs <id\|name>` | "Recent terminal output" of the session. Part of a name is accepted. **No line-limit flag.** Format below. Fails (exit 1, empty stdout) for a stopped session, since there is no live process. | CLI help, verified |
@@ -165,6 +166,14 @@ Docs: [agent view](https://code.claude.com/docs/en/agent-view).
 | `claude --settings '{"disableAgentView":true}' attach …` | Refused: `'attach' is disabled by the 'disableAgentView' setting.`, exit code 1. |
 | `claude attach <unknown>` | `No job matching '<x>'. Run 'claude agents' to list running sessions.`, exit code 1. |
 
+In a plain interactive session (started in the terminal, not attached), `/bg` (alias of
+`/background`) or `←` on an empty prompt moves the conversation into a background session:
+a fresh process resumes it under the supervisor and it is listed like any dispatched
+session; `←` also opens agent view, where `Esc` leaves. `/bg` in a session with no message
+yet asks for one first; `←` works at once. Documented
+([agent view](https://code.claude.com/docs/en/agent-view)); the docs say nothing about
+`Ctrl+Z` in a plain interactive session.
+
 - There is no keybinding action for detaching; `←` and `Ctrl+Z` are not rebindable. The
   `Agents` keybinding context has only `switchView`, `togglePin`, `find`, `rename`,
   `previousGroup`, `nextGroup` (documented, [keybindings](https://code.claude.com/docs/en/keybindings)).
@@ -293,6 +302,10 @@ Documented ([cross-session messaging](https://code.claude.com/docs/en/cross-sess
 - Whether `ListAgents` / `SendMessage` reach sessions hosted by another account's
   supervisor.
 - Whether background workers refresh an expiring login token themselves.
+- That `←` then `Esc` after `claude --resume` returns with exit code 0 and the backgrounded
+  conversation is listed under the running command's account
+  ([0019](../0019-resume-past-sessions.md)); whether `Ctrl+Z` suspends a plain interactive
+  session.
 - Effect of `leftArrowOpensAgents=false` (deliberately not tested, see
   [0016](../0016-do-not-change-claude-code-defaults.md)).
 - JSON fixtures for the values not yet observed: `state: stopped` and `waitingFor` values

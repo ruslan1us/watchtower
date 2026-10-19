@@ -33,6 +33,24 @@ Options:
   -h, --help     Print this help
 ";
 
+/// The help text: [`USAGE`] followed by the config file this run would use
+/// and whether it exists, when it can be determined (no `HOME`: `None`).
+pub fn help(config: Option<&crate::config::ConfigSource>) -> String {
+    let mut text = USAGE.to_owned();
+    if let Some(source) = config {
+        let state = if source.found {
+            "found"
+        } else {
+            "not found — built-in defaults apply; see config.example.toml"
+        };
+        text.push_str(&format!(
+            "\nConfig in use: {} ({state})\n",
+            crate::attach::printable(&source.shown(None))
+        ));
+    }
+    text
+}
+
 /// Parses the arguments after the program name.
 pub fn parse<I, S>(args: I) -> Result<Command, String>
 where
@@ -90,5 +108,27 @@ mod tests {
         assert!(parse(["status", "--json", "--json"]).is_err());
         assert!(parse(["status", "--yaml"]).is_err());
         assert!(parse(["--json", "status"]).is_err());
+    }
+
+    #[test]
+    fn help_names_the_config_in_use() {
+        use crate::config::ConfigSource;
+        use std::path::PathBuf;
+        assert_eq!(help(None), USAGE);
+        let path = PathBuf::from("/home/user/.config/watchtower/config.toml");
+        let found = help(Some(&ConfigSource {
+            path: path.clone(),
+            found: true,
+        }));
+        assert!(found.starts_with(USAGE));
+        assert!(
+            found.ends_with("Config in use: /home/user/.config/watchtower/config.toml (found)\n"),
+            "{found}"
+        );
+        let missing = help(Some(&ConfigSource { path, found: false }));
+        assert!(
+            missing.contains("config.toml (not found — built-in defaults apply"),
+            "{missing}"
+        );
     }
 }

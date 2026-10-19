@@ -32,8 +32,8 @@ use ratatui::widgets::ListState;
 
 use crate::actions::{RemoveError, StopError};
 use crate::activity;
-use crate::config::{Account, Config};
-use crate::dialog::{Dialog, DialogAction, DialogStatus, Field};
+use crate::config::{Account, Config, ConfigSource};
+use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
@@ -83,6 +83,14 @@ pub enum Effect {
     /// opens it while the projects are scanned on a worker thread, then
     /// [`App::projects_found`] fills the list.
     OpenDialog,
+    /// Scan the projects on a worker thread for a window that is already
+    /// open (the resume window of `R`, doc/0019), then call
+    /// [`App::projects_found`].
+    ScanProjects(ProjectScan),
+    /// Hand the terminal to `<account command> --resume` in a folder, Claude
+    /// Code's picker of past conversations, exactly like an attach, then
+    /// call [`App::resume_finished`] (doc/0019).
+    ResumePast(ResumeRequest),
     /// Run `claude --bg` on a worker thread, then call
     /// [`App::dispatch_finished`] (doc/0008).
     Dispatch(DispatchJob),
@@ -225,6 +233,28 @@ pub struct AttachRequest {
     pub id: String,
     /// Display name, for the "attaching to …" line.
     pub name: String,
+}
+
+/// Claude Code's picker of past conversations to run (doc/0019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeRequest {
+    /// The account whose command runs `--resume`; a conversation resumed
+    /// and backgrounded there runs under it.
+    pub account: Account,
+    /// The project folder the picker starts in.
+    pub folder: PathBuf,
+}
+
+/// How the picker of past conversations ended, reported back by the
+/// runtime (doc/0019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeOutcome {
+    /// Account name whose command was used.
+    pub account: String,
+    /// The folder, as shown to the user.
+    pub folder: String,
+    /// As [`AttachOutcome::result`].
+    pub result: Result<Option<i32>, String>,
 }
 
 /// How an attach ended, reported back by the runtime.
@@ -625,6 +655,9 @@ pub enum Action {
     Handoff,
     /// `o`: attach to the orchestrator, starting it if missing (doc/0010).
     Orchestrator,
+    /// `R`: resume a past conversation into the background through Claude
+    /// Code's own picker (doc/0019).
+    ResumePast,
     /// `m`: mark the highlighted row as seen (doc/0007).
     MarkSeen,
     ToggleLogs,
@@ -659,6 +692,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("/", "filter by name, project, account; Esc clears it"),
     ("p, i", "group by state / project; show / hide interactive"),
     ("n, o", "new session; attach to the orchestrator (start it)"),
+    ("R", "resume a past conversation (claude --resume)"),
     ("a", "continue under another account (hand-off)"),
     ("s, d", "stop (confirm when working or blocked); remove"),
     ("m", "mark the highlighted session as seen"),
@@ -712,6 +746,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('a') => Action::Handoff,
         KeyCode::Char('o') => Action::Orchestrator,
+        KeyCode::Char('R') => Action::ResumePast,
         KeyCode::Char('m') => Action::MarkSeen,
         KeyCode::Char('/') => Action::Filter,
         KeyCode::Char('p') => Action::ToggleGrouping,
@@ -758,6 +793,11 @@ pub struct App {
     filter: Filter,
     overlay: Overlay,
     dialog: Option<Dialog>,
+    /// The resume window of `R` (doc/0019), when open.
+    resume: Option<ResumeWindow>,
+    /// Where the config came from, once the runtime says
+    /// ([`App::set_config_source`]).
+    config_source: Option<ConfigSource>,
     logs: Option<LogsPanel>,
     popup: Option<Popup>,
     /// Windows opened by background results while another was open.
@@ -848,6 +888,8 @@ impl App {
             filter: Filter::default(),
             overlay: Overlay::None,
             dialog: None,
+            resume: None,
+            config_source: None,
             logs: None,
             popup: None,
             waiting: VecDeque::new(),
@@ -889,6 +931,48 @@ impl App {
     /// The orchestrator's folder (doc/0010).
     pub fn orchestrator_dir(&self) -> &std::path::Path {
         &self.orchestrator_dir
+    }
+
+    /// Records where the config came from (doc/0002). A missing file means
+    /// the built-in defaults, which is easy to miss: tower then shows a
+    /// warning in the status line.
+    pub fn set_config_source(&mut self, source: ConfigSource) {
+        if !source.found {
+            self.add_warning(format!(
+                "no config at {}; using defaults — see config.example.toml",
+                source.shown(Some(&self.home))
+            ));
+        }
+        self.config_source = Some(source);
+    }
+
+    /// Where the config came from, when the runtime said.
+    pub fn config_source(&self) -> Option<&ConfigSource> {
+        self.config_source.as_ref()
+    }
+
+    /// The project list's text when no project was found (doc/0008): it
+    /// names the config file and whether it was loaded.
+    pub fn no_projects_text(&self) -> String {
+        match &self.config_source {
+            Some(source) if source.found => format!(
+                "no projects found — set project_roots or extra_projects in {} (loaded)",
+                source.shown(Some(&self.home))
+            ),
+            Some(source) => format!(
+                "no projects found — no config at {} (using defaults); create it with \
+                 project_roots or extra_projects (see config.example.toml)",
+                source.shown(Some(&self.home))
+            ),
+            None => {
+                "no projects found — set project_roots or extra_projects in config.toml".to_owned()
+            }
+        }
+    }
+
+    /// The resume window of `R`, when open (doc/0019).
+    pub fn resume_window(&self) -> Option<&ResumeWindow> {
+        self.resume.as_ref()
     }
 
     /// The new-session dialog, when open.
@@ -1783,6 +1867,9 @@ impl App {
         if self.dialog.is_some() {
             return self.dialog_key(key);
         }
+        if self.resume.is_some() {
+            return self.resume_key(key);
+        }
         match self.overlay.clone() {
             Overlay::Help => self.help_key(key),
             Overlay::Picker(picker) => self.picker_key(key, picker),
@@ -2115,6 +2202,7 @@ impl App {
             Action::Remove => effects = self.request_action(Purpose::Remove),
             Action::Handoff => effects = self.request_handoff(),
             Action::Orchestrator => effects = self.request_orchestrator(),
+            Action::ResumePast => return self.open_resume(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
@@ -2206,15 +2294,7 @@ impl App {
         let name = m.session.display_name();
         let verb = purpose.verb();
         if m.session.is_interactive() {
-            let text = match purpose {
-                Purpose::Attach => format!(
-                    "{name} is an interactive session in another terminal; it cannot be attached"
-                ),
-                _ => format!(
-                    "{name} is an interactive session in another terminal; tower cannot {verb} it"
-                ),
-            };
-            self.set_message(text, Severity::Info);
+            self.set_message(interactive_hint(&name), Severity::Info);
             return Vec::new();
         }
         let Some(id) = m.session.id.clone() else {
@@ -2688,6 +2768,7 @@ impl App {
     fn window_open(&self) -> bool {
         self.popup.is_some()
             || self.dialog.is_some()
+            || self.resume.is_some()
             || self.overlay != Overlay::None
             || self.quit_prompt.is_some()
     }
@@ -2851,11 +2932,16 @@ impl App {
     /// Opens the new-session dialog with an empty project list ("scanning
     /// projects…") and returns the scan to run on a worker thread.
     pub fn begin_project_scan(&mut self) -> ProjectScan {
-        self.scan += 1;
         self.open_dialog(ProjectList::default());
         if let Some(d) = self.dialog.as_mut() {
             d.scanning = true;
         }
+        self.next_scan()
+    }
+
+    /// A new project scan; only the latest one's result is used.
+    fn next_scan(&mut self) -> ProjectScan {
+        self.scan += 1;
         ProjectScan {
             id: self.scan,
             roots: self.config.project_roots.clone(),
@@ -2865,8 +2951,9 @@ impl App {
         }
     }
 
-    /// Fills the dialog's list with the result of scan `id`; a result for
-    /// a dialog that was closed meanwhile is dropped.
+    /// Fills the list of the dialog or the resume window with the result
+    /// of scan `id`; a result for a window that was closed meanwhile is
+    /// dropped.
     pub fn projects_found(&mut self, id: u64, list: ProjectList) {
         if id != self.scan {
             return;
@@ -2875,7 +2962,83 @@ impl App {
             && d.scanning
         {
             d.set_projects(list);
+        } else if let Some(r) = self.resume.as_mut()
+            && r.scanning
+        {
+            r.set_projects(list);
         }
+    }
+
+    // ---- resuming a past conversation (doc/0019) --------------------------
+
+    /// `R`: opens the resume window. The account is the selected row's
+    /// owner when it is known, else `default_account`; the folder is the
+    /// selected row's `cwd` (or the project containing it) once the project
+    /// scan arrives, else the most recently used project.
+    fn open_resume(&mut self) -> Vec<Effect> {
+        let (account, preferred) = match self.selected_session() {
+            Some(m) => (
+                m.owner
+                    .account()
+                    .map_or_else(|| self.config.default_account.clone(), str::to_owned),
+                (!m.session.cwd.is_empty())
+                    .then(|| paths::expand_tilde(&m.session.cwd, &self.home)),
+            ),
+            None => (self.config.default_account.clone(), None),
+        };
+        self.resume = Some(ResumeWindow::new(&self.config, &account, preferred));
+        vec![Effect::ScanProjects(self.next_scan())]
+    }
+
+    fn resume_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(window) = self.resume.as_mut() else {
+            return Vec::new();
+        };
+        match window.handle_key(key) {
+            ResumeAction::None => Vec::new(),
+            ResumeAction::Quit => vec![Effect::Quit],
+            ResumeAction::Cancel => {
+                self.resume = None;
+                Vec::new()
+            }
+            ResumeAction::Confirm => {
+                let account = window.selected_account(&self.config.accounts).cloned();
+                let folder = window.selected_project().map(|p| p.path.clone());
+                let (Some(account), Some(folder)) = (account, folder) else {
+                    return Vec::new();
+                };
+                self.resume = None;
+                vec![Effect::ResumePast(ResumeRequest { account, folder })]
+            }
+        }
+    }
+
+    /// Reports how the picker of past conversations ended and polls at
+    /// once: a conversation the user moved to the background shows up as a
+    /// normal background row, its owner detected through `/proc` as usual
+    /// (doc/0019).
+    pub fn resume_finished(&mut self, outcome: ResumeOutcome) -> Vec<Effect> {
+        let who = format!(
+            "claude --resume in {} ({})",
+            outcome.folder, outcome.account
+        );
+        match outcome.result {
+            Ok(Some(0)) => self.set_message(
+                format!(
+                    "back from {who}; a conversation moved to the background appears in the list"
+                ),
+                Severity::Info,
+            ),
+            Ok(Some(code)) => {
+                self.set_message(format!("{who} exited with code {code}"), Severity::Error)
+            }
+            Ok(None) => self.set_message(format!("{who} was ended by a signal"), Severity::Error),
+            Err(err) => self.set_message(
+                format!("cannot run {who}: {}", one_line(&err)),
+                Severity::Error,
+            ),
+        }
+        vec![Effect::PollNow]
     }
 
     /// Working and blocked sessions ask first; others stop directly
@@ -2940,13 +3103,7 @@ impl App {
         };
         let name = m.session.display_name();
         if m.session.is_interactive() {
-            self.set_message(
-                format!(
-                    "{name} is an interactive session in another terminal; it cannot be \
-                     continued under another account"
-                ),
-                Severity::Info,
-            );
+            self.set_message(interactive_hint(&name), Severity::Info);
             return Vec::new();
         }
         if m.session.id.is_none() {
@@ -3532,6 +3689,16 @@ fn learned_text(name: &str, known: &str, picked: &str) -> String {
     } else {
         format!("{name} turned out to run under {known}; using {known} instead of {picked}")
     }
+}
+
+/// The message for a row action (`Enter`, `a`, `s`, `d`) on an interactive
+/// row (doc/0005): it runs in another terminal, and moving it to the
+/// background there makes it a row tower can manage.
+pub fn interactive_hint(name: &str) -> String {
+    format!(
+        "{name} runs in another terminal — press ← on an empty prompt there (or /bg) to move \
+         it into the background; then it can be managed here"
+    )
 }
 
 /// Whether `stop` asks first: rows that are working or blocked, i.e. in the

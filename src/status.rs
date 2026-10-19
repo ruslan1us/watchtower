@@ -11,7 +11,8 @@
 //! running TUI is never raced: a missing or unparsable file is used as an
 //! empty one, with a warning on stderr.
 //!
-//! The JSON (doc/0010) is an object with `sessions` and `errors`. A failed
+//! The JSON (doc/0010) is an object with `config` (the config file used and
+//! whether it was found), `sessions` and `errors`. A failed
 //! account poll goes to `errors` and does not fail the command:
 //! [`exit_code`] is 0 when at least one account was listed, 1 when none
 //! was, and `main` uses 2 for a config error.
@@ -23,7 +24,7 @@ use serde::Serialize;
 use crate::activity;
 use crate::attach::printable;
 use crate::cli::CliRunner;
-use crate::config::{Account, Config};
+use crate::config::{Account, Config, ConfigSource};
 use crate::groups::{self, Group};
 use crate::listing::{Kind, Listing, Session, State, Status, WaitingFor};
 use crate::merge::{AccountListing, EnvironReader, Resolver};
@@ -71,9 +72,28 @@ pub struct AccountError {
     pub error: String,
 }
 
+/// The config file this run used (doc/0002, doc/0010): its path and whether
+/// it was found; `found: false` means the built-in defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConfigInfo {
+    pub path: String,
+    pub found: bool,
+}
+
+impl ConfigInfo {
+    /// The JSON form of `source`.
+    pub fn of(source: &ConfigSource) -> ConfigInfo {
+        ConfigInfo {
+            path: source.path.to_string_lossy().into_owned(),
+            found: source.found,
+        }
+    }
+}
+
 /// The whole `tower status --json` output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
+    pub config: ConfigInfo,
     pub sessions: Vec<Row>,
     pub errors: Vec<AccountError>,
 }
@@ -129,6 +149,7 @@ pub fn poll_all(accounts: &[Account], runner: &CliRunner) -> Vec<Result<Listing,
 /// skipped.
 pub fn build(
     config: &Config,
+    source: &ConfigSource,
     home: &Path,
     results: Vec<Result<Listing, String>>,
     sidecar: &Sidecar,
@@ -189,7 +210,15 @@ pub fn build(
             }
         })
         .collect();
-    (Report { sessions, errors }, warnings)
+    let config = ConfigInfo::of(source);
+    (
+        Report {
+            config,
+            sessions,
+            errors,
+        },
+        warnings,
+    )
 }
 
 /// Reads the sidecar without changing anything on disk: a missing file is
@@ -235,8 +264,10 @@ pub fn to_json(report: &Report) -> String {
     text
 }
 
-/// A short table for people: name, detail, account and folder, every cell
-/// made printable (doc/0007). Errors are not included (they go to stderr).
+/// A short table for people: first a `config: <path>` line (with `(not
+/// found — using defaults)` when the file is missing), then name, detail,
+/// account and folder, every cell made printable (doc/0007). Errors are not
+/// included (they go to stderr).
 pub fn to_table(report: &Report, home: &Path) -> String {
     use unicode_width::UnicodeWidthStr;
     let mut rows: Vec<[String; 4]> = vec![[
@@ -263,7 +294,12 @@ pub fn to_table(report: &Report, home: &Path) -> String {
     let widths: Vec<usize> = (0..3)
         .map(|i| rows.iter().map(|r| r[i].width()).max().unwrap_or(0))
         .collect();
-    let mut out = String::new();
+    let source = ConfigSource {
+        path: report.config.path.clone().into(),
+        found: report.config.found,
+    };
+    let mut out = printable(&source.line(None));
+    out.push('\n');
     for r in &rows {
         for (i, w) in widths.iter().enumerate() {
             out.push_str(&r[i]);

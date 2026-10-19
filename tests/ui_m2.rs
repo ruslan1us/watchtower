@@ -195,6 +195,49 @@ fn dialog_without_projects_explains_the_config() {
 }
 
 #[test]
+fn dialog_without_projects_names_the_config_file() {
+    use watchtower::config::ConfigSource;
+    let file = std::path::PathBuf::from("/home/user/.config/watchtower/config.toml");
+    let mut app = app_single();
+    app.set_config_source(ConfigSource {
+        path: file.clone(),
+        found: true,
+    });
+    app.open_dialog(watchtower::projects::ProjectList::default());
+    let all = text(&render(&mut app, 120, 40));
+    // The note wraps inside the dialog rather than being cut off.
+    assert!(
+        all.contains("no projects found — set project_roots or extra_projects in"),
+        "{all}"
+    );
+    assert!(
+        all.contains("~/.config/watchtower/config.toml (loaded)"),
+        "{all}"
+    );
+    // Found: no warning in the status line.
+    assert!(!all.contains("no config at"), "{all}");
+
+    let mut app = app_single();
+    app.set_config_source(ConfigSource {
+        path: file,
+        found: false,
+    });
+    assert!(
+        common::status_text(&app).contains(
+            "no config at ~/.config/watchtower/config.toml; using defaults — see \
+             config.example.toml"
+        ),
+        "{}",
+        common::status_text(&app)
+    );
+    app.open_dialog(watchtower::projects::ProjectList::default());
+    let all = text(&render(&mut app, 80, 40));
+    assert!(all.contains("no projects found — no config at"), "{all}");
+    assert!(all.contains("(using defaults); create it with"), "{all}");
+    assert!(all.contains("(see config.example.toml)"), "{all}");
+}
+
+#[test]
 fn dialog_survives_small_terminals() {
     let mut app = app_single();
     let _root = open_dialog(&mut app);

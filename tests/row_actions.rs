@@ -121,10 +121,12 @@ fn interactive_rows_are_never_stopped_or_removed() {
     let mut app = app_single();
     app.apply_poll(poll("main", "mixed-states.json"));
     select(&mut app, "demo-app-3f");
+    let hint = "demo-app-3f runs in another terminal — press ← on an empty prompt there (or /bg) \
+                to move it into the background; then it can be managed here";
     assert!(app.handle_key(ch('s')).is_empty());
-    assert!(status_text(&app).contains("tower cannot stop it"));
+    assert!(status_text(&app).contains(hint), "{}", status_text(&app));
     assert!(app.handle_key(ch('d')).is_empty());
-    assert!(status_text(&app).contains("tower cannot remove it"));
+    assert!(status_text(&app).contains(hint), "{}", status_text(&app));
     assert_eq!(app.overlay(), &Overlay::None);
 }
 

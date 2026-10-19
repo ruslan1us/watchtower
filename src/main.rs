@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use watchtower::args::{self, Command};
 use watchtower::attach::printable;
-use watchtower::config::Config;
+use watchtower::config::{Config, ConfigSource};
 use watchtower::paths::Dirs;
 use watchtower::sidecar::Sidecar;
 
@@ -19,12 +19,12 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Command::Help) => {
-            print!("{}", args::USAGE);
+            print!("{}", help_text());
             return ExitCode::SUCCESS;
         }
         Err(err) => {
             eprintln!("tower: {}", shown(&err));
-            eprint!("{}", args::USAGE);
+            eprint!("{}", help_text());
             return ExitCode::from(2);
         }
     }
@@ -33,8 +33,8 @@ fn main() -> ExitCode {
         eprintln!("tower: cannot determine the home directory (HOME is not set)");
         return ExitCode::FAILURE;
     };
-    let config = match Config::load(&dirs) {
-        Ok(config) => config,
+    let (config, source) = match Config::load_with_source(&dirs) {
+        Ok(loaded) => loaded,
         Err(err) => {
             eprintln!("tower: {}", shown(&err));
             eprintln!(
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
         }
     };
     let loaded = Sidecar::load(&dirs.state_file());
-    match watchtower::tui::run(config, dirs, loaded) {
+    match watchtower::tui::run(config, source, dirs, loaded) {
         Ok(exit) => ExitCode::from(exit.status()),
         Err(err) => {
             eprintln!("tower: {}", shown(&err));
@@ -65,8 +65,8 @@ fn status(json: bool) -> ExitCode {
         eprintln!("tower: cannot determine the home directory (HOME is not set)");
         return ExitCode::from(status::EXIT_CONFIG);
     };
-    let config = match Config::load(&dirs) {
-        Ok(config) => config,
+    let (config, source) = match Config::load_with_source(&dirs) {
+        Ok(loaded) => loaded,
         Err(err) => {
             eprintln!("tower: {}", shown(&err));
             return ExitCode::from(status::EXIT_CONFIG);
@@ -83,6 +83,7 @@ fn status(json: bool) -> ExitCode {
     let results = status::poll_all(&config.accounts, &watchtower::cli::CliRunner::new());
     let (report, warnings) = status::build(
         &config,
+        &source,
         &dirs.home,
         results,
         &sidecar,
@@ -112,6 +113,12 @@ fn status(json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::from(status::exit_code(&config, &report))
+}
+
+/// The help text with the config file this run would use (doc/0002).
+fn help_text() -> String {
+    let source = Dirs::from_env().map(|dirs| ConfigSource::probe(&dirs.config_file()));
+    args::help(source.as_ref())
 }
 
 /// An error message safe for the terminal: each line without control

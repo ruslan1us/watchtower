@@ -134,6 +134,13 @@ pub fn attach_command(account: &Account, id: &str) -> CommandLine {
     CommandLine::for_account(account, ["attach", id])
 }
 
+/// `<account command> --resume` in `dir`, with no session id and no other
+/// argument: Claude Code's own interactive picker of past conversations
+/// (doc/0019). Run in the foreground like an attach.
+pub fn resume_picker_command(account: &Account, dir: &Path) -> CommandLine {
+    CommandLine::for_account(account, ["--resume"]).with_cwd(dir)
+}
+
 /// The arguments of the listing call: `agents --json --all` (doc/0001).
 pub const LIST_ARGS: [&str; 3] = ["agents", "--json", "--all"];
 

@@ -1,5 +1,6 @@
-//! Rendering of the new-session dialog (doc/0008). Pure drawing from the
-//! [`Dialog`] state.
+//! Rendering of the new-session dialog (doc/0008) and of the resume window
+//! of `R` (doc/0019). Pure drawing from the [`Dialog`] and [`ResumeWindow`]
+//! state.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -9,7 +10,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
-use crate::dialog::{Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput};
+use crate::dialog::{
+    Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, ResumeField, ResumeWindow,
+};
 use crate::dispatch::MODEL_CHOICES;
 
 /// Width of the label column (marker + label + gap).
@@ -237,6 +240,19 @@ pub fn attach_key(app: &App) -> &'static str {
     }
 }
 
+/// The project list's note when nothing is listed: still scanning, no
+/// project at all (naming the config file and whether it was loaded), or
+/// none matching the filter.
+fn empty_project_text(app: &App, scanning: bool, total: usize) -> String {
+    if scanning {
+        "scanning projects…".to_owned()
+    } else if total == 0 {
+        app.no_projects_text()
+    } else {
+        "no project matches the filter".to_owned()
+    }
+}
+
 /// Draws the dialog centred in `area`.
 pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
     let w = if area.width > 104 {
@@ -332,9 +348,18 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
     // Fixed rows: project label, blank, task label, blank, five fields, blank.
     let fixed = 10 + messages.len() + footer.len();
     let filtered = dialog.filtered();
+    // Without a project to list, a note (wrapped) takes the list's rows.
+    let empty_rows: Vec<String> = if filtered.is_empty() {
+        wrap(
+            &empty_project_text(app, dialog.scanning, dialog.projects.len()),
+            value_w,
+        )
+    } else {
+        Vec::new()
+    };
+    let list_len = filtered.len().max(empty_rows.len());
     let (task_wanted, _) = task_rows(dialog, value_w);
-    let wanted =
-        fixed + filtered.len().clamp(1, PROJECT_ROWS) + task_wanted.len().clamp(3, TASK_ROWS);
+    let wanted = fixed + list_len.clamp(1, PROJECT_ROWS) + task_wanted.len().clamp(3, TASK_ROWS);
     let h = (wanted as u16 + 2)
         .min(area.height.saturating_sub(2))
         .max(1);
@@ -350,10 +375,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         return;
     }
     let available = usize::from(inner.height).saturating_sub(fixed);
-    let project_rows = filtered
-        .len()
-        .clamp(1, PROJECT_ROWS)
-        .min((available / 2).max(1));
+    let project_rows = list_len.clamp(1, PROJECT_ROWS).min((available / 2).max(1));
     let task_h = available.saturating_sub(project_rows).clamp(1, TASK_ROWS);
 
     let mut p = Painter {
@@ -381,14 +403,12 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
     }
     p.line(Line::from(spans));
     if filtered.is_empty() {
-        let text = if dialog.scanning {
-            "scanning projects…"
-        } else if dialog.projects.is_empty() {
-            "no projects found — set project_roots or extra_projects in config.toml"
-        } else {
-            "no project matches the filter"
-        };
-        p.line(Line::styled(format!("{:w$}{text}", "", w = 10), dim()));
+        for row in empty_rows.iter().take(project_rows) {
+            p.line(Line::styled(
+                format!("{:w$}{row}", "", w = usize::from(LABEL_W)),
+                dim(),
+            ));
+        }
     } else {
         let sel = dialog.project_index.min(filtered.len() - 1);
         let start = if sel < project_rows {
@@ -498,6 +518,179 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         &dialog.mode,
         focused == Field::Mode,
         "permission mode",
+    ));
+    p.line(Line::from(spans));
+    p.line(Line::raw(""));
+
+    for line in messages {
+        p.line(line);
+    }
+    for row in footer {
+        p.line(Line::styled(row, dim()));
+    }
+
+    if let Some(pos) = cursor
+        && pos.x < inner.x + inner.width
+        && pos.y < inner.y + inner.height
+    {
+        p.frame.set_cursor_position(pos);
+    }
+}
+
+/// At most this many project rows are listed in the resume window.
+const RESUME_PROJECT_ROWS: usize = 8;
+
+/// The note of the resume window: what `Enter` runs (`command` is the
+/// chosen account's command) and how to come back with the conversation in
+/// the background (doc/0019).
+pub fn resume_note(command: &str) -> String {
+    format!(
+        "Enter runs `{command} --resume` in the folder: Claude Code's own picker of past \
+         conversations (Ctrl+A there shows all projects). Then press ← on an empty prompt (or \
+         /bg) and Esc to return; the conversation keeps running in the background and appears \
+         in tower."
+    )
+}
+
+/// Draws the resume window of `R` centred in `area` (doc/0019): the
+/// project list with its filter, the account, a note and the keys.
+pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Rect) {
+    let w = if area.width > 104 {
+        100
+    } else {
+        area.width.saturating_sub(2).max(1)
+    };
+    let color = app.color;
+    let width = usize::from(w.saturating_sub(2)).max(1);
+    let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
+    // The resume window reuses the dialog's labels for its two fields.
+    let focused = match window.field {
+        ResumeField::Project => Field::Project,
+        ResumeField::Account => Field::Account,
+    };
+
+    let filtered = window.filtered();
+    let empty_rows: Vec<String> = if filtered.is_empty() {
+        wrap(
+            &empty_project_text(app, window.scanning, window.projects.len()),
+            value_w,
+        )
+    } else {
+        Vec::new()
+    };
+    let list_len = filtered.len().max(empty_rows.len());
+    let mut messages: Vec<Line> = Vec::new();
+    if let Some(first) = window.project_warnings.first() {
+        for row in wrap(first, width) {
+            messages.push(Line::styled(row, dim()));
+        }
+    }
+    let command = window
+        .selected_account(&app.config().accounts)
+        .map(|a| a.command.clone())
+        .unwrap_or_default();
+    for row in wrap(&resume_note(&command), width) {
+        messages.push(Line::styled(row, dim()));
+    }
+    if let Some(text) = &window.error {
+        let err = if color {
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().add_modifier(Modifier::BOLD)
+        };
+        for row in wrap(text, width) {
+            messages.push(Line::styled(row, err));
+        }
+    }
+    let footer = wrap(
+        "Tab/Shift+Tab field · ↑↓ choose · type to filter · Enter open the picker · Esc cancel",
+        width,
+    );
+
+    // Fixed rows: project label, blank, account, blank.
+    let fixed = 4 + messages.len() + footer.len();
+    let wanted = fixed + list_len.clamp(1, RESUME_PROJECT_ROWS);
+    let h = (wanted as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(1);
+    let rect = super::centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(" Resume a past conversation ")
+        .title_bottom(Line::styled(" Esc cancel ", dim()));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let available = usize::from(inner.height).saturating_sub(fixed);
+    let project_rows = list_len.clamp(1, RESUME_PROJECT_ROWS).min(available.max(1));
+
+    let mut p = Painter {
+        frame,
+        area: inner,
+        y: inner.y,
+    };
+    let mut cursor: Option<Position> = None;
+    let value_x = inner.x + LABEL_W;
+
+    let (shown, cx) = input_window(&window.filter, value_w.saturating_sub(16));
+    let mut spans = vec![label(Field::Project, focused, color)];
+    if window.filter.is_empty() && focused == Field::Project {
+        spans.push(Span::styled("type to filter", dim()));
+    } else {
+        spans.push(Span::raw(shown));
+    }
+    spans.push(Span::styled(
+        format!("   {} of {}", filtered.len(), window.projects.len()),
+        dim(),
+    ));
+    if focused == Field::Project && p.has_room() {
+        cursor = Some(Position::new(value_x + cx as u16, p.y));
+    }
+    p.line(Line::from(spans));
+    if filtered.is_empty() {
+        for row in empty_rows.iter().take(project_rows) {
+            p.line(Line::styled(
+                format!("{:w$}{row}", "", w = usize::from(LABEL_W)),
+                dim(),
+            ));
+        }
+    } else {
+        let sel = window.project_index.min(filtered.len() - 1);
+        let start = if sel < project_rows {
+            0
+        } else {
+            sel + 1 - project_rows
+        };
+        for (i, project) in filtered.iter().enumerate().skip(start).take(project_rows) {
+            let selected = i == sel;
+            let mut style = Style::new();
+            if selected {
+                style = style.add_modifier(if focused == Field::Project {
+                    Modifier::REVERSED
+                } else {
+                    Modifier::BOLD
+                });
+            }
+            let text = super::fit(
+                &format!("{} {}", if selected { "▶" } else { " " }, project.display),
+                value_w,
+            );
+            p.line(Line::from(vec![
+                Span::raw(" ".repeat(usize::from(LABEL_W))),
+                Span::styled(text, style),
+            ]));
+        }
+    }
+    p.line(Line::raw(""));
+
+    let mut spans = vec![label(Field::Account, focused, color)];
+    spans.extend(choice_spans(
+        &window.account,
+        focused == Field::Account,
+        &command,
     ));
     p.line(Line::from(spans));
     p.line(Line::raw(""));

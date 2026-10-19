@@ -5,6 +5,9 @@
 //! and permission mode. Nothing here does I/O; [`Dialog::handle_key`]
 //! returns a [`DialogAction`] and the app turns it into effects
 //! ([`crate::app`]).
+//!
+//! [`ResumeWindow`] is the small window of `R` (doc/0019): a project folder
+//! and an account, built from the same widgets.
 
 use std::path::PathBuf;
 
@@ -736,5 +739,174 @@ impl Dialog {
             self.status = DialogStatus::Editing;
             self.error = None;
         }
+    }
+}
+
+/// The fields of the resume window (doc/0019), in `Tab` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeField {
+    Project,
+    Account,
+}
+
+/// What a key in the resume window asks the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeAction {
+    /// Nothing beyond the window's own state change.
+    None,
+    /// Close the window.
+    Cancel,
+    /// Quit tower (`Ctrl+C`).
+    Quit,
+    /// Run the picker with the chosen account in the chosen folder.
+    Confirm,
+}
+
+/// The small window of `R` (doc/0019): an account and a project folder in
+/// which tower runs `<account command> --resume`, Claude Code's own picker
+/// of past conversations. It reuses the new-session dialog's widgets: the
+/// type-to-filter project list and the account choice.
+#[derive(Debug, Clone)]
+pub struct ResumeWindow {
+    /// The focused field.
+    pub field: ResumeField,
+    /// Candidate projects, in display order (most recently used first).
+    pub projects: Vec<Project>,
+    /// Non-fatal problems from the project scan.
+    pub project_warnings: Vec<String>,
+    /// The project scan still runs on a worker thread.
+    pub scanning: bool,
+    /// The project filter text.
+    pub filter: LineInput,
+    /// Index into [`ResumeWindow::filtered`] of the chosen project.
+    pub project_index: usize,
+    /// Account names; index matches the configured accounts.
+    pub account: Choice,
+    /// The folder to preselect once the scan arrives: the selected row's
+    /// `cwd`, `~` expanded.
+    pub preferred: Option<PathBuf>,
+    /// Why `Enter` did nothing, shown until the next key.
+    pub error: Option<String>,
+}
+
+impl ResumeWindow {
+    /// A window with `account` preselected (a configured account name;
+    /// otherwise the default account) and an empty project list until the
+    /// scan reports back ([`ResumeWindow::set_projects`]).
+    pub fn new(config: &Config, account: &str, preferred: Option<PathBuf>) -> ResumeWindow {
+        let names: Vec<String> = config.accounts.iter().map(|a| a.name.clone()).collect();
+        let account = if names.iter().any(|n| n == account) {
+            account
+        } else {
+            config.default_account.as_str()
+        };
+        ResumeWindow {
+            field: ResumeField::Project,
+            projects: Vec::new(),
+            project_warnings: Vec::new(),
+            scanning: true,
+            filter: LineInput::default(),
+            project_index: 0,
+            account: Choice::new(names, account),
+            preferred,
+            error: None,
+        }
+    }
+
+    /// Takes the result of the project scan and selects the preferred
+    /// folder: the project it is, or the one that contains it (a background
+    /// session's worktree lies inside its project), else the first, most
+    /// recently used, project.
+    pub fn set_projects(&mut self, projects: ProjectList) {
+        self.projects = projects.projects;
+        self.project_warnings = projects.warnings;
+        self.scanning = false;
+        let preferred = self.preferred.as_deref().and_then(|cwd| {
+            self.filtered()
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| cwd.starts_with(&p.path) || cwd.starts_with(&p.canonical))
+                .max_by_key(|(_, p)| p.path.components().count())
+                .map(|(i, _)| i)
+        });
+        let n = self.filtered().len();
+        self.project_index = preferred
+            .unwrap_or(self.project_index)
+            .min(n.saturating_sub(1));
+    }
+
+    /// The projects matching the filter, in display order.
+    pub fn filtered(&self) -> Vec<&Project> {
+        projects::filter(&self.projects, &self.filter.text())
+    }
+
+    /// The chosen project, if any matches the filter.
+    pub fn selected_project(&self) -> Option<&Project> {
+        self.filtered().get(self.project_index).copied()
+    }
+
+    /// The chosen account among `accounts` (the configured accounts).
+    pub fn selected_account<'a>(&self, accounts: &'a [Account]) -> Option<&'a Account> {
+        accounts.get(self.account.index())
+    }
+
+    /// Handles one key: `Tab` / `Shift+Tab` switch fields, `Enter`
+    /// confirms, `Esc` cancels, `Ctrl+C` quits; in the project field
+    /// `↑` / `↓` choose and typing filters, in the account field `←` / `→`
+    /// (or `↑` / `↓`) change the account.
+    pub fn handle_key(&mut self, key: KeyEvent) -> ResumeAction {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
+            return ResumeAction::Quit;
+        }
+        self.error = None;
+        match key.code {
+            KeyCode::Esc => return ResumeAction::Cancel,
+            KeyCode::Enter => {
+                if self.selected_project().is_some() {
+                    return ResumeAction::Confirm;
+                }
+                self.error = Some(if self.scanning {
+                    "still scanning projects…".to_owned()
+                } else {
+                    "choose a project folder first".to_owned()
+                });
+                return ResumeAction::None;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.field = match self.field {
+                    ResumeField::Project => ResumeField::Account,
+                    ResumeField::Account => ResumeField::Project,
+                };
+                return ResumeAction::None;
+            }
+            _ => {}
+        }
+        match self.field {
+            ResumeField::Account => {
+                self.account.key(&key);
+            }
+            ResumeField::Project => {
+                let n = self.filtered().len();
+                match key.code {
+                    KeyCode::Up => self.project_index = self.project_index.saturating_sub(1),
+                    KeyCode::Down => {
+                        self.project_index = (self.project_index + 1).min(n.saturating_sub(1))
+                    }
+                    KeyCode::PageUp => self.project_index = self.project_index.saturating_sub(5),
+                    KeyCode::PageDown => {
+                        self.project_index = (self.project_index + 5).min(n.saturating_sub(1))
+                    }
+                    _ => {
+                        if self.filter.key(&key) == KeyUse::Changed {
+                            self.project_index = 0;
+                        }
+                    }
+                }
+                let n = self.filtered().len();
+                self.project_index = self.project_index.min(n.saturating_sub(1));
+            }
+        }
+        ResumeAction::None
     }
 }

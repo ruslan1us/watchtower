@@ -62,7 +62,10 @@ it is still in cooked mode during a slow wake), tower sends `SIGCONT` to the
 child's whole process group instead of hanging on a stopped child. `Ctrl+Z`
 stops every process in the group, so an account command that is a wrapper
 script (one that does not `exec`) would otherwise wait forever on the real
-`claude` behind it. Tower does no job control.
+`claude` behind it. Tower does no job control. A child that stops again right
+after being resumed is resumed at most once every 100 ms, so tower never
+spins on it and never leaves it stopped (this matters for a plain interactive
+`claude`, [0019](0019-resume-past-sessions.md)).
 The poller may keep running so that transitions of other sessions are recorded
 and their highlights are visible on return
 ([0007](0007-visual-only-attention.md)). Every background command tower runs
@@ -100,7 +103,10 @@ and needs no handling. Inside tower `Ctrl+Z` is a no-op ([0011](0011-keybindings
 **Cases tower handles itself:**
 
 - Interactive sessions (`kind: interactive`, no `id`) cannot be attached; tower
-  shows a status-line message instead of running anything.
+  runs nothing and the status line says how to bring one in, for `Enter`,
+  `a`, `s` and `d` alike: "<name> runs in another terminal — press ← on an
+  empty prompt there (or /bg) to move it into the background; then it can be
+  managed here".
 - Unknown owning account (account `?`): tower asks which account to use, stores
   the answer and then attaches ([0003](0003-accounts-and-session-ownership.md)).
   The answer goes through the refresh below and is stored only if the
@@ -153,8 +159,9 @@ main thread inside crossterm's input code on a hung-up terminal twice, a
 second apart.
 
 The same procedure is used by dispatch-and-attach in the new-session dialog
-([0008](0008-new-session-dialog.md)) and by the orchestrator key
-([0010](0010-orchestrator.md)).
+([0008](0008-new-session-dialog.md)), by the orchestrator key
+([0010](0010-orchestrator.md)) and by `R`, which runs `<account command>
+--resume` ([0019](0019-resume-past-sessions.md)).
 
 ## Consequences
 

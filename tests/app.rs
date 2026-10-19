@@ -215,7 +215,10 @@ fn interactive_row_is_not_attached() {
     assert_eq!(selected(&app), "demo-app-3f");
     let effects = press(&mut app, key(KeyCode::Enter));
     assert!(effects.is_empty(), "{effects:?}");
-    assert!(message(&app).contains("cannot be attached"));
+    assert!(message(&app).contains(
+        "demo-app-3f runs in another terminal — press ← on an empty prompt there (or /bg) to \
+         move it into the background; then it can be managed here"
+    ));
     assert_eq!(app.overlay(), &Overlay::None);
 }
 

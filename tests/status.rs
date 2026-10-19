@@ -153,8 +153,13 @@ fn schema_fields_and_types() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let report = parse(&out);
     let top: Vec<&String> = report.as_object().unwrap().keys().collect();
-    assert_eq!(top, ["errors", "sessions"]);
+    assert_eq!(top, ["config", "errors", "sessions"]);
     assert_eq!(report["errors"], json!([]));
+    let config_file = setup.config_dir().join("config.toml");
+    assert_eq!(
+        report["config"],
+        json!({ "path": config_file.to_str().unwrap(), "found": true })
+    );
     let strings = ["cwd", "kind", "account", "group", "detail"];
     let nullable_strings = [
         "id",
@@ -455,6 +460,11 @@ fn table_without_json() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
     let mut lines = text.lines();
+    let config_file = setup.config_dir().join("config.toml");
+    assert_eq!(
+        lines.next().unwrap(),
+        format!("config: {}", config_file.display())
+    );
     let header = lines.next().unwrap();
     assert!(header.starts_with("NAME"), "{header}");
     let pick = text.lines().find(|l| l.starts_with("pick-colour")).unwrap();
@@ -475,6 +485,52 @@ fn help_mentions_status() {
     for fake in &setup.fakes {
         assert_eq!(fake.calls(), 0);
     }
+}
+
+#[test]
+fn missing_config_is_reported_in_json_table_and_help() {
+    let _guard = lock();
+    let setup = Setup::two("echo '[]'", "echo '[]'");
+    let config_file = setup.config_dir().join("config.toml");
+    let out = setup.run(&["--help"]);
+    assert_eq!(out.status.code(), Some(0));
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        help.contains(&format!("Config in use: {} (found)", config_file.display())),
+        "{help}"
+    );
+
+    std::fs::remove_file(&config_file).unwrap();
+    // The defaults: one account `main` running `claude`.
+    let out = setup.run(&["status", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = parse(&out);
+    assert_eq!(
+        report["config"],
+        json!({ "path": config_file.to_str().unwrap(), "found": false })
+    );
+    assert_eq!(report["sessions"], json!([]));
+
+    let out = setup.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        text.lines().next().unwrap(),
+        format!(
+            "config: {} (not found — using defaults)",
+            config_file.display()
+        )
+    );
+
+    let out = setup.run(&["--help"]);
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        help.contains(&format!(
+            "Config in use: {} (not found — built-in defaults apply",
+            config_file.display()
+        )),
+        "{help}"
+    );
 }
 
 #[test]

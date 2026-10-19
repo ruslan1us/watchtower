@@ -134,6 +134,47 @@ pub struct Config {
     pub allow_cross_group_handoff: bool,
 }
 
+/// Where the config came from: the file tower looked at and whether it was
+/// there. A missing file means the built-in defaults (doc/0002), which is
+/// easy to miss, so `tower status`, `tower --help` and the TUI say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigSource {
+    /// The config file tower reads (`$XDG_CONFIG_HOME/watchtower/config.toml`).
+    pub path: PathBuf,
+    /// Whether the file existed and was loaded; `false` means defaults.
+    pub found: bool,
+}
+
+impl ConfigSource {
+    /// Looks at `path` without reading it, e.g. for `tower --help`.
+    pub fn probe(path: &Path) -> ConfigSource {
+        ConfigSource {
+            path: path.to_path_buf(),
+            found: path.try_exists().unwrap_or(false),
+        }
+    }
+
+    /// The path as printed, with `home` shortened to `~` when given.
+    pub fn shown(&self, home: Option<&Path>) -> String {
+        let path = self.path.to_string_lossy();
+        match home {
+            Some(home) => crate::paths::shorten_home(&path, home),
+            None => path.into_owned(),
+        }
+    }
+
+    /// One line for people: `config: <path>`, or `config: <path> (not
+    /// found — using defaults)`.
+    pub fn line(&self, home: Option<&Path>) -> String {
+        let path = self.shown(home);
+        if self.found {
+            format!("config: {path}")
+        } else {
+            format!("config: {path} (not found — using defaults)")
+        }
+    }
+}
+
 /// Errors from loading or validating the config.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -190,18 +231,40 @@ impl Config {
         Config::load_from(&dirs.config_file(), &dirs.home)
     }
 
+    /// [`Config::load`], also reporting where tower looked and whether the
+    /// file was there ([`ConfigSource`]).
+    pub fn load_with_source(dirs: &Dirs) -> Result<(Config, ConfigSource), ConfigError> {
+        Config::load_from_with_source(&dirs.config_file(), &dirs.home)
+    }
+
     /// Loads a config file from `path`, expanding `~` against `home`.
     /// A missing file yields [`Config::defaults`].
     pub fn load_from(path: &Path, home: &Path) -> Result<Config, ConfigError> {
+        Config::load_from_with_source(path, home).map(|(config, _)| config)
+    }
+
+    /// [`Config::load_from`], also reporting whether the file was found.
+    pub fn load_from_with_source(
+        path: &Path,
+        home: &Path,
+    ) -> Result<(Config, ConfigSource), ConfigError> {
+        let source = |found| ConfigSource {
+            path: path.to_path_buf(),
+            found,
+        };
         match std::fs::read_to_string(path) {
-            Ok(text) => Config::parse(&text, home).map_err(|err| match err {
-                ConfigError::Parse { source, .. } => ConfigError::Parse {
-                    path: path.to_path_buf(),
-                    source,
-                },
-                other => other,
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Config::defaults(home)),
+            Ok(text) => Config::parse(&text, home)
+                .map(|config| (config, source(true)))
+                .map_err(|err| match err {
+                    ConfigError::Parse { source, .. } => ConfigError::Parse {
+                        path: path.to_path_buf(),
+                        source,
+                    },
+                    other => other,
+                }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok((Config::defaults(home), source(false)))
+            }
             Err(source) => Err(ConfigError::Read {
                 path: path.to_path_buf(),
                 source,

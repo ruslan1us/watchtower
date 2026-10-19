@@ -111,7 +111,8 @@ For another host, copy that one file into its `~/.local/bin` (e.g. with `scp`).
 1. Copy [`config.example.toml`](config.example.toml) to `~/.config/watchtower/config.toml`,
    list your accounts and set `project_roots` to the folders that hold your git clones
    (e.g. `~/workspace`). Without a config file tower uses one account, `main`, running
-   `claude`, and the new-session dialog has no projects to offer.
+   `claude`, and the new-session dialog has no projects to offer; tower then says so in
+   its status line, and `tower status` and `tower --help` name the config file in use.
 2. Run `tower`. Existing background sessions of every account appear in the list.
 3. Press `n`, pick a project, type a task and press `Ctrl+S` to start it in the background
    (or `Ctrl+Enter` / `Alt+Enter` to start and attach). If the account does not trust the
@@ -184,6 +185,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `n` | New-session dialog |
 | `a` | Continue under another of your accounts (hand-off; always asks, same group only by default) |
 | `o` | Attach to the orchestrator, starting it if missing |
+| `R` | Resume a past conversation: pick an account and folder, then Claude Code's own `--resume` picker; background it with `←` (or `/bg`) and `Esc` to bring it into the list ([0019](doc/0019-resume-past-sessions.md)) |
 | `s` | Stop the session (asks first when it is working or blocked) |
 | `d` | Remove the session (asks first) |
 | `m` | Mark a highlighted session as seen |
@@ -217,9 +219,10 @@ New-session dialog ([0008](doc/0008-new-session-dialog.md)):
 ## `tower status`
 
 `tower status` polls every account once and prints the merged sessions as a short table;
-`tower status --json` prints them as JSON with `sessions` (id, name, folder, state, group,
-owning account and its command, last change time) and `errors` (accounts whose listing
-failed). It reads `state.json` but never writes it, so it is safe to run next to a running
+`tower status --json` prints them as JSON with `config` (the config file and whether it
+was found), `sessions` (id, name, folder, state, group, owning account and its command,
+last change time) and `errors` (accounts whose listing failed). The table starts with a
+`config: <path>` line. It reads `state.json` but never writes it, so it is safe to run next to a running
 tower. Exit code 0 when at least one account was listed, 1 when every listing failed, 2 for
 a config error. The format is in [0010](doc/0010-orchestrator.md).
 

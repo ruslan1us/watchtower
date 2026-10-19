@@ -4,8 +4,9 @@
 //! doc/0008, doc/0009, doc/0014 milestones 1–3). Slow CLI calls, including
 //! the hand-off sequence, and file work (sidecar saves and reloads, the
 //! project scan) run on worker threads ([`Jobs`]); attach, the task
-//! editor and the trust flow take over
-//! the terminal through the same hand-over ([`attach::run_foreground`]).
+//! editor, the trust flow and Claude Code's picker of past conversations
+//! (`R`, doc/0019) take over the terminal through the same hand-over
+//! ([`attach::run_foreground`]).
 //!
 //! The terminal is restored on normal exit, on error (a drop guard), on a
 //! panic of the main thread (a panic hook; other threads' panics are only
@@ -54,7 +55,7 @@ use ratatui::crossterm::terminal::{
 use crate::app::{App, Effect, Severity};
 use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
 use crate::cli::{CliError, CliRunner};
-use crate::config::Config;
+use crate::config::{Config, ConfigSource};
 use crate::dispatch::DispatchError;
 use crate::jobs::{self, JobResult, Jobs};
 use crate::merge::ProcEnviron;
@@ -412,7 +413,9 @@ pub fn flush_sidecar(
 }
 
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
-pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
+/// `source` says which config file was used and whether it was found
+/// (doc/0002); a missing one shows a warning.
+pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(io::Error::other(
             "needs an interactive terminal (stdin and stdout must be a TTY)",
@@ -426,6 +429,7 @@ pub fn run(config: Config, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
         Box::new(ProcEnviron),
     );
     app.set_config_dir(&dirs.config_dir);
+    app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     if let Some(warning) = loaded.warning {
         app.add_warning(warning);
@@ -627,6 +631,22 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 queue.extend(app.attach_finished(outcome));
             }
             Effect::OpenDialog => rt.jobs.projects(app.begin_project_scan()),
+            Effect::ScanProjects(scan) => rt.jobs.projects(scan),
+            Effect::ResumePast(req) => {
+                let termination = rt.termination;
+                let folder = paths::shorten_home(&req.folder.to_string_lossy(), app.home());
+                let outcome = attach::resume_past(
+                    &mut rt.handover(),
+                    &mut InheritSpawner,
+                    &req,
+                    &folder,
+                    termination,
+                );
+                if termination.pending().is_some() {
+                    return Ok(false);
+                }
+                queue.extend(app.resume_finished(outcome));
+            }
             Effect::Dispatch(job) => rt.jobs.dispatch(job),
             Effect::Trust(job) => {
                 let req = &job.request;

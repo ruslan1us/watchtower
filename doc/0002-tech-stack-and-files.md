@@ -34,7 +34,13 @@ only reads `state.json`, never writes it.
 **Config:** `$XDG_CONFIG_HOME/watchtower/config.toml`, default
 `~/.config/watchtower/config.toml`. Tower only reads it. A missing file means
 built-in defaults with a single account `main` using `claude`. `~` is expanded
-in all paths.
+in all paths. Because a missing file is easy to miss, tower names the file it
+uses: `tower --help` prints it with whether it exists, `tower status` starts
+with `config: <path>` (plus `(not found — using defaults)`), `tower status
+--json` has a `config` object ([0010](0010-orchestrator.md)), and the TUI
+shows a status-line warning when the file was not found; the new-session
+dialog's empty project list names the file and whether it was loaded
+([0008](0008-new-session-dialog.md)).
 
 ```toml
 # Account used for new sessions and the orchestrator.

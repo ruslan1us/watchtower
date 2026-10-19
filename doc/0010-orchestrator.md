@@ -24,10 +24,11 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
 
 ### Tools available to it
 
-- `tower status --json`: one merged snapshot across all accounts, with ownership and tower's tracked times. It polls every account once, in parallel, with the usual timeout, and merges and resolves owners by the same rules as the TUI ([0017](0017-ownership-evidence-rules.md)). It reads the sidecar but never writes, locks or moves it, so it cannot race a running tower. The output is an object: `sessions`, an array with one object per merged row, and `errors`, one object per account whose listing failed. Absent values are `null`.
+- `tower status --json`: one merged snapshot across all accounts, with ownership and tower's tracked times. It polls every account once, in parallel, with the usual timeout, and merges and resolves owners by the same rules as the TUI ([0017](0017-ownership-evidence-rules.md)). It reads the sidecar but never writes, locks or moves it, so it cannot race a running tower. The output is an object: `config`, the config file this run used (`path`) and whether it was found (`found`; `false` means the built-in defaults, [0002](0002-tech-stack-and-files.md)), `sessions`, an array with one object per merged row, and `errors`, one object per account whose listing failed. Absent values are `null`.
 
   ```json
   {
+    "config": { "path": "/home/user/.config/watchtower/config.toml", "found": true },
     "sessions": [
       {
         "id": "1a2b3c4d",
@@ -53,7 +54,7 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
   }
   ```
 
-  Fields from the listing keep their names and values. `account` is the configured name or `"?"`, with `accountCommand` `null` when unknown. `group` is the overview group of [0006](0006-session-states-and-grouping.md) (`needs-me`, `failed`, `ready-for-review`, `working`, `other`, `stopped`, `interactive`) and `detail` the row's detail text from the same table. `lastChangeAt` is Unix ms of the last state change tracked by tower (the sidecar's `last_change_ms` while its `last_state` is the row's current tuple; the time of this call when the tuple has changed since), falling back to `startedAt` ([0006](0006-session-states-and-grouping.md)). Exit code 0 when at least one account was listed, 1 when every listing failed (the JSON is still printed), 2 for a config error (nothing on stdout). Warnings (skipped rows, an unreadable sidecar, an inherited `CLAUDE_CONFIG_DIR`) go to stderr. Without `--json`, `tower status` prints a short table for people.
+  Fields from the listing keep their names and values. `account` is the configured name or `"?"`, with `accountCommand` `null` when unknown. `group` is the overview group of [0006](0006-session-states-and-grouping.md) (`needs-me`, `failed`, `ready-for-review`, `working`, `other`, `stopped`, `interactive`) and `detail` the row's detail text from the same table. `lastChangeAt` is Unix ms of the last state change tracked by tower (the sidecar's `last_change_ms` while its `last_state` is the row's current tuple; the time of this call when the tuple has changed since), falling back to `startedAt` ([0006](0006-session-states-and-grouping.md)). Exit code 0 when at least one account was listed, 1 when every listing failed (the JSON is still printed), 2 for a config error (nothing on stdout). Warnings (skipped rows, an unreadable sidecar, an inherited `CLAUDE_CONFIG_DIR`) go to stderr. Without `--json`, `tower status` prints a short table for people, starting with a `config: <path>` line (`(not found — using defaults)` appended when the file is missing).
 - `<accountCommand> logs <id>` for recent output (raw terminal stream; the instructions tell it to read it as a screen snapshot).
 - Built-in `ListAgents` / `SendMessage`, and `notify_when_idle` for "tell me when X finishes". It sends one notice and expires after 12 h.
 

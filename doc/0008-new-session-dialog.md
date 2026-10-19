@@ -78,6 +78,11 @@ defines; the task text is the place to ask for something else
   repos deeper than one level need an `extra_projects` entry. It runs on a worker thread
   ([0001](0001-thin-wrapper-over-claude-cli.md)): the dialog opens at once and shows
   `scanning projects…` until the list arrives; a filter typed meanwhile is kept.
+  With no project at all it names the config file and whether it was loaded
+  (`… in ~/.config/watchtower/config.toml (loaded)`, or `no config at … (using
+  defaults)`), so a missing config is not mistaken for empty roots
+  ([0002](0002-tech-stack-and-files.md)). The same list serves the resume
+  window of `R` ([0019](0019-resume-past-sessions.md)).
 - The dialog never edits Claude Code's trust state itself; the user accepts trust in Claude
   Code's own dialog.
 - Any other `--bg` failure is shown verbatim with the exit code; the dialog keeps its

@@ -1,8 +1,10 @@
 //! Handing the terminal to `<account command> attach <id>` and taking it back
 //! (doc/0005). The same procedure ([`run_foreground`]) runs the editor for
 //! the task field and the interactive trust flow of the new-session dialog
-//! (doc/0008). These foreground children stay in tower's own process group;
-//! background CLI calls each get a group of their own (`cli`).
+//! (doc/0008), and Claude Code's picker of past conversations
+//! (`<account command> --resume`, doc/0019). These foreground children stay
+//! in tower's own process group; background CLI calls each get a group of
+//! their own (`cli`).
 //!
 //! The procedure is written against two small traits so it can be tested
 //! without a TTY: [`Handover`] releases and reclaims the terminal (the real
@@ -14,7 +16,7 @@ use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::app::{AttachOutcome, AttachRequest};
+use crate::app::{AttachOutcome, AttachRequest, ResumeOutcome, ResumeRequest};
 use crate::cli::{self, CommandLine};
 
 /// Releases and reclaims the terminal around an attach.
@@ -66,15 +68,34 @@ impl Spawner for InheritSpawner {
     }
 }
 
+/// The shortest time between two resumes of a stopped child: a child that
+/// stops again right after `SIGCONT` (a plain interactive `claude` that
+/// suspends itself on every `Ctrl+Z`, or one stopped over and over by
+/// some other signal) is resumed at most this often, so tower never spins
+/// on it, yet never leaves it stopped (doc/0005, doc/0019).
+pub const RESUME_MIN_GAP: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How long to wait before resuming a stopped child, given the time since
+/// the previous resume (`None`: the first stop): nothing, unless the child
+/// stopped again within [`RESUME_MIN_GAP`].
+pub fn resume_delay(since_last_resume: Option<std::time::Duration>) -> std::time::Duration {
+    match since_last_resume {
+        Some(since) => RESUME_MIN_GAP.saturating_sub(since),
+        None => std::time::Duration::ZERO,
+    }
+}
+
 /// Waits for `pid` (a child of tower) to exit. Whenever it is stopped, the
 /// whole process group of the child gets SIGCONT, not just the child: `Ctrl+Z`
 /// stops every process in the foreground group, and an account command that
 /// is a wrapper (a script that does not `exec`) would otherwise wait forever
 /// on a real `claude` that stays stopped (doc/0005). For a child in tower's
-/// own group that includes tower, which is harmless.
+/// own group that includes tower, which is harmless. A child that keeps
+/// stopping is resumed at most once per [`RESUME_MIN_GAP`].
 pub fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
     let pid = libc::pid_t::try_from(pid).map_err(io::Error::other)?;
+    let mut last_resume: Option<std::time::Instant> = None;
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: plain syscall on our own child; `status` is a valid out-pointer.
@@ -87,6 +108,11 @@ pub fn wait_resuming(pid: u32) -> io::Result<ExitStatus> {
             return Err(err);
         }
         if libc::WIFSTOPPED(status) {
+            let delay = resume_delay(last_resume.map(|at| at.elapsed()));
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
+            last_resume = Some(std::time::Instant::now());
             // SAFETY: plain syscalls on our own (stopped, not yet reaped)
             // child and its process group; the pid cannot be reused yet.
             unsafe {
@@ -227,6 +253,43 @@ pub fn attach(
     AttachOutcome {
         name: req.name.clone(),
         account: req.account.name.clone(),
+        result: run_foreground(handover, spawner, &fg, termination),
+    }
+}
+
+/// The line printed before Claude Code's picker of past conversations
+/// takes over (doc/0019): where it runs, and how to come back with the
+/// chosen conversation running in the background.
+pub fn resume_announcement(req: &ResumeRequest, folder: &str) -> String {
+    format!(
+        "tower: `{} --resume` in {folder} ({}): pick a conversation (Ctrl+A shows all \
+         projects); then press ← on an empty prompt (or /bg) and Esc to return — it keeps \
+         running in the background and appears in tower",
+        req.account.command, req.account.name
+    )
+}
+
+/// Runs `<account command> --resume` in the chosen folder through
+/// [`run_foreground`], exactly like an attach (doc/0019). `folder` is the
+/// folder as shown to the user (`~` form). A non-zero exit waits for a key,
+/// so Claude Code's error text can be read.
+pub fn resume_past(
+    handover: &mut dyn Handover,
+    spawner: &mut dyn Spawner,
+    req: &ResumeRequest,
+    folder: &str,
+    termination: &Termination,
+) -> ResumeOutcome {
+    let line = cli::resume_picker_command(&req.account, &req.folder);
+    let fg = Foreground {
+        line: &line,
+        announce: Some(resume_announcement(req, folder)),
+        label: "claude --resume",
+        pause_on_failure: true,
+    };
+    ResumeOutcome {
+        account: req.account.name.clone(),
+        folder: folder.to_owned(),
         result: run_foreground(handover, spawner, &fg, termination),
     }
 }

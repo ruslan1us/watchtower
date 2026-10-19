@@ -39,6 +39,8 @@ v1 is delivered in five milestones. Each one is usable on its own.
 All five milestones are implemented as of 2026-10-18. Milestone 5 was
 completed by the list controls: `/`, `p`, `Tab` and `i`
 ([0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md)).
+Later additions each have a decision of their own, e.g. resuming a past
+conversation with `R` ([0019](0019-resume-past-sessions.md)).
 
 **Non-goals for v1**
 

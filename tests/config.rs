@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use watchtower::config::{Account, Config, ConfigError};
+use watchtower::config::{Account, Config, ConfigError, ConfigSource};
 use watchtower::paths::Dirs;
 
 const HOME: &str = "/home/user";
@@ -377,4 +377,41 @@ fn example_config_is_valid_and_complete() {
         keys.sort_unstable();
         assert_eq!(keys, ["command", "config_dir", "group", "name"]);
     }
+}
+
+#[test]
+fn load_reports_where_it_looked_and_whether_the_file_was_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = Dirs::new(dir.path(), None);
+    let (config, source) = Config::load_with_source(&dirs).unwrap();
+    assert_eq!(config, Config::defaults(dir.path()));
+    assert_eq!(
+        source,
+        ConfigSource {
+            path: dirs.config_file(),
+            found: false
+        }
+    );
+    assert_eq!(source, ConfigSource::probe(&dirs.config_file()));
+    assert_eq!(
+        source.line(Some(dir.path())),
+        "config: ~/.config/watchtower/config.toml (not found — using defaults)"
+    );
+
+    std::fs::create_dir_all(&dirs.config_dir).unwrap();
+    std::fs::write(dirs.config_file(), "poll_interval_secs = 5\n").unwrap();
+    let (config, source) = Config::load_with_source(&dirs).unwrap();
+    assert_eq!(config.poll_interval_secs, 5);
+    assert!(source.found);
+    assert_eq!(source, ConfigSource::probe(&dirs.config_file()));
+    assert_eq!(
+        source.line(None),
+        format!("config: {}", dirs.config_file().display())
+    );
+    // A broken file is still an error, not "not found".
+    std::fs::write(dirs.config_file(), "poll_interval_secs = [").unwrap();
+    assert!(matches!(
+        Config::load_with_source(&dirs),
+        Err(ConfigError::Parse { .. })
+    ));
 }

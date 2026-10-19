@@ -2,7 +2,8 @@
 //! age column and collapsed headers, doc/0006, doc/0007), the logs panel,
 //! the filter's input line, status line, footer, and the overlays: help, account picker, confirmations, the
 //! hand-off target picker and trust window (doc/0004), the orchestrator's
-//! trust window (doc/0010), the new-session dialog ([`dialog`]) and the
+//! trust window (doc/0010), the new-session dialog and the resume window
+//! of `R` ([`dialog`], doc/0019) and the
 //! popup window (doc/0006, doc/0008, doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
 //!
 //! The logs panel sits to the right of the list when the terminal is at
@@ -12,7 +13,7 @@
 
 mod dialog;
 
-pub use dialog::wrap;
+pub use dialog::{resume_note, wrap};
 
 use std::time::Instant;
 
@@ -49,6 +50,7 @@ pub const FOOTER_KEYS: &[&str] = &[
     "Tab fold",
     "p by project",
     "i interactive",
+    "R resume",
     "↑↓ move",
     "q quit",
 ];
@@ -133,6 +135,9 @@ pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     }
     if let Some(d) = app.dialog() {
         dialog::draw(frame, app, d, area);
+    }
+    if let Some(r) = app.resume_window() {
+        dialog::draw_resume(frame, app, r, area);
     }
     if let Some(popup) = app.popup_mut() {
         draw_popup(frame, popup, area);
@@ -540,7 +545,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(format!(" {key:<22} {what}")));
     }
-    // 14 list keys, a blank line, the dialog title and 6 dialog keys:
+    // 15 list keys, a blank line, the dialog title and 6 dialog keys:
     // with the borders the help fits 24 rows (doc/0011).
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);

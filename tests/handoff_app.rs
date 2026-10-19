@@ -190,7 +190,9 @@ fn interactive_rows_and_rows_without_session_id_are_refused() {
     select(&mut app, "demo-app-3f");
     assert!(app.handle_key(ch('a')).is_empty());
     assert!(
-        status_text(&app).contains("interactive session"),
+        status_text(&app).contains(
+            "demo-app-3f runs in another terminal — press ← on an empty prompt there (or /bg)"
+        ),
         "{}",
         status_text(&app)
     );
