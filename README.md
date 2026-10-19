@@ -6,6 +6,8 @@ started with `claude --bg`, listed with `claude agents --json --all`, and entere
 inspected, stopped and removed with `claude attach`, `logs`, `stop` and `rm`. Sessions keep
 running when tower exits; tower holds nothing they depend on.
 
+![tower in the dashboard style: sessions grouped by state, a working session with three subagents in a tree under it, and the details panel](assets/screenshot.png)
+
 What it adds on top:
 
 - **Several accounts in one view.** Every configured Claude Code account (each its own
