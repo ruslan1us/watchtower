@@ -73,8 +73,10 @@ pub trait EnvironReader {
 }
 
 /// Reads `/proc/<pid>/environ`, `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and
-/// `/proc/<pid>/stat`: the only OS-level reads tower does (doc/0001,
-/// doc/0017).
+/// `/proc/<pid>/stat`, and (as a [`crate::ptysize::TerminalReader`]) the
+/// window size of the session's own `/dev/pts` device with a read-only
+/// `TIOCGWINSZ`: the only OS-level reads tower does (doc/0001, doc/0017,
+/// doc/0025).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcEnviron;
 

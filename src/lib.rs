@@ -20,6 +20,8 @@
 //! - [`paths`]: home and XDG directories, `~` expansion.
 //! - [`logview`]: `claude logs` fetched and replayed into a screen for the
 //!   logs panel (doc/0009).
+//! - [`ptysize`]: the real terminal size of a session, for that replay
+//!   (doc/0025).
 //!
 //! Actions (milestone 2, no UI):
 //!
@@ -75,6 +77,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod poller;
 pub mod projects;
+pub mod ptysize;
 pub mod settings;
 pub mod sidecar;
 pub mod status;

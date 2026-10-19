@@ -12,7 +12,12 @@
 //!
 //! ## Emulator size
 //!
-//! The PTY size is not reported, so [`render`] infers it from the stream
+//! `claude logs` does not report the PTY size. When the logs job could
+//! read the session terminal's real size ([`crate::ptysize`], doc/0025),
+//! [`render_sized`] uses exactly that, capped at [`MAX_ROWS`] ×
+//! [`MAX_COLS`]: Claude Code redraws mostly with relative moves and relies
+//! on the terminal's autowrap, so any other size garbles the replay.
+//! Otherwise ([`render`], or no size) the size is inferred from the stream
 //! ([`infer_size`]): the larger of [`DEFAULT_ROWS`] × [`DEFAULT_COLS`]
 //! (64 × 200) and the highest row and column the stream addresses
 //! *absolutely*:
@@ -58,9 +63,9 @@ use crate::config::Account;
 pub const DEFAULT_ROWS: u16 = 64;
 /// Default emulator width (doc/0009).
 pub const DEFAULT_COLS: u16 = 200;
-/// Upper bound for an inferred height.
+/// Upper bound for the emulator height, real or inferred.
 pub const MAX_ROWS: u16 = 300;
-/// Upper bound for an inferred width.
+/// Upper bound for the emulator width, real or inferred.
 pub const MAX_COLS: u16 = 600;
 /// Only this many bytes from the end of the stream are replayed.
 pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -241,13 +246,20 @@ impl LogScreen {
     }
 }
 
+/// Replays a `claude logs` byte stream at an inferred size and returns the
+/// final screen: [`render_sized`] without a known size.
+pub fn render(bytes: &[u8]) -> LogScreen {
+    render_sized(bytes, None)
+}
+
 /// Replays a `claude logs` byte stream and returns the final screen.
 ///
-/// Never fails; see the module docs for the emulator size and the handling
-/// of huge or malformed input.
-pub fn render(bytes: &[u8]) -> LogScreen {
+/// `real` is the session terminal's size as `(rows, cols)` when it is known
+/// (doc/0025); see [`emulator_size`]. Never fails; see the module docs for
+/// the handling of huge or malformed input.
+pub fn render_sized(bytes: &[u8], real: Option<(u16, u16)>) -> LogScreen {
     let bytes = replay_window(bytes);
-    let (rows, cols) = infer_size(bytes);
+    let (rows, cols) = emulator_size(bytes, real);
     let bytes = bound_counts(bytes, rows, cols);
     let mut parser = vt100::Parser::new(rows, cols, 0);
     parser.process(&bytes);
@@ -278,10 +290,20 @@ fn replay_window(bytes: &[u8]) -> &[u8] {
     &window[start..]
 }
 
-/// The emulator size for a stream, as `(rows, cols)`: the larger of the
-/// default 64 × 200 and the highest absolutely addressed row and column,
-/// capped at [`MAX_ROWS`] × [`MAX_COLS`]. See the module docs for the
-/// sequences that count.
+/// The emulator size for the replayed part of a stream, as `(rows, cols)`:
+/// the session terminal's real size when it is known and not zero, capped
+/// at [`MAX_ROWS`] × [`MAX_COLS`]; otherwise [`infer_size`] (doc/0025).
+pub fn emulator_size(bytes: &[u8], real: Option<(u16, u16)>) -> (u16, u16) {
+    match real {
+        Some((rows, cols)) if rows > 0 && cols > 0 => (rows.min(MAX_ROWS), cols.min(MAX_COLS)),
+        _ => infer_size(bytes),
+    }
+}
+
+/// The inferred emulator size for a stream, as `(rows, cols)`: the larger
+/// of the default 64 × 200 and the highest absolutely addressed row and
+/// column, capped at [`MAX_ROWS`] × [`MAX_COLS`]. See the module docs for
+/// the sequences that count.
 pub fn infer_size(bytes: &[u8]) -> (u16, u16) {
     let mut max_row: u32 = u32::from(DEFAULT_ROWS);
     let mut max_col: u32 = u32::from(DEFAULT_COLS);

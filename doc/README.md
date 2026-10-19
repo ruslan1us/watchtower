@@ -18,7 +18,7 @@ This directory records the design decisions behind it, one file per decision.
 | No. | Decision | Status |
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
-| 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted |
+| 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025) |
 | 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted |
@@ -26,7 +26,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted |
-| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted |
+| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted |
 | 0011 | [Keybindings](0011-keybindings.md) | Accepted |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
@@ -34,7 +34,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |
 | 0015 | [Testing strategy](0015-testing-strategy.md) | Accepted |
 | 0016 | [Never change Claude Code's own behaviour](0016-do-not-change-claude-code-defaults.md) | Accepted |
-| 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted |
+| 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted (`/proc` reads amended by 0025) |
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted |
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021) |
@@ -42,6 +42,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted |
 | 0024 | [Settings window](0024-settings-window.md) | Accepted |
+| 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

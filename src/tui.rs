@@ -696,7 +696,10 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             }
             Effect::Stop(action) => rt.jobs.stop(action),
             Effect::Remove(action) => rt.jobs.remove(action),
-            Effect::FetchLogs(target) => rt.jobs.logs(target),
+            Effect::FetchLogs(target) => {
+                let probe = app.logs_probe(&target);
+                rt.jobs.logs(target, probe);
+            }
             Effect::CheckConfig => {
                 if let Some(job) = app.start_config_check() {
                     rt.jobs.config_check(job);

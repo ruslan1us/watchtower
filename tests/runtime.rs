@@ -96,7 +96,9 @@ fn drive(app: &mut App, jobs: &Jobs, effects: Vec<Effect>) -> Vec<Effect> {
                     outstanding += 1;
                 }
                 Effect::FetchLogs(t) => {
-                    jobs.logs(t);
+                    // As the runtime does (doc/0025).
+                    let probe = app.logs_probe(&t);
+                    jobs.logs(t, probe);
                     outstanding += 1;
                 }
                 other => rest.push(other),

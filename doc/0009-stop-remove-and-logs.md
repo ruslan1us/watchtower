@@ -1,6 +1,6 @@
 # 0009. Stop, remove and the logs panel
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -52,6 +52,9 @@ list from 130 columns, below it on narrower terminals, half the space either way
   64 rows × 200 columns and the highest row and column addressed absolutely in the stream
   (CUP/HVP, VPA, CHA/HPA, the DECSTBM bottom margin, and CUF right after a carriage
   return), capped at 300 × 600. Other relative moves are not counted.
+  *Amended by [0025](0025-session-terminal-size-for-logs.md):* when tower can read the
+  session terminal's real size, the emulator uses exactly that (capped at 300 × 600); this
+  inference is the fallback.
 - Only the last 2 MiB of the stream are replayed, starting at the last full clear in that
   window, if any. Malformed sequences and invalid UTF-8 never fail the panel.
 - Bounded replay work: vt100 handles some sequences in time proportional to a count
@@ -94,4 +97,5 @@ list from 130 columns, below it on narrower terminals, half the space either way
 ## Open items
 
 - Exit code and exact message format of an `rm` refusal.
-- A reliable way to learn the session's PTY size instead of inferring it.
+- ~~A reliable way to learn the session's PTY size instead of inferring it.~~ Closed by
+  [0025](0025-session-terminal-size-for-logs.md): read from the session process's PTY.

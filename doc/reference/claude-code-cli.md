@@ -143,8 +143,11 @@ Verified:
   colour SGR (`ESC[38;2;r;g;bm`) and every spinner frame.
 - Printed to a terminal it looks like a screenshot of the current screen. Plain ANSI-to-text
   conversion does not work because of cursor addressing; it needs a terminal emulator.
-- The PTY size is not reported. In one test the stream addressed row 64 and the screen was
-  about 200 columns wide.
+- The PTY size is not reported, and `claude logs` has no option for it
+  (`Usage: claude logs <id|name>`). After the last full clear the stream mostly uses
+  relative moves and relies on autowrap: in one session last attached at 57 × 231, the
+  stream after its last `ESC[2J` addressed at most row 57 and column 24 while its prompt
+  rules were 231 wide. Replaying it at another size garbles it.
 - A `Session <id> · <name>` banner is written to a different stream than the screen bytes
   (first in a pipe, last in a terminal), probably stderr.
 - `logs` works only through the binary of the account hosting the session (see below).
@@ -152,7 +155,17 @@ Verified:
   `Couldn't read logs for <id> — job not found — it may have already exited`. An unknown id
   exits 1 with `No job matching '<x>'. …`.
 
-How Watchtower uses it: [0009](../0009-stop-remove-and-logs.md).
+Session terminal size, verified with Claude Code 2.1.303 on Linux:
+
+- A background session's worker process (the `pid` of its row) has fd 0, 1 and 2 on its
+  own PTY slave, `/dev/pts/<n>`. Field 7 (`tty_nr`) of its `/proc/<pid>/stat` names that
+  device (for example 34819 = major 136, minor 3 = `/dev/pts/3`).
+- A session that was never attached has a 50 rows × 200 columns PTY.
+- `claude attach` resizes the PTY to the attaching terminal (tested at 57 × 231), and the
+  PTY **keeps that size after detaching** (`Ctrl+Z`).
+
+How Watchtower uses it: [0009](../0009-stop-remove-and-logs.md),
+[0025](../0025-session-terminal-size-for-logs.md) (the replay uses the PTY's real size).
 
 ## Attach and detach keys
 
@@ -289,6 +302,20 @@ Documented ([cross-session messaging](https://code.claude.com/docs/en/cross-sess
 - There is no CLI way to reply to a session without attaching: `claude --resume <sessionId> "msg"`
   sends the message and then attaches.
 
+## Subagents in background sessions
+
+Verified with Claude Code 2.1.303:
+
+- A background session has the `Agent` tool and can launch subagents.
+- Subagents run inside the parent session's process. They are **not** separate rows in
+  `claude agents --json` or `claude agents --json --all`.
+- While a subagent runs, the parent row stays `state: working` / `status: busy`, and its
+  screen shows "Waiting for 1 background agent to finish". The parent turns `done` /
+  `idle` only after it has relayed the subagent's result.
+- Attached, the subagents are listed under "↓ to manage" and in `/tasks`.
+
+Not verified: what a subagent's permission prompt looks like in the listing.
+
 ## Known messages and exit codes
 
 | Situation | Output | Exit code | Source |
@@ -308,7 +335,8 @@ Documented ([cross-session messaging](https://code.claude.com/docs/en/cross-sess
 ## Not yet verified
 
 - Exact format of the `rm` refusal message and its exit code.
-- How to learn the PTY size of a session for replaying `logs`.
+- What a subagent's permission prompt looks like in `claude agents --json` (see
+  [Subagents in background sessions](#subagents-in-background-sessions)).
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.
 - Whether `--effort` survives a wake with `--resume <sessionId> --bg` (the `note:` line lists
   `--name`, `--permission-mode` and `--model` only).

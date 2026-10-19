@@ -184,6 +184,65 @@ fn size_is_inferred_from_absolute_addressing() {
     );
 }
 
+/// A synthetic stream drawn on a 57 × 231 terminal the way Claude Code
+/// draws (doc/0025): one full clear addressing only row 1, column 1, then
+/// static output that relies on the terminal's autowrap (a 450-cell
+/// paragraph, a table border exactly as wide as the screen), then the live
+/// region at the bottom (spinner, prompt box, footer) redrawn with
+/// relative moves only: each frame erases the previous one line by line
+/// going up (`ESC[2K ESC[1A`), assuming every line took one row.
+fn wide_session_stream() -> Vec<u8> {
+    let rule = "─".repeat(231);
+    let paragraph = &"The quick brown fox jumps over the lazy dog. ".repeat(11)[..448];
+    let frame = |spinner: &str| format!("{spinner}\r\n{rule}\r\n> \r\n{rule}\r\n  ? for shortcuts");
+    let mut s = String::from("\x1b[2J\x1b[H");
+    s += &format!("● {paragraph}\r\n");
+    s += &format!("┌{}┐\r\n", "─".repeat(229));
+    s += &frame("✻ Thinking… (1s · ↓ 12 tokens)");
+    for spinner in [
+        "✶ Thinking… (2s · ↓ 340 tokens)",
+        "✳ Working… (3s · ↓ 971 tokens)",
+    ] {
+        s += &"\x1b[2K\x1b[1A".repeat(4);
+        s += "\x1b[2K\x1b[G";
+        s += &frame(spinner);
+    }
+    s.into_bytes()
+}
+
+#[test]
+fn the_real_terminal_size_replays_relative_redraws_cleanly() {
+    let bytes = wide_session_stream();
+    let rule = "─".repeat(231);
+    let paragraph = &"The quick brown fox jumps over the lazy dog. ".repeat(11)[..448];
+
+    let screen = logview::render_sized(&bytes, Some((57, 231)));
+    assert_eq!(screen.size(), (57, 231));
+    let expected = [
+        format!("● {}", paragraph[..229].trim_end()),
+        paragraph[229..].to_owned(),
+        format!("┌{}┐", "─".repeat(229)),
+        "✳ Working… (3s · ↓ 971 tokens)".to_owned(),
+        rule.clone(),
+        ">".to_owned(),
+        rule,
+        "  ? for shortcuts".to_owned(),
+    ];
+    assert_eq!(screen.plain_lines(), expected);
+
+    // The stream alone says 64 × 200: the old replay wraps the rules onto
+    // two rows, so every redraw erases too little and old spinner lines
+    // and rule fragments stay on the screen.
+    assert_eq!(logview::infer_size(&bytes), (DEFAULT_ROWS, DEFAULT_COLS));
+    let inferred = logview::render(&bytes);
+    assert_eq!(inferred.size(), (DEFAULT_ROWS, DEFAULT_COLS));
+    let lines = inferred.plain_lines();
+    assert_ne!(lines, expected);
+    let spinners = lines.iter().filter(|l| l.contains("tokens)")).count();
+    assert!(spinners > 1, "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("Thinking")), "{lines:#?}");
+}
+
 #[test]
 fn empty_input_is_an_empty_screen() {
     let screen = logview::render(b"");

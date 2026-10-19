@@ -49,6 +49,7 @@ use crate::orchestrator::{self, StartError};
 use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
+use crate::ptysize::TtyProbe;
 use crate::settings::{FolderResult, SettingsAction, SettingsWindow};
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
@@ -4024,6 +4025,23 @@ impl App {
                 None => (title, Err(format!("account `{account}` is not configured"))),
             },
         }
+    }
+
+    /// What the logs job needs to read the real terminal size of
+    /// `target`'s session (doc/0025): the row's live `pid` and the start
+    /// ticks the pid-reuse guard remembered when it accepted that process
+    /// (doc/0017). `None` when the row is gone, has no `pid`, is not owned
+    /// by the target's account, or the guard has not accepted its process;
+    /// the replay then infers the size. The job re-reads the ticks, so a
+    /// pid reused meanwhile gives no size either.
+    pub fn logs_probe(&self, target: &LogsTarget) -> Option<TtyProbe> {
+        let m = self.sessions.iter().find(|m| {
+            m.session.id.as_deref() == Some(target.id.as_str())
+                && m.owner.account() == Some(target.account.name.as_str())
+        })?;
+        let pid = m.session.pid?;
+        let start_ticks = self.known.get(m.session.key()?, pid)?;
+        Some(TtyProbe { pid, start_ticks })
     }
 
     /// Points the open logs panel at the selected row: a note for rows

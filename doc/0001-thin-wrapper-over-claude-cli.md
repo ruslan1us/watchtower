@@ -1,6 +1,6 @@
 # 0001. Thin wrapper over the Claude Code CLI
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md)
 - Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -82,7 +82,10 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   [0017](0017-ownership-evidence-rules.md) widens it: tower also reads
   `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and field 22 of `/proc/<pid>/stat`
   (no `btime`), to check that the process is the listed session's and not a
-  reused pid.
+  reused pid. *Amended by [0025](0025-session-terminal-size-for-logs.md):*
+  for the logs replay, tower also takes field 7 (`tty_nr`) of that `stat`
+  and asks the session's PTY device for its size with a read-only
+  `TIOCGWINSZ`, nothing else.
 
 Tower has no PTY handling, no process supervision, no tmux, no Agent SDK and no
 direct API calls. It does not read, write or refresh credentials.

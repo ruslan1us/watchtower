@@ -43,8 +43,10 @@ use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::logview::{self, LogScreen, LogsError};
+use crate::merge::ProcEnviron;
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
+use crate::ptysize::{self, TerminalReader, TtyProbe};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 
@@ -125,6 +127,8 @@ pub struct Jobs {
     /// The sidecar file a hand-off checks before waking (doc/0017).
     state_file: Option<PathBuf>,
     spawner: ThreadSpawner,
+    /// Reads a session terminal's size for the logs replay (doc/0025).
+    terminal: Arc<dyn TerminalReader>,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
 }
@@ -138,9 +142,17 @@ impl Jobs {
             handoff_timing: HandoffTiming::default(),
             state_file: None,
             spawner: spawn_thread,
+            terminal: Arc::new(ProcEnviron),
             tx,
             rx,
         }
+    }
+
+    /// Reads session terminal sizes with `terminal` instead of `/proc` and
+    /// `/dev/pts` (tests).
+    pub fn with_terminal(mut self, terminal: Arc<dyn TerminalReader>) -> Jobs {
+        self.terminal = terminal;
+        self
     }
 
     /// Uses `timing` for the stop wait of hand-offs (tests).
@@ -339,11 +351,20 @@ impl Jobs {
     }
 
     /// Runs `<account command> logs <id>` and replays the stream (doc/0009).
-    pub fn logs(&self, target: LogsTarget) {
+    /// With a `probe` ([`App::logs_probe`]), the session terminal's real
+    /// size is read right after the fetch returns, so the two are as close
+    /// in time as possible, and the replay uses it; without one, or when it
+    /// cannot be read, the size is inferred (doc/0025).
+    ///
+    /// [`App::logs_probe`]: crate::app::App::logs_probe
+    pub fn logs(&self, target: LogsTarget, probe: Option<TtyProbe>) {
         let fail = |target, err: CliError| JobResult::Logs(target, Err(err.into()));
-        self.launch("logs", target, fail, |runner, _, target| {
-            let result =
-                logview::fetch(runner, &target.account, &target.id).map(|b| logview::render(&b));
+        let terminal = Arc::clone(&self.terminal);
+        self.launch("logs", target, fail, move |runner, _, target| {
+            let result = logview::fetch(runner, &target.account, &target.id).map(|bytes| {
+                let size = probe.and_then(|p| ptysize::session_size(terminal.as_ref(), p));
+                logview::render_sized(&bytes, size)
+            });
             JobResult::Logs(target, result)
         });
     }
@@ -521,7 +542,7 @@ mod tests {
     fn a_thread_that_cannot_start_yields_an_error_result() {
         let mut jobs = Jobs::new(CliRunner::new());
         jobs.spawner = |_, _| Err(io::Error::other("Resource temporarily unavailable"));
-        jobs.logs(target());
+        jobs.logs(target(), None);
         let JobResult::Logs(got, Err(err)) = result(&jobs) else {
             panic!("expected a logs error");
         };
