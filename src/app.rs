@@ -32,8 +32,9 @@ use ratatui::widgets::ListState;
 
 use crate::actions::{RemoveError, StopError};
 use crate::activity;
+use crate::config::ConfigError;
 use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
-use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, SaveError, SaveOutcome};
+use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, EditSession, SaveError, SaveOutcome};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -48,6 +49,7 @@ use crate::orchestrator::{self, StartError};
 use crate::paths;
 use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
+use crate::settings::{FolderResult, SettingsAction, SettingsWindow};
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
     StateTuple,
@@ -147,6 +149,13 @@ pub enum Effect {
     /// `$VISUAL`, else `$EDITOR` ([`config_edit::edit_in_editor`]), then
     /// call [`App::config_editor_finished`] (doc/0022).
     EditConfig(PathBuf),
+    /// Read this config file into a [`config_edit::EditSession`] and open
+    /// the Settings window with it: [`App::settings_opened`] (doc/0024).
+    OpenSettings(PathBuf),
+    /// Look at the list editor's folders or complete a folder name on a
+    /// worker thread ([`crate::settings::FolderJob::run`]), then call
+    /// [`App::folders_checked`] (doc/0024).
+    CheckFolders(crate::settings::FolderJob),
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -728,6 +737,8 @@ pub enum Action {
     ToggleInteractive,
     /// `Tab`: collapse / expand the group of the selected line (doc/0006).
     ToggleGroup,
+    /// `c`: the Settings window (doc/0024).
+    Settings,
 }
 
 /// Keys of the session list (doc/0011), for the help. Short enough that
@@ -748,7 +759,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("s, d", "stop (confirm when working or blocked); remove"),
     ("m", "mark the highlighted session as seen"),
     ("Space, Esc", "toggle / close the logs panel"),
-    ("r, ?", "refresh now; this help"),
+    ("c, r, ?", "settings; refresh now; this help"),
     ("q, Ctrl+C", "quit"),
     ("Ctrl+Z", "inside a session: return to tower"),
 ];
@@ -803,6 +814,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('p') => Action::ToggleGrouping,
         KeyCode::Char('i') => Action::ToggleInteractive,
         KeyCode::Tab => Action::ToggleGroup,
+        KeyCode::Char('c') => Action::Settings,
         _ => return None,
     };
     Some(action)
@@ -873,6 +885,11 @@ pub struct App {
     check_error: Option<String>,
     /// `config.toml` reloads and saves (doc/0022).
     config_io: ConfigIo,
+    /// The Settings window, when open (doc/0024).
+    settings: Option<SettingsWindow>,
+    /// The Settings window handed over to the editor (`e`): it opens again
+    /// once the editor has saved a valid file.
+    reopen_settings: bool,
     /// Number of the latest project scan; the open dialog waits for it.
     scan: u64,
     /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
@@ -966,6 +983,8 @@ impl App {
             attached_id: None,
             check_error: None,
             config_io: ConfigIo::default(),
+            settings: None,
+            reopen_settings: false,
             scan: 0,
             root: dispatch::is_root(),
             orchestrator_dir,
@@ -2001,6 +2020,10 @@ impl App {
         let text_input = self.popup.is_none()
             && (self.dialog.is_some()
                 || self.resume.is_some()
+                || self
+                    .settings
+                    .as_ref()
+                    .is_some_and(SettingsWindow::takes_text)
                 || (self.overlay == Overlay::None && self.filter.editing));
         let key = if text_input {
             key
@@ -2015,6 +2038,9 @@ impl App {
         }
         if self.resume.is_some() {
             return self.resume_key(key);
+        }
+        if self.settings.is_some() {
+            return self.settings_key(key);
         }
         match self.overlay.clone() {
             Overlay::Help => self.help_key(key),
@@ -2349,6 +2375,7 @@ impl App {
             Action::Handoff => effects = self.request_handoff(),
             Action::Orchestrator => effects = self.request_orchestrator(),
             Action::ResumePast => return self.open_resume(),
+            Action::Settings => return self.request_settings(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
@@ -2915,6 +2942,7 @@ impl App {
         self.popup.is_some()
             || self.dialog.is_some()
             || self.resume.is_some()
+            || self.settings.is_some()
             || self.overlay != Overlay::None
             || self.quit_prompt.is_some()
     }
@@ -3100,6 +3128,12 @@ impl App {
         self.style = live.ui_style;
         self.set_theme(live.ui_theme);
         self.config = live;
+        // An open Settings window keeps its preview over the new look
+        // (doc/0024).
+        if let Some(window) = self.settings.as_mut() {
+            window.base = (self.style, self.theme);
+        }
+        self.sync_settings_preview();
         effects
     }
 
@@ -3241,6 +3275,16 @@ impl App {
             ),
         }
         self.config_io.saved = Some(result);
+        // The open Settings window takes the result: its confirmation
+        // line, a conflict question, or what follows the save (doc/0024).
+        if self.settings.is_some()
+            && let Some(result) = self.config_io.saved.take()
+            && let Some(window) = self.settings.as_mut()
+        {
+            let action = window.save_finished(result);
+            effects.extend(self.settings_action(action));
+            self.sync_settings_preview();
+        }
         effects
     }
 
@@ -3272,6 +3316,7 @@ impl App {
         result: Result<ConfigSnapshot, String>,
     ) -> Vec<Effect> {
         self.config_io.epoch += 1;
+        let reopen = std::mem::take(&mut self.reopen_settings);
         match result {
             Ok(snapshot) => {
                 let ok = snapshot.result.is_ok();
@@ -3290,12 +3335,146 @@ impl App {
                     };
                     self.set_message(text, severity);
                 }
+                let mut effects = effects;
+                // Back to the Settings window the editor was opened from,
+                // when the file is valid.
+                if ok
+                    && reopen
+                    && let Some(source) = &self.config_source
+                {
+                    effects.push(Effect::OpenSettings(source.path.clone()));
+                }
                 effects
             }
             Err(err) => {
                 self.set_message(err, Severity::Error);
                 Vec::new()
             }
+        }
+    }
+
+    // ---- the Settings window (doc/0024) -----------------------------------
+
+    /// `c`: [`Effect::OpenSettings`] for the config file, or a message
+    /// when the runtime has not said where it is.
+    fn request_settings(&mut self) -> Vec<Effect> {
+        match &self.config_source {
+            Some(source) => vec![Effect::OpenSettings(source.path.clone())],
+            None => {
+                self.set_message("no config file is known", Severity::Error);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Opens the Settings window over the file as read
+    /// ([`Effect::OpenSettings`]). A file that does not parse is not
+    /// opened: the status line says why. Nothing opens over another
+    /// window.
+    pub fn settings_opened(&mut self, result: Result<EditSession, ConfigError>) -> Vec<Effect> {
+        if self.window_open() {
+            return Vec::new();
+        }
+        match result {
+            Ok(session) => {
+                let shown = paths::shorten_home(&session.path().to_string_lossy(), &self.home);
+                self.settings = Some(SettingsWindow::new(
+                    session,
+                    shown,
+                    (self.style, self.theme),
+                    &self.home,
+                ));
+            }
+            Err(err) => self.set_message(
+                format!(
+                    "settings not opened: {}; fix the file in an editor",
+                    one_line(&err.to_string())
+                ),
+                Severity::Error,
+            ),
+        }
+        Vec::new()
+    }
+
+    /// The Settings window, when open.
+    pub fn settings(&self) -> Option<&SettingsWindow> {
+        self.settings.as_ref()
+    }
+
+    /// A key for the Settings window.
+    fn settings_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(window) = self.settings.as_mut() else {
+            return Vec::new();
+        };
+        let action = window.handle_key(key);
+        let mut effects = self.settings_action(action);
+        self.sync_settings_preview();
+        effects.extend(self.folder_job());
+        effects
+    }
+
+    /// Carries out what the Settings window asked for.
+    fn settings_action(&mut self, action: SettingsAction) -> Vec<Effect> {
+        match action {
+            SettingsAction::None => Vec::new(),
+            SettingsAction::Close => {
+                self.close_settings();
+                Vec::new()
+            }
+            SettingsAction::Save { force } => match &self.settings {
+                Some(window) => vec![Effect::SaveConfig(window.session.save_job(force))],
+                None => Vec::new(),
+            },
+            SettingsAction::Edit => {
+                self.close_settings();
+                let effects = self.edit_config();
+                self.reopen_settings = !effects.is_empty();
+                effects
+            }
+            SettingsAction::Quit => vec![Effect::Quit],
+        }
+    }
+
+    /// Closes the Settings window; a preview reverts to the running style
+    /// and theme.
+    fn close_settings(&mut self) {
+        if let Some(window) = self.settings.take() {
+            self.style = window.base.0;
+            self.set_theme(window.base.1);
+        }
+    }
+
+    /// Draws with the Settings window's preview of the style and theme,
+    /// over the running ones (doc/0024).
+    fn sync_settings_preview(&mut self) {
+        let Some(window) = &self.settings else {
+            return;
+        };
+        let (style, theme) = window.preview();
+        self.style = style.unwrap_or(window.base.0);
+        self.set_theme(theme.unwrap_or(window.base.1));
+    }
+
+    /// The list editor's next folder job, if any ([`Effect::CheckFolders`]).
+    fn folder_job(&mut self) -> Vec<Effect> {
+        let home = self.home.clone();
+        self.settings
+            .as_mut()
+            .and_then(|w| w.take_folder_job(&home))
+            .map(Effect::CheckFolders)
+            .into_iter()
+            .collect()
+    }
+
+    /// Takes back a finished [`Effect::CheckFolders`]; the next one starts
+    /// when more is wanted.
+    pub fn folders_checked(&mut self, result: FolderResult) -> Vec<Effect> {
+        match self.settings.as_mut() {
+            Some(window) => {
+                window.folders_checked(result);
+                self.folder_job()
+            }
+            None => Vec::new(),
         }
     }
 

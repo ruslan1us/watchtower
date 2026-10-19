@@ -122,5 +122,6 @@ dropped. A missing file means the built-in defaults, as at start.
 ## Open items
 
 - Whether `Ctrl+S` keeps the window open (as drawn in the mock) or closes it
-  is the UI's choice.
+  is the UI's choice. Settled in [0024](0024-settings-window.md): it stays
+  open.
 - Editing accounts in the window is out of scope for now.

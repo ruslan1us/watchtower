@@ -88,7 +88,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 
 /// The visible part of a line input `width` columns wide, scrolled so the
 /// cursor stays visible, and the cursor's column within it.
-fn input_window(input: &LineInput, width: usize) -> (String, usize) {
+pub(super) fn input_window(input: &LineInput, width: usize) -> (String, usize) {
     let chars: Vec<char> = input.text().chars().collect();
     let cursor = input.cursor().min(chars.len());
     let width = width.max(1);

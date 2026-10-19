@@ -155,8 +155,12 @@ The config is `$XDG_CONFIG_HOME/watchtower/config.toml` (default
 [0002](doc/0002-tech-stack-and-files.md) for the details. The example defines two
 accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt`).
 
-Tower's Settings window can change the file for you
-([0022](doc/0022-tower-writes-its-own-config.md)). It writes only the keys you change
+Press `c` in tower to change settings: the Settings window
+([0024](doc/0024-settings-window.md)) edits the style and theme (previewed as you
+browse), the new-session defaults, the project folders, the hand-off prompt and guard,
+and the poll interval; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
+Accounts are shown read-only there; edit them in the file and restart tower. The window
+saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
 and keeps your comments and formatting; resetting a setting to its default removes the
 key (its comment lines stay). Before its first write it copies the file once to
 `config.toml.bak`, and a symlinked config is written through to its target. A running
@@ -257,6 +261,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `p` | Group by state / by project |
 | `i` | Show / hide interactive sessions |
 | `r` | Refresh now |
+| `c` | Settings window ([0024](doc/0024-settings-window.md)) |
 | `?` | Help |
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |
@@ -282,6 +287,20 @@ New-session dialog ([0008](doc/0008-new-session-dialog.md)):
 | `Ctrl+Enter`, `Alt+Enter` | Start and attach |
 | `Ctrl+T` | After `Workspace not trusted`: run the account's command in the folder to accept trust, then retry |
 | `Esc` | Cancel (asks first if the task is not empty) |
+
+Settings window ([0024](doc/0024-settings-window.md)):
+
+| Key | Action |
+|---|---|
+| `↑` / `↓`, `k` / `j` | Move over the settings and accounts |
+| `Tab` / `Shift+Tab` | Next / previous section |
+| `Enter` | Edit: pick list, toggle, inline input, or the folder list |
+| `←` / `→` | Previous / next value of a choice (style and theme preview at once) |
+| `Del` | Back to the built-in default; saving removes the key from the file |
+| `Ctrl+S` | Save; the window stays open and says what was written |
+| `e` | Open `config.toml` in `$VISUAL` / `$EDITOR` (asks first about unsaved changes) |
+| `Esc` | Close; with unsaved changes it asks: `y` save and close, `n` discard, `Esc` keep editing |
+| `a`, `Enter`, `d`; `Tab` | Folder list: add, edit, remove; `Tab` completes a folder name |
 
 ## `tower status`
 

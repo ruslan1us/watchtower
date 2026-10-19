@@ -35,6 +35,8 @@
 //! - [`app`]: the state machine (list, grouping, filter, selection,
 //!   overlays, logs panel, stop, remove and hand-off, keys); no I/O.
 //! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
+//! - [`settings`]: the Settings window's state and keys (doc/0024); its
+//!   folder checks run as jobs.
 //! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
@@ -73,6 +75,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod poller;
 pub mod projects;
+pub mod settings;
 pub mod sidecar;
 pub mod status;
 pub mod tui;

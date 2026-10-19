@@ -45,6 +45,7 @@ use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::logview::{self, LogScreen, LogsError};
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
+use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 
 /// A finished background job.
@@ -78,6 +79,8 @@ pub enum JobResult {
     /// A finished save of the Settings window (doc/0022), boxed to keep the
     /// enum small.
     ConfigSaved(Box<Result<SaveOutcome, SaveError>>),
+    /// The Settings window's folder checks and completion (doc/0024).
+    Folders(FolderResult),
 }
 
 impl JobResult {
@@ -102,6 +105,7 @@ impl JobResult {
             }
             JobResult::ConfigChecked(epoch, found) => app.config_checked(epoch, found),
             JobResult::ConfigSaved(result) => app.config_saved(*result),
+            JobResult::Folders(result) => app.folders_checked(result),
         }
     }
 }
@@ -300,6 +304,21 @@ impl Jobs {
         };
         self.launch("config-save", job, fail, |_, _, job| {
             JobResult::ConfigSaved(Box::new(job.run()))
+        });
+    }
+
+    /// Looks at the Settings window's folders and completes a folder name
+    /// (doc/0024). A failed worker reports nothing found, so the window
+    /// can ask again.
+    pub fn folders(&self, job: FolderJob) {
+        let fail = |_: FolderJob, _: CliError| {
+            JobResult::Folders(FolderResult {
+                probed: Vec::new(),
+                completed: None,
+            })
+        };
+        self.launch("folders", job, fail, |_, _, job| {
+            JobResult::Folders(job.run())
         });
     }
 

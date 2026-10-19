@@ -41,6 +41,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted |
+| 0024 | [Settings window](0024-settings-window.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

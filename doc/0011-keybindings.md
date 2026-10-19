@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
 - Status: Accepted · 2026-10-18
-- Related: [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)
+- Related: [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md)
 
 ## Context
 
@@ -36,6 +36,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `p` | Toggle grouping: by state / by project ([0006](0006-session-states-and-grouping.md)) |
 | `i` | Show / hide interactive sessions (shown by default) |
 | `r` | Refresh now |
+| `c` | Settings window ([0024](0024-settings-window.md)) |
 | `?` | Help overlay listing all keys |
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
 | `Esc` | Cancel an attach waiting for its refresh; else close the topmost panel, overlay or filter |
@@ -95,6 +96,23 @@ field typed characters filter and `↑` / `↓` choose, in the account field
 `←` / `→` (or `↑` / `↓`) change it; `Enter` runs the picker, `Esc` cancels,
 `Ctrl+C` quits as in the list.
 
+**Settings window** (`c`, [0024](0024-settings-window.md)): `↑` / `↓`
+(`k` / `j`, `PgUp` / `PgDn`, `Home` / `End`) move over the settings and the
+read-only account rows, `Tab` / `Shift+Tab` jump to the next / previous
+section; `Enter` edits (a pick list for a choice, a toggle, an inline input
+for text and numbers, the list editor for folders); `←` / `→` step a choice
+or toggle a bool; `Del` resets to the default; `Ctrl+S` saves and keeps the
+window open; `e` opens `config.toml` in `$VISUAL` / `$EDITOR` (asking first
+about unsaved changes: `y` save, `n` discard, `Esc` cancel); `?` lists these
+keys; `Esc` closes, asking first when something is unsaved (`y` save and
+close, `n` discard, `Esc` / `Enter` keep editing); `Ctrl+C` quits, asking
+first when something is unsaved. In a pick list `↑` / `↓` move (the style
+and theme preview at once), `Enter` keeps, `Esc` cancels. In an inline input
+`Enter` keeps a valid value, `Esc` undoes the edit, `Ctrl+U` clears. In the
+list editor `a` adds, `Enter` edits, `d` removes, `Esc` goes back; while a
+folder is typed `Tab` completes its name, `Enter` keeps it, `Esc` cancels.
+`←` / `→` inside this window follow the rule for tower's own dialogs below.
+
 In the project field, typed characters filter the list and `↑` / `↓` choose
 a project; in the model field `↑` / `↓` step through the presets and typing
 gives a free-text model name. A line feed (`Ctrl+J`, which some terminals send
@@ -115,14 +133,17 @@ setting.
 
 - Command contexts translate plain keys: the session list, confirmations
   (`н` is `y`, `т` is `n`), the account and target pickers, the help
-  overlay, popups, the trust windows, the quit question and the dialog's own
-  questions. There the RU layout's `.` and `,` (typed on the `/` key) also
-  act as `/` and `?`, so the filter and help open; `.` and `,` are not bound
+  overlay, popups, the trust windows, the quit question, the dialog's own
+  questions, and the Settings window outside its text fields (rows, pick
+  lists, the list editor and its questions: `с` opens it, `н` / `т`
+  answer). There the RU layout's `.` and `,` (typed on the `/` key) also act
+  as `/` and `?`, so the filter and help open; `.` and `,` are not bound
   anywhere else.
 - Text input is never translated: the new-session dialog's fields (task,
-  name, model, project filter), the resume window's project filter and the
-  `/` filter line keep Cyrillic as typed. There, and everywhere else, only a
-  key with `Ctrl` or `Alt` held is translated, so `Ctrl+ы` is `Ctrl+S` and
+  name, model, project filter), the resume window's project filter, the `/`
+  filter line and the Settings window's inline input and folder input keep
+  Cyrillic as typed. There, and everywhere else, only a key with `Ctrl` or
+  `Alt` held is translated, so `Ctrl+ы` is `Ctrl+S` and
   `Ctrl+с` is `Ctrl+C` when the terminal reports them that way.
 - Limits: only the RU and UA ЙЦУКЕН letters are mapped (UA `і`→`s`, `ї`→`]`,
   `є`→`'`, `ґ`→`\`, as on the xkb `ua` layout; RU `ё`→`` ` ``). Other
@@ -144,7 +165,8 @@ setting.
   it drops whole key hints, least used first, and keeps `? help` and the
   detach hint.
 - The help overlay fits a 24-row terminal: related list keys share a line
-  (`s, d`, `p, i`, …), followed by the dialog keys.
+  (`s, d`, `p, i`, `c, r, ?`, …), followed by the dialog keys. The Settings
+  window has its own key list (`?` there).
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
 - A window that a background result opens (the hand-off and orchestrator

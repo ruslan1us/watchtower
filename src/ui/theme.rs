@@ -642,6 +642,45 @@ impl Look {
         }
     }
 
+    /// Borders and rules drawn by hand (section separators): plain, or the
+    /// theme's line colour.
+    pub fn rule(self) -> Style {
+        self.pick(Style::new(), Theme::line)
+    }
+
+    /// The `*` of an unsaved change (the Settings window): amber and bold,
+    /// bold without colour. `●` stays the attention marker (doc/0007).
+    pub fn modified(self) -> Style {
+        match self {
+            Look::Minimal { color: true } => {
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            }
+            Look::Themed(th) => th.bold(th.p.amber),
+            Look::Minimal { color: false } => Style::new().add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// A success (`✓ saved`): green, bold without colour.
+    pub fn success(self) -> Style {
+        match self {
+            Look::Minimal { color: true } => Style::new().fg(Color::Green),
+            Look::Themed(th) if th.color => th.fg(th.p.green),
+            _ => Style::new().add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// A key in a footer or a key line: bold, in the key colour.
+    pub fn key(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::BOLD), |th| {
+            th.bold(th.p.key)
+        })
+    }
+
+    /// The label after a key in a footer: dim, or the theme's secondary.
+    pub fn key_label(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::DIM), Theme::muted)
+    }
+
     /// A row of key hints (`Enter keep · Esc clear`): dim, with the keys in
     /// the theme's key colour.
     pub fn hint_line(self, text: impl Into<String>) -> Line<'static> {

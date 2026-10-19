@@ -722,6 +722,12 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 }
                 queue.extend(app.config_editor_finished(result));
             }
+            Effect::OpenSettings(path) => {
+                // A small local file, read like the config at start.
+                let result = config_edit::EditSession::open(&path, app.home());
+                queue.extend(app.settings_opened(result));
+            }
+            Effect::CheckFolders(job) => rt.jobs.folders(job),
         }
     }
     Ok(true)

@@ -19,6 +19,7 @@
 mod dashboard;
 mod detail;
 mod dialog;
+mod settings;
 mod theme;
 
 use theme::{Look, Theme};
@@ -63,6 +64,7 @@ pub const FOOTER_KEYS: &[&str] = &[
     "p by project",
     "i interactive",
     "R resume",
+    "c settings",
     "↑↓ move",
     "q quit",
 ];
@@ -103,6 +105,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 /// counts from (doc/0006).
 pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let area = frame.area();
+    if app.settings().is_some() {
+        // The Settings window takes the whole screen (doc/0024).
+        let look = look(app, area);
+        settings::draw(frame, app, look);
+        draw_windows(frame, app);
+        return;
+    }
     match app.style {
         UiStyle::Dashboard if dashboard::fits(area) => {
             dashboard::draw_screen(frame, app, now, now_ms);
