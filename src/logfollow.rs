@@ -36,6 +36,13 @@
 //! (doc/0003) on a short-lived worker thread; a worker that panics loses
 //! its stream (the next fetch starts a new one) and, for a request,
 //! reports the panic as its error.
+//!
+//! Ordering: a worker hands its stream and its request's result back to the
+//! follower thread together, and that thread first puts the stream back in
+//! its slot (no longer busy) and only then publishes the result. So once
+//! [`Follower::try_recv`] or [`Follower::recv_timeout`] returns a result,
+//! everything sent to the follower afterwards ([`Follower::streams`],
+//! another [`Follower::fetch`]) sees the stream that fetch left behind.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -144,9 +151,13 @@ enum Msg {
     Plan(Vec<FollowSpec>),
     Fetch(FollowSpec, bool),
     Attached(Option<FollowSpec>),
+    /// A fetch finished: the stream to keep and, for a request with a
+    /// snapshot, its result, published once the stream is back
+    /// (see the module docs).
     Done {
         key: Key,
         stream: Option<Box<LogStream>>,
+        result: Option<Fetched>,
     },
     Streams(Sender<Vec<StreamInfo>>),
     Stop,
@@ -227,14 +238,15 @@ impl Follower {
         self.results.recv_timeout(timeout).ok()
     }
 
-    /// The streams kept now (tests, diagnostics); empty when the thread
-    /// does not answer within a second.
+    /// The streams kept now (tests, diagnostics), as of every message sent
+    /// before and every result received before (see the module docs);
+    /// empty when the thread does not answer within five seconds.
     pub fn streams(&self) -> Vec<StreamInfo> {
         let (tx, rx) = mpsc::channel();
         if self.tx.send(Msg::Streams(tx)).is_err() {
             return Vec::new();
         }
-        rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default()
+        rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default()
     }
 }
 
@@ -324,14 +336,23 @@ impl State {
                     self.launch(spec, snapshot, false);
                 }
             }
-            Msg::Done { key, stream } => {
-                let Some(slot) = self.slots.get_mut(&key) else {
-                    return;
-                };
-                slot.busy = false;
-                slot.stream = stream;
-                slot.last_done = Some(now);
-                if let Some((spec, snapshot)) = slot.rerun.take() {
+            Msg::Done {
+                key,
+                stream,
+                result,
+            } => {
+                // The stream goes back before the result is published, so
+                // whoever receives the result sees it (see the module docs).
+                let rerun = self.slots.get_mut(&key).and_then(|slot| {
+                    slot.busy = false;
+                    slot.stream = stream;
+                    slot.last_done = Some(now);
+                    slot.rerun.take()
+                });
+                if let Some(result) = result {
+                    let _ = self.results.send(result);
+                }
+                if let Some((spec, snapshot)) = rerun {
                     self.launch(spec, snapshot, false);
                 }
             }
@@ -468,45 +489,40 @@ impl State {
         let source = Arc::clone(&self.source);
         let terminal = Arc::clone(&self.terminal);
         let tx = self.tx.clone();
-        let results = self.results.clone();
         let target = spec.target.clone();
         let body = {
             let k = k.clone();
-            let results = results.clone();
             let tx = tx.clone();
             let target = target.clone();
             move || {
                 let out = jobs::catch_panic(|| {
                     fetch_and_feed(source.as_ref(), terminal.as_ref(), &spec, stream, snapshot)
                 });
-                let stream = match out {
-                    Ok((stream, screen)) => {
-                        if let Some(screen) = screen {
-                            let _ = results.send((target, screen));
-                        }
-                        stream
-                    }
-                    Err(message) => {
-                        if snapshot {
-                            let _ = results.send((target, Err(worker_error(message))));
-                        }
-                        None
-                    }
+                let (stream, result) = match out {
+                    Ok((stream, screen)) => (stream, screen.map(|s| (target, s))),
+                    Err(message) => (None, snapshot.then(|| (target, Err(worker_error(message))))),
                 };
-                let _ = tx.send(Msg::Done { key: k, stream });
+                // The follower thread publishes the result once the stream
+                // is back (see the module docs).
+                let _ = tx.send(Msg::Done {
+                    key: k,
+                    stream,
+                    result,
+                });
             }
         };
         if let Err(err) = thread::Builder::new()
             .name("tower-logs".to_owned())
             .spawn(body)
         {
-            if snapshot {
+            let result = snapshot.then(|| {
                 let message = format!("cannot start its thread: {err}");
-                let _ = results.send((target, Err(worker_error(message))));
-            }
+                (target, Err(worker_error(message)))
+            });
             let _ = tx.send(Msg::Done {
                 key: k,
                 stream: None,
+                result,
             });
         }
     }

@@ -12,7 +12,7 @@ mod synthetic;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,19 +22,25 @@ use watchtower::app::LogsTarget;
 use watchtower::cli::CliRunner;
 use watchtower::config::Account;
 use watchtower::logfollow::{FollowSettings, FollowSpec, Follower, LogSource};
-use watchtower::logview::LogsError;
+use watchtower::logview::{LogScreen, LogsError};
 use watchtower::merge::ProcEnviron;
 
 /// Sessions by id, each advanced by `step` spinner frames per fetch; ids
-/// not listed are stopped. Records every call and the most fetches that
-/// ran at the same time.
+/// not listed are stopped. Records every call with the time it started and
+/// the most fetches that ran at the same time.
+///
+/// Fetches can be made to wait, so tests do not depend on how fast the
+/// machine is: while `hold` is set every fetch waits for it to clear, and
+/// with `overlap` the first fetch waits until a second one runs.
 struct Source {
     sessions: Mutex<HashMap<String, Session>>,
     step: usize,
     delay: Duration,
-    calls: Mutex<Vec<String>>,
+    calls: Mutex<Vec<(String, Instant)>>,
     running: AtomicUsize,
     most: AtomicUsize,
+    hold: AtomicBool,
+    overlap: AtomicBool,
 }
 
 impl Source {
@@ -50,16 +56,24 @@ impl Source {
             calls: Mutex::new(Vec::new()),
             running: AtomicUsize::new(0),
             most: AtomicUsize::new(0),
+            hold: AtomicBool::new(false),
+            overlap: AtomicBool::new(false),
         })
     }
 
     fn calls_of(&self, id: &str) -> usize {
+        self.starts_of(id).len()
+    }
+
+    /// When each fetch of `id` started, in order.
+    fn starts_of(&self, id: &str) -> Vec<Instant> {
         self.calls
             .lock()
             .unwrap()
             .iter()
-            .filter(|c| *c == id)
-            .count()
+            .filter(|(c, _)| c == id)
+            .map(|(_, t)| *t)
+            .collect()
     }
 
     fn total(&self) -> usize {
@@ -74,9 +88,19 @@ impl Source {
 impl LogSource for Source {
     fn logs(&self, account: &Account, id: &str) -> Result<Vec<u8>, LogsError> {
         assert_eq!(account.name, "main");
-        self.calls.lock().unwrap().push(id.to_owned());
+        let first = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push((id.to_owned(), Instant::now()));
+            calls.len() == 1
+        };
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.most.fetch_max(now, Ordering::SeqCst);
+        if first && self.overlap.load(Ordering::SeqCst) {
+            wait_for("a second fetch at the same time", || {
+                self.running.load(Ordering::SeqCst) >= 2
+            });
+        }
+        wait_for("the hold to end", || !self.hold.load(Ordering::SeqCst));
         std::thread::sleep(self.delay);
         let out = match self.sessions.lock().unwrap().get_mut(id) {
             Some(s) => {
@@ -117,36 +141,58 @@ fn start(source: &Arc<Source>, settings: FollowSettings) -> Follower {
     Follower::start(source.clone(), Arc::new(ProcEnviron), settings)
 }
 
-/// Waits up to five seconds for `done`.
+/// How long a test waits for something that should happen; only a broken
+/// follower takes this long, so it can be generous for slow machines.
+const PATIENCE: Duration = Duration::from_secs(30);
+
+/// Waits up to [`PATIENCE`] for `done`.
 fn wait_for(what: &str, done: impl Fn() -> bool) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + PATIENCE;
     while !done() {
         assert!(Instant::now() < until, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Waits until the follower has taken in everything sent to it so far and
+/// no fetch runs: from then on, a fetch starts only when it decides on one.
+/// (`streams` is answered in order with the other messages.)
+fn settle(follower: &Follower) {
+    wait_for("no fetch running", || {
+        follower.streams().iter().all(|s| !s.busy)
+    });
+}
+
+/// A request's result, waiting up to [`PATIENCE`].
+fn answer(follower: &Follower) -> (LogsTarget, Result<LogScreen, LogsError>) {
+    follower
+        .recv_timeout(PATIENCE)
+        .expect("the request reports back")
 }
 
 #[test]
 fn working_sessions_are_fetched_at_the_cadence() {
+    let cadence = Duration::from_millis(100);
     let source = Source::new(&["aaaa0001", "bbbb0002"], 5, Duration::ZERO);
     let follower = start(&source, settings(100));
     follower.set_plan(vec![spec("aaaa0001", true), spec("bbbb0002", false)]);
+    // It keeps being fetched, never sooner than a cadence after the last
+    // fetch (a fetch starts after the previous one ended, so the starts are
+    // at least a cadence apart however slow the machine is).
     wait_for("four fetches", || source.calls_of("aaaa0001") >= 4);
-    let started = Instant::now();
-    let before = source.calls_of("aaaa0001");
-    std::thread::sleep(Duration::from_millis(350));
-    let during = source.calls_of("aaaa0001") - before;
-    assert!(
-        (1..=5).contains(&during),
-        "{during} fetches in {:?} at a 100 ms cadence",
-        started.elapsed()
-    );
+    let starts = source.starts_of("aaaa0001");
+    for pair in starts.windows(2) {
+        let gap = pair[1] - pair[0];
+        assert!(gap >= cadence, "fetches {gap:?} apart at a 100 ms cadence");
+    }
     assert_eq!(source.calls_of("bbbb0002"), 0, "not working: not fetched");
-    // A working row that stops working is no longer fetched.
+    // A working row that stops working is no longer fetched: once the
+    // follower has the new plan and its last fetch is back, nothing more
+    // starts for several cadences.
     follower.set_plan(vec![spec("aaaa0001", false), spec("bbbb0002", false)]);
-    std::thread::sleep(Duration::from_millis(150));
+    settle(&follower);
     let settled = source.calls_of("aaaa0001");
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(cadence * 3);
     assert_eq!(source.calls_of("aaaa0001"), settled);
     // Its stream stays, with the base its start gave it.
     let streams = follower.streams();
@@ -159,7 +205,10 @@ fn working_sessions_are_fetched_at_the_cadence() {
 fn background_fetches_stay_within_the_limit() {
     let ids: Vec<String> = (0..8).map(|i| format!("cccc000{i}")).collect();
     let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-    let source = Source::new(&refs, 1, Duration::from_millis(60));
+    let source = Source::new(&refs, 1, Duration::from_millis(20));
+    // The first fetch waits for a second one, so they overlap however slow
+    // the machine is: the follower must run them at the same time.
+    source.overlap.store(true, Ordering::SeqCst);
     let follower = start(&source, settings(50));
     follower.set_plan(refs.iter().map(|id| spec(id, true)).collect());
     wait_for("every session fetched twice", || {
@@ -171,14 +220,19 @@ fn background_fetches_stay_within_the_limit() {
 
 #[test]
 fn a_request_during_a_fetch_runs_right_after_it() {
-    let source = Source::new(&["dddd0001"], 5, Duration::from_millis(150));
-    let follower = start(&source, settings(10_000));
+    let source = Source::new(&["dddd0001"], 5, Duration::ZERO);
+    // The background fetch is held until the request is in.
+    source.hold.store(true, Ordering::SeqCst);
+    let follower = start(&source, settings(60_000));
     follower.set_plan(vec![spec("dddd0001", true)]);
     wait_for("the background fetch", || source.calls_of("dddd0001") == 1);
     follower.fetch(spec("dddd0001", true), true);
-    let (target, result) = follower
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the request reports back");
+    // Taken in (`streams` is answered after it) while the fetch still runs.
+    let streams = follower.streams();
+    assert!(streams[0].busy, "{streams:?}");
+    assert_eq!(source.calls_of("dddd0001"), 1, "it waits for the first");
+    source.hold.store(false, Ordering::SeqCst);
+    let (target, result) = answer(&follower);
     assert_eq!(target.id, "dddd0001");
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(
@@ -188,6 +242,7 @@ fn a_request_during_a_fetch_runs_right_after_it() {
     );
     assert_eq!(source.most.load(Ordering::SeqCst), 1, "never two at once");
     // Requests count for the cadence: nothing more for a while.
+    settle(&follower);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(source.calls_of("dddd0001"), 2);
 }
@@ -201,9 +256,9 @@ fn the_panel_gets_the_screen_followed_in_the_background() {
     follower.set_plan(vec![spec("eeee0001", true)]);
     wait_for("several fetches", || source.calls_of("eeee0001") >= 6);
     follower.set_plan(vec![spec("eeee0001", false)]);
-    std::thread::sleep(Duration::from_millis(100));
+    settle(&follower);
     follower.fetch(spec("eeee0001", false), true);
-    let (_, result) = follower.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (_, result) = answer(&follower);
     let screen = result.unwrap();
     assert!(!screen.partial());
     assert_eq!(trimmed(&screen.plain_lines()), source.reference("eeee0001"));
@@ -213,7 +268,7 @@ fn the_panel_gets_the_screen_followed_in_the_background() {
     // A follower that starts late has no base: the screen says so.
     let late = start(&source, settings(10_000));
     late.fetch(spec("eeee0001", false), true);
-    let (_, result) = late.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (_, result) = answer(&late);
     let screen = result.unwrap();
     assert!(screen.partial());
     assert!(!screen.plain_lines().join("\n").contains("Example Code"));
@@ -228,8 +283,10 @@ fn the_attached_session_is_followed_whatever_its_state() {
     wait_for("fetches while attached", || {
         source.calls_of("ffff0001") >= 3
     });
+    // Back from the attach: once the follower knows and its last fetch is
+    // back, nothing more starts for several cadences.
     follower.attached(None);
-    std::thread::sleep(Duration::from_millis(100));
+    settle(&follower);
     let after = source.calls_of("ffff0001");
     std::thread::sleep(Duration::from_millis(250));
     assert_eq!(source.calls_of("ffff0001"), after);
@@ -278,15 +335,21 @@ fn a_session_without_a_live_process_loses_its_stream() {
     let source = Source::new(&["acac0001"], 1, Duration::ZERO);
     let follower = start(&source, settings(10_000));
     follower.set_plan(vec![spec("acac0001", false)]);
+    // A result is published only once the follower has its stream back
+    // (doc/0030), so `streams` right after it sees that stream.
     follower.fetch(spec("acac0001", false), true);
-    let (_, result) = follower.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (_, result) = answer(&follower);
     assert!(result.is_ok());
-    assert_eq!(follower.streams()[0].has_base, Some(true));
+    let streams = follower.streams();
+    assert!(!streams[0].busy, "{streams:?}");
+    assert_eq!(streams[0].has_base, Some(true));
     source.sessions.lock().unwrap().clear();
     follower.fetch(spec("acac0001", false), true);
-    let (_, result) = follower.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (_, result) = answer(&follower);
     assert!(matches!(result, Err(LogsError::NotRunning)), "{result:?}");
-    assert_eq!(follower.streams()[0].has_base, None);
+    let streams = follower.streams();
+    assert!(!streams[0].busy, "{streams:?}");
+    assert_eq!(streams[0].has_base, None);
 }
 
 #[test]
@@ -306,10 +369,16 @@ fn background_follows_run_the_owning_account_command() {
     followed.target.account = claude.account();
     followed.pid = None;
     follower.set_plan(vec![followed.clone()]);
-    wait_for("two background fetches", || claude.calls() >= 2);
+    // The fake counts a call before it records the call's arguments, and
+    // a third call may be running: wait until the second call's arguments
+    // are written in full (its environment comes after them) and check the
+    // first two.
+    wait_for("two background fetches", || {
+        claude.calls() >= 2 && claude.dir.path().join("env.2.txt").exists()
+    });
     drop(follower);
-    std::fs::remove_file(&capture).unwrap();
-    for argv in claude.all_argv() {
-        assert_eq!(argv, ["logs", "7b4d9f02"]);
+    for n in 1..=2 {
+        assert_eq!(claude.argv_of(n), ["logs", "7b4d9f02"], "call {n}");
     }
+    std::fs::remove_file(&capture).unwrap();
 }

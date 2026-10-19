@@ -205,13 +205,17 @@ fn screen_text(app: &App) -> String {
     }
 }
 
+/// How long a test waits for something that should happen; only a broken
+/// follower takes this long, so it can be generous for slow machines.
+const PATIENCE: Duration = Duration::from_secs(30);
+
 /// Runs the panel's fetches through `follower` until none is left.
 fn run_fetches(app: &mut App, follower: &Follower, effects: Vec<Effect>) {
     let mut queue = effects;
     while let Some(effect) = queue.pop() {
         if let Effect::FetchLogs(t) = effect {
             follower.fetch(app.follow_spec(&t), true);
-            let (t, result) = follower.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (t, result) = follower.recv_timeout(PATIENCE).unwrap();
             queue.extend(app.logs_fetched(t, result));
         }
     }
@@ -251,10 +255,10 @@ fn a_paused_panel_stays_while_its_stream_is_fed_and_end_shows_it() {
     // owner's polls fetch nothing for the paused panel.
     source.session.lock().unwrap().set(12, "a later message");
     let calls = *source.calls.lock().unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + PATIENCE;
     while *source.calls.lock().unwrap() < calls + 4 {
         assert!(Instant::now() < until, "background fetches");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5));
     }
     let effects = app.apply_poll(poll("main", "mixed-states.json"));
     assert!(
@@ -262,6 +266,25 @@ fn a_paused_panel_stays_while_its_stream_is_fed_and_end_shows_it() {
         "{effects:?}"
     );
     assert_eq!(screen_text(&app), frozen, "the snapshot stays");
+
+    // The session goes idle: background fetches stop, so the session
+    // stands still while `End` fetches it and is compared below. Wait until
+    // the follower has the plan and no fetch runs (`streams` is answered in
+    // order with the other messages).
+    let idle: Vec<_> = app
+        .follow_plan()
+        .into_iter()
+        .map(|mut s| {
+            s.working = false;
+            s
+        })
+        .collect();
+    follower.set_plan(idle);
+    let until = Instant::now() + PATIENCE;
+    while follower.streams().iter().any(|s| s.busy) {
+        assert!(Instant::now() < until, "the last background fetch");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     // End follows again: the stream as fed meanwhile, with its base, though
     // no capture holds the start's repaint any more.
