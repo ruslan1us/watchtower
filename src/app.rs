@@ -37,6 +37,7 @@ use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, Res
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
+use crate::layout;
 use crate::listing::Session;
 use crate::logview::{LogScreen, LogsError};
 use crate::merge::{
@@ -1828,12 +1829,17 @@ impl App {
 
     /// Handles one key press. Any way of quitting (`q`, `Ctrl+C`, the
     /// dialog's own quit) asks first while a hand-off runs (doc/0004).
+    ///
+    /// Keys typed under a Cyrillic layout are normalised here (doc/0011):
+    /// `Ctrl`/`Alt` combinations everywhere, plain keys only in command
+    /// contexts (see [`App::route_key`]), never in text input.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if key.kind == KeyEventKind::Release {
             return Vec::new();
         }
+        let key = layout::shortcut_key(key);
         if let Some(prompt) = self.quit_prompt.clone() {
-            return self.quit_prompt_key(key, prompt);
+            return self.quit_prompt_key(layout::command_key(key), prompt);
         }
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c' | 'C'));
@@ -1886,7 +1892,20 @@ impl App {
         }
     }
 
+    /// Sends a key to the context that owns the keys. The new-session
+    /// dialog, the resume window and the filter input take text, so they get
+    /// the key as typed; every other context is a command context and gets
+    /// Cyrillic letters as their Latin keys (doc/0011).
     fn route_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let text_input = self.popup.is_none()
+            && (self.dialog.is_some()
+                || self.resume.is_some()
+                || (self.overlay == Overlay::None && self.filter.editing));
+        let key = if text_input {
+            key
+        } else {
+            layout::command_key(key)
+        };
         if self.popup.is_some() {
             return self.popup_key(key);
         }

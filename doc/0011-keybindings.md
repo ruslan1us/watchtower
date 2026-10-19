@@ -105,6 +105,30 @@ Tower enables the keyboard-enhancement protocol where the terminal supports it
 and always accepts `Alt+Enter` as well; the footer of the dialog shows the
 variant that works.
 
+**Non-Latin keyboard layouts.** Without the kitty keyboard protocol a
+terminal reports the character a key types, not the physical key, so with a
+Russian or Ukrainian layout active the `n` key arrives as `т`. Tower maps
+such characters back to the Latin key on the same physical key of a QWERTY
+keyboard, using the standard ЙЦУКЕН layout (`й`→`q`, `ф`→`a`, `т`→`n`, …;
+shifted letters give the shifted key, `К`→`R`). It is always on, with no
+setting.
+
+- Command contexts translate plain keys: the session list, confirmations
+  (`н` is `y`, `т` is `n`), the account and target pickers, the help
+  overlay, popups, the trust windows, the quit question and the dialog's own
+  questions. There the RU layout's `.` and `,` (typed on the `/` key) also
+  act as `/` and `?`, so the filter and help open; `.` and `,` are not bound
+  anywhere else.
+- Text input is never translated: the new-session dialog's fields (task,
+  name, model, project filter), the resume window's project filter and the
+  `/` filter line keep Cyrillic as typed. There, and everywhere else, only a
+  key with `Ctrl` or `Alt` held is translated, so `Ctrl+ы` is `Ctrl+S` and
+  `Ctrl+с` is `Ctrl+C` when the terminal reports them that way.
+- Limits: only the RU and UA ЙЦУКЕН letters are mapped (UA `і`→`s`, `ї`→`]`,
+  `є`→`'`, `ґ`→`\`, as on the xkb `ua` layout; RU `ё`→`` ` ``). Other
+  layouts (Greek, Hebrew, Dvorak, …) are not mapped, and tower does not use
+  the kitty protocol's base-layout key reporting.
+
 **Rules**
 
 - Tower never binds `←` in the session list; it is Claude Code's key and the

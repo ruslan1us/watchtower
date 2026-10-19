@@ -33,6 +33,7 @@
 //! - [`app`]: the state machine (list, grouping, filter, selection,
 //!   overlays, logs panel, stop, remove and hand-off, keys); no I/O.
 //! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
+//! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
 //! - [`jobs`]: runs dispatch, stop, remove, hand-off and logs on worker
@@ -61,6 +62,7 @@ pub mod editor;
 pub mod groups;
 pub mod handoff;
 pub mod jobs;
+pub mod layout;
 pub mod listing;
 pub mod logview;
 pub mod merge;

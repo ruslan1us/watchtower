@@ -18,6 +18,7 @@ use crate::dispatch::{
     self, BYPASS_PERMISSIONS, DEFAULT_CHOICE, DEFAULT_PERMISSION_MODE, DispatchRequest,
     EFFORT_CHOICES, MODEL_CHOICES, ValidationError,
 };
+use crate::layout;
 use crate::projects::{self, Project, ProjectList};
 
 /// The dialog's fields, in `Tab` order.
@@ -582,12 +583,15 @@ impl Dialog {
         self.field = Field::Task;
     }
 
-    /// Handles one key.
+    /// Handles one key. Typed text is kept as is; `Ctrl`/`Alt` keys and the
+    /// `y` / `n` of the dialog's questions are also read under a Cyrillic
+    /// layout (doc/0011).
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
+        let key = layout::shortcut_key(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         if let Some(prompt) = self.prompt {
-            return self.prompt_key(prompt, &key);
+            return self.prompt_key(prompt, &layout::command_key(key));
         }
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             self.prompt = Some(DialogPrompt::Quit);
@@ -855,6 +859,7 @@ impl ResumeWindow {
     /// `↑` / `↓` choose and typing filters, in the account field `←` / `→`
     /// (or `↑` / `↓`) change the account.
     pub fn handle_key(&mut self, key: KeyEvent) -> ResumeAction {
+        let key = layout::shortcut_key(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             return ResumeAction::Quit;

@@ -216,6 +216,9 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |
 
+Command keys also work with a Russian or Ukrainian (ЙЦУКЕН) layout active: `т` acts as
+`n`, `ф` as `a`, and so on; text fields keep Cyrillic as typed ([0011](doc/0011-keybindings.md)).
+
 Confirmations take `y`; `n`, `Esc` and `Enter` cancel. The hand-off confirmation names
 both accounts and their groups and says that the full conversation and project context
 continue under the target account and its terms. Tower never binds `←` and treats
