@@ -4,12 +4,15 @@
 //! checks them, [`DispatchRequest::command_line`] builds
 //!
 //! ```text
-//! <account command> --bg [--name N] [--model M] [--effort E] --permission-mode P <task>
+//! <account command> --bg [--name N] [--model M] [--effort E] --permission-mode P
+//!     [--settings F] <task>
 //! ```
 //!
 //! with the project as working directory, and [`run`] executes it and parses
 //! `backgrounded · <id> · <name>` from stdout. The task is always a single
-//! argument; nothing goes through a shell.
+//! argument; nothing goes through a shell. `--settings F` passes tower's
+//! observe-only subagent hooks (doc/0029) when the request carries the file;
+//! [`run`] writes it first and leaves the flag out when it cannot.
 //!
 //! In an untrusted folder `--bg` fails ([`DispatchError::Untrusted`]); the UI
 //! then runs [`trust_command`] with inherited stdio so the user accepts trust
@@ -24,6 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::{CliError, CliOutput, CliRunner, CommandLine};
 use crate::config::Account;
 use crate::sidecar::Sidecar;
+use crate::subagents;
 
 /// The value that omits `--model` or `--effort` (doc/0002, doc/0008).
 pub const DEFAULT_CHOICE: &str = "default";
@@ -123,6 +127,9 @@ pub struct DispatchRequest {
     pub effort: Option<String>,
     /// `--permission-mode`, always passed (built-in default `auto`).
     pub permission_mode: String,
+    /// `--settings`: tower's settings file with the subagent hooks
+    /// (doc/0029), `None` when subagents are not tracked.
+    pub settings: Option<PathBuf>,
 }
 
 /// Why a [`DispatchRequest`] is not valid. The message is meant for the
@@ -165,6 +172,7 @@ impl DispatchRequest {
             model: None,
             effort: None,
             permission_mode: DEFAULT_PERMISSION_MODE.to_owned(),
+            settings: None,
         }
     }
 
@@ -254,11 +262,19 @@ impl DispatchRequest {
         if root && mode == BYPASS_PERMISSIONS {
             return Err(ValidationError::BypassAsRoot);
         }
+        if let Some(settings) = &self.settings
+            && (!settings.is_absolute() || settings.to_str().is_none())
+        {
+            return Err(ValidationError::BadOption {
+                field: "settings file",
+                value: settings.to_string_lossy().into_owned(),
+            });
+        }
         Ok(())
     }
 
-    /// The arguments after the account command:
-    /// `--bg [--name N] [--model M] [--effort E] --permission-mode P <task>`.
+    /// The arguments after the account command: `--bg [--name N]
+    /// [--model M] [--effort E] --permission-mode P [--settings F] <task>`.
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["--bg".to_owned()];
         let mut push = |flag: &str, value: Option<&str>| {
@@ -271,6 +287,8 @@ impl DispatchRequest {
         push("--model", self.model_arg());
         push("--effort", self.effort_arg());
         push("--permission-mode", Some(self.permission_mode_arg()));
+        let settings = self.settings.as_deref().map(Path::to_string_lossy);
+        push("--settings", settings.as_deref());
         args.push(self.task_arg().to_owned());
         args
     }
@@ -433,10 +451,32 @@ pub fn interpret(out: &CliOutput, dir: &Path) -> Result<Dispatched, DispatchErro
 /// session's id and name. Blocks for up to the runner's timeout; the UI
 /// calls it on a worker thread. Does not touch the sidecar: on success the
 /// caller uses [`record_dispatch`].
+///
+/// With a settings file, it is written first when its content is not
+/// current ([`subagents::ensure_settings`], for the running binary); when
+/// that fails the session starts without `--settings`, so it simply shows
+/// no subagents (doc/0029).
 pub fn run(runner: &CliRunner, request: &DispatchRequest) -> Result<Dispatched, DispatchError> {
     request.validate()?;
+    let without;
+    let request = match &request.settings {
+        Some(path) if !settings_ready(path) => {
+            without = DispatchRequest {
+                settings: None,
+                ..request.clone()
+            };
+            &without
+        }
+        _ => request,
+    };
     let out = runner.run_line(&request.command_line())?;
     interpret(&out, &request.project)
+}
+
+/// Whether the settings file at `path` holds the current hooks, writing it
+/// when needed.
+fn settings_ready(path: &Path) -> bool {
+    subagents::running_exe().is_ok_and(|exe| subagents::ensure_settings(path, &exe).is_ok())
 }
 
 /// Records a successful dispatch in the sidecar (doc/0008): the account as

@@ -997,7 +997,7 @@ fn read_for_merge(path: &Path) -> std::io::Result<Option<Snapshot>> {
 /// Writes `json` to a fresh temp file next to `path`, fsyncs it, renames
 /// it over `path` and fsyncs the directory. The temp file is removed when
 /// anything fails.
-fn write_atomic(path: &Path, dir: Option<&Path>, json: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, dir: Option<&Path>, json: &[u8]) -> std::io::Result<()> {
     let (tmp, mut file) = loop {
         let tmp = tmp_path(path);
         match std::fs::OpenOptions::new()

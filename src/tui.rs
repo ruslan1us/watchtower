@@ -413,6 +413,14 @@ pub fn flush_sidecar(
     }
 }
 
+/// Writes `<config dir>/claude-settings.json` for the running binary when
+/// its content is not current (doc/0029). Each dispatch checks it again.
+fn write_subagent_settings(config_dir: &std::path::Path) -> Result<bool, String> {
+    let exe = crate::subagents::running_exe()
+        .map_err(|e| format!("cannot find the running tower binary: {e}"))?;
+    crate::subagents::ensure_settings(&crate::subagents::settings_path(config_dir), &exe)
+}
+
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
 /// `source` says which config file was used and whether it was found
 /// (doc/0002); a missing one shows a warning.
@@ -430,6 +438,14 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
         Box::new(ProcEnviron),
     );
     app.set_config_dir(&dirs.config_dir);
+    app.enable_subagents(&dirs.config_dir);
+    if config.track_subagents
+        && let Err(err) = write_subagent_settings(&dirs.config_dir)
+    {
+        app.add_warning(format!(
+            "subagents: {err}; sessions start without the subagent hooks"
+        ));
+    }
     app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     app.style = config.ui_style;
@@ -575,6 +591,8 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
             // (doc/0017 section 8), and changes to config.toml (doc/0022).
             effects.push(Effect::CheckSidecar);
             effects.push(Effect::CheckConfig);
+            // The subagents of the rows just listed (doc/0029).
+            effects.push(Effect::ReadSubagents);
         }
         while let Some(message) = rt.poller.try_restart() {
             app.set_message(
@@ -622,6 +640,11 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             Effect::CheckSidecar => {
                 if let Some(job) = app.start_sidecar_check() {
                     rt.jobs.sidecar(job, rt.state_file.to_path_buf());
+                }
+            }
+            Effect::ReadSubagents => {
+                if let Some(job) = app.start_subagent_read(Instant::now()) {
+                    rt.jobs.subagents(job);
                 }
             }
             Effect::Attach(req) => {

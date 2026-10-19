@@ -60,6 +60,7 @@ use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
     StateTuple,
 };
+use crate::subagents::{self, Subagent};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
@@ -177,6 +178,10 @@ pub enum Effect {
     /// session, tower compares the name a listing from that cycle shows
     /// with the requested one (doc/0027).
     PollForRename,
+    /// Read the subagent files of the current rows (and now and then prune
+    /// them): the job from [`App::start_subagent_read`], run on a worker
+    /// thread, then [`App::subagents_read`] (doc/0029).
+    ReadSubagents,
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -682,6 +687,28 @@ impl PendingAttach {
     }
 }
 
+/// Where the subagent hooks and files live (doc/0029), once the runtime
+/// enables them ([`App::enable_subagents`]).
+#[derive(Debug, Clone)]
+struct SubagentPaths {
+    /// `<config dir>/claude-settings.json`, passed with `--settings`.
+    settings: PathBuf,
+    /// `<config dir>/subagents`.
+    dir: PathBuf,
+}
+
+/// The subagent reads (doc/0029).
+#[derive(Debug, Default)]
+struct SubagentIo {
+    /// A read runs; another is not started meanwhile.
+    busy: bool,
+    /// When the last read with pruning started.
+    last_prune: Option<Instant>,
+}
+
+/// How often a subagent read also prunes stale files.
+pub const SUBAGENT_PRUNE_EVERY: Duration = Duration::from_secs(60);
+
 /// The config reload check in flight (doc/0022).
 #[derive(Debug, Default)]
 struct ConfigIo {
@@ -1007,6 +1034,11 @@ pub struct App {
     root: bool,
     /// The orchestrator's folder, `<config dir>/orchestrator` (doc/0010).
     orchestrator_dir: PathBuf,
+    /// The subagent settings file and folder, when enabled (doc/0029).
+    subagent_paths: Option<SubagentPaths>,
+    /// Running subagents by `sessionId`, from the last read.
+    subagents: HashMap<String, Vec<Subagent>>,
+    subagent_io: SubagentIo,
     orchestrator: OrchestratorState,
     message: Option<Message>,
     handoff: Option<HandoffProgress>,
@@ -1103,6 +1135,9 @@ impl App {
             scan: 0,
             root: dispatch::is_root(),
             orchestrator_dir,
+            subagent_paths: None,
+            subagents: HashMap::new(),
+            subagent_io: SubagentIo::default(),
             orchestrator: OrchestratorState::default(),
             message: None,
             handoff: None,
@@ -1134,6 +1169,100 @@ impl App {
     /// The orchestrator's folder (doc/0010).
     pub fn orchestrator_dir(&self) -> &std::path::Path {
         &self.orchestrator_dir
+    }
+
+    /// Enables subagent tracking (doc/0029) with tower's config dir: while
+    /// `[sessions] track_subagents` is on, the sessions tower starts get
+    /// `--settings <config dir>/claude-settings.json` and the files under
+    /// `<config dir>/subagents` are read after each poll. Without this call
+    /// (tests), nothing is passed or read.
+    pub fn enable_subagents(&mut self, config_dir: &std::path::Path) {
+        self.subagent_paths = Some(SubagentPaths {
+            settings: subagents::settings_path(config_dir),
+            dir: subagents::dir(config_dir),
+        });
+    }
+
+    /// The `--settings` file for a session tower starts now: `None` while
+    /// tracking is off or not enabled (doc/0029).
+    pub fn claude_settings(&self) -> Option<PathBuf> {
+        if !self.config.track_subagents {
+            return None;
+        }
+        self.subagent_paths.as_ref().map(|p| p.settings.clone())
+    }
+
+    /// The running subagents of `session` (doc/0029), oldest first: only
+    /// while tracking is on and the row is live and `working`
+    /// ([`subagents::is_current`]); otherwise none.
+    pub fn subagents_of(&self, session: &Session) -> &[Subagent] {
+        if !self.config.track_subagents || !subagents::is_current(session) {
+            return &[];
+        }
+        session
+            .session_id
+            .as_deref()
+            .and_then(|id| self.subagents.get(id))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The read to run for [`Effect::ReadSubagents`]: the files of the
+    /// current rows, with pruning at most every [`SUBAGENT_PRUNE_EVERY`]
+    /// (sessions no full listing shows, doc/0017's conditions). `None`
+    /// while a read runs, or when tracking is off or not enabled (then the
+    /// subagents are forgotten).
+    pub fn start_subagent_read(&mut self, now: Instant) -> Option<subagents::ReadJob> {
+        let paths = self.subagent_paths.as_ref()?;
+        if !self.config.track_subagents {
+            self.subagents.clear();
+            return None;
+        }
+        if self.subagent_io.busy {
+            return None;
+        }
+        let current = self
+            .sessions
+            .iter()
+            .filter(|m| subagents::is_current(&m.session))
+            .filter_map(|m| m.session.session_id.clone())
+            .collect();
+        let due = self
+            .subagent_io
+            .last_prune
+            .is_none_or(|t| now.saturating_duration_since(t) >= SUBAGENT_PRUNE_EVERY);
+        let prune = due.then(|| {
+            let complete = self
+                .polls
+                .iter()
+                .all(|p| p.rows.is_some() && p.error.is_none() && p.warnings.is_empty());
+            let listed = self
+                .polls
+                .iter()
+                .filter(|p| p.error.is_none())
+                .flat_map(|p| p.rows.iter().flatten())
+                .filter_map(|s| s.session_id.clone())
+                .collect();
+            (listed, complete)
+        });
+        if prune.is_some() {
+            self.subagent_io.last_prune = Some(now);
+        }
+        self.subagent_io.busy = true;
+        Some(subagents::ReadJob {
+            dir: paths.dir.clone(),
+            current,
+            prune,
+        })
+    }
+
+    /// Takes the result of a subagent read.
+    pub fn subagents_read(&mut self, found: HashMap<String, Vec<Subagent>>) {
+        self.subagent_io.busy = false;
+        self.subagents = if self.config.track_subagents {
+            found
+        } else {
+            HashMap::new()
+        };
     }
 
     /// Records where the config came from (doc/0002). A missing file means
@@ -2414,10 +2543,12 @@ impl App {
     /// flow that is followed by one. Validation errors stay in the dialog.
     fn start_dispatch(&mut self, attach: bool, trust: bool) -> Vec<Effect> {
         let root = self.root;
+        let settings = self.claude_settings();
         let Some(dialog) = self.dialog.as_mut() else {
             return Vec::new();
         };
-        let request = dialog.request(&self.config.accounts);
+        let mut request = dialog.request(&self.config.accounts);
+        request.settings = settings;
         if let Err(err) = request.validate_for(root) {
             dialog.field = Field::of_error(&err);
             dialog.error = Some(err.to_string());
@@ -3286,7 +3417,8 @@ impl App {
                 name: orchestrator::NAME.to_owned(),
             })];
         }
-        let request = orchestrator::request(&self.config, self.orchestrator_dir.clone());
+        let mut request = orchestrator::request(&self.config, self.orchestrator_dir.clone());
+        request.settings = self.claude_settings();
         self.orchestrator.starting = true;
         self.set_message(
             format!("starting the orchestrator under {}…", request.account.name),

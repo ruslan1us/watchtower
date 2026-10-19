@@ -365,9 +365,18 @@ fn example_config_is_valid_and_complete() {
             "handoff_prompt",
             "poll_interval_secs",
             "project_roots",
+            "sessions",
             "ui",
         ]
     );
+    let sessions_keys: Vec<&str> = table["sessions"]
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(sessions_keys, ["track_subagents"]);
+    assert_eq!(c.track_subagents, defaults.track_subagents);
     let mut ui_keys: Vec<&str> = table["ui"]
         .as_table()
         .unwrap()
@@ -495,4 +504,17 @@ fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
         parse("[ui]\ntheme = true\n"),
         Err(ConfigError::Parse { .. })
     ));
+}
+
+#[test]
+fn track_subagents_defaults_to_true() {
+    assert!(Config::defaults(Path::new(HOME)).track_subagents);
+    assert!(parse("").unwrap().track_subagents);
+    assert!(parse("[sessions]\n").unwrap().track_subagents);
+    assert!(
+        !parse("[sessions]\ntrack_subagents = false\n")
+            .unwrap()
+            .track_subagents
+    );
+    assert!(parse("[sessions]\ntrack_subagents = \"no\"\n").is_err());
 }

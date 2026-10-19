@@ -188,6 +188,7 @@ fn schema_fields_and_types() {
             .iter()
             .chain(&nullable_strings)
             .chain(&nullable_numbers)
+            .chain(&["subagents"])
             .copied()
             .collect();
         keys.sort_unstable();
@@ -203,6 +204,8 @@ fn schema_fields_and_types() {
             assert!(row[k].is_i64() || row[k].is_null(), "{k} in {row}");
         }
         assert!(groups.contains(&row["group"].as_str().unwrap()), "{row}");
+        // No hook files in this home: always an empty array (doc/0029).
+        assert_eq!(row["subagents"], json!([]), "{row}");
     }
     // Listing fields keep their names and values.
     let pick = by_name(&report, "pick-colour");
@@ -649,4 +652,60 @@ fn the_orchestrator_and_a_question_turn_in_json_and_table() {
         "{text}"
     );
     assert!(line("orchestrator").contains("ready"), "{text}");
+}
+
+/// `subagents` (doc/0029): the running agents from tower's own files, for
+/// rows that are live and `working` only; read-only; none when
+/// `[sessions] track_subagents = false`.
+#[test]
+fn subagents_of_working_rows_only() {
+    let _guard = lock();
+    let (setup, _) = split_setup();
+    let dir = setup.config_dir().join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = json!({
+        "version": 1,
+        "agents": [
+            { "id": "bb22", "type": "general-purpose", "description": "beta waiter",
+              "started_ms": 1_790_000_000_500_i64, "status": "running", "background": true },
+            { "id": "aa11", "type": "general-purpose", "description": "alpha waiter",
+              "started_ms": 1_790_000_000_000_i64, "status": "running", "background": true }
+        ],
+        "stopped": []
+    });
+    let working = "5a7c2e91-0d4b-4c8e-8f21-6b3a9d0e7c12";
+    let done = "7b4d9f02-3c1e-4a7b-b5d6-2e8f0a1c4b93";
+    for sid in [working, done] {
+        std::fs::write(dir.join(format!("{sid}.json")), file.to_string()).unwrap();
+    }
+    let report = parse(&setup.run(&["status", "--json"]));
+    assert_eq!(
+        by_name(&report, "run-test-suite")["subagents"],
+        json!([
+            { "id": "aa11", "type": "general-purpose", "description": "alpha waiter",
+              "startedAt": 1_790_000_000_000_i64 },
+            { "id": "bb22", "type": "general-purpose", "description": "beta waiter",
+              "startedAt": 1_790_000_000_500_i64 }
+        ])
+    );
+    assert_eq!(
+        by_name(&report, "print-date")["subagents"],
+        json!([]),
+        "done"
+    );
+    assert_eq!(by_name(&report, "pick-colour")["subagents"], json!([]));
+    // Read only: nothing pruned or rewritten.
+    for sid in [working, done] {
+        let text = std::fs::read_to_string(dir.join(format!("{sid}.json"))).unwrap();
+        assert_eq!(text, file.to_string());
+    }
+
+    setup.write_config(
+        "default_account = \"main\"\n\
+         [sessions]\ntrack_subagents = false\n\
+         [[accounts]]\nname = \"main\"\ncommand = \"claude\"\n\
+         [[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\nconfig_dir = \"~/.claude-alt\"\n",
+    );
+    let report = parse(&setup.run(&["status", "--json"]));
+    assert_eq!(by_name(&report, "run-test-suite")["subagents"], json!([]));
 }

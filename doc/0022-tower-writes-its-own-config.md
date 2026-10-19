@@ -1,6 +1,6 @@
 # 0022. Tower writes its own config
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · `[sessions] track_subagents` added by [0029](0029-tracking-subagents.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 - Supersedes: in [0002](0002-tech-stack-and-files.md), "Tower only reads it" and the rejected alternative "Tower writing its own config"
 
@@ -25,7 +25,8 @@ accounts), `default_model` (`default`, `fable`, `opus`, `sonnet`, `haiku` or
 a full model name), `default_effort`, `default_permission_mode`,
 `project_roots`, `extra_projects`, `handoff_prompt`,
 `allow_cross_group_handoff`, `poll_interval_secs`. `[[accounts]]` is shown,
-never edited.
+never edited. *Amended by [0029](0029-tracking-subagents.md):* also
+`[sessions] track_subagents`.
 
 **Values offered.** The window offers, per setting, the values the code
 lists (`config_edit::EditSession::offered`). `bypassPermissions` is not

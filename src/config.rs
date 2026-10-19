@@ -219,6 +219,11 @@ pub struct Config {
     pub ui_style: UiStyle,
     /// `[ui] theme`: the dashboard's colour theme (doc/0021).
     pub ui_theme: UiTheme,
+    /// `[sessions] track_subagents` (default `true`): pass the observe-only
+    /// subagent hooks with `--settings` to the sessions tower starts and
+    /// read the files they write (doc/0029). When `false`, no `--settings`
+    /// is passed and the files are ignored.
+    pub track_subagents: bool,
 }
 
 /// Where the config came from: the file tower looked at and whether it was
@@ -298,6 +303,13 @@ struct RawConfig {
     #[serde(default)]
     accounts: Vec<RawAccount>,
     ui: Option<RawUi>,
+    sessions: Option<RawSessions>,
+}
+
+/// The `[sessions]` table (doc/0029).
+#[derive(Debug, Default, Deserialize)]
+struct RawSessions {
+    track_subagents: Option<bool>,
 }
 
 /// The `[ui]` table (doc/0020).
@@ -439,6 +451,7 @@ impl Config {
             allow_cross_group_handoff: raw.allow_cross_group_handoff.unwrap_or(false),
             ui_style,
             ui_theme,
+            track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
         })
     }
 
@@ -512,7 +525,10 @@ mod tests {
             allow_cross_group_handoff,
             accounts,
             ui,
+            sessions,
         } = raw;
+        let RawSessions { track_subagents } = sessions.expect("[sessions] is documented");
+        assert!(track_subagents.is_some());
         let RawUi { style, theme } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());

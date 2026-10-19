@@ -148,6 +148,7 @@ fn dispatch_job() -> DispatchJob {
             model: None,
             effort: None,
             permission_mode: "auto".into(),
+            settings: None,
         },
         attach: false,
         after_trust: false,

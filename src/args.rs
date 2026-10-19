@@ -22,6 +22,17 @@ pub enum Command {
         /// `--force`: replace a cargo build output or the same version.
         force: bool,
     },
+    /// `tower hook [--dir <config dir>]`: internal, run by the Claude Code
+    /// hooks tower passes to the sessions it starts (doc/0029). Reads one
+    /// payload from stdin; never prints and always exits 0. `dir` is
+    /// tower's config dir (default: the usual one); arguments it does not
+    /// understand make it do nothing (`valid: false`), still silently.
+    Hook {
+        /// `--dir`: tower's config dir.
+        dir: Option<std::path::PathBuf>,
+        /// False when the arguments were not understood.
+        valid: bool,
+    },
 }
 
 /// Short usage text.
@@ -42,6 +53,8 @@ Commands:
     --version vX.Y.Z   Install that release, also to reinstall or downgrade
     --force            Also replace a cargo build output or the same version
                  Only `update` uses the network (through curl), never on its own.
+  hook           Internal: run by the hooks tower passes to the sessions it
+                 starts, to list their subagents; prints nothing
 
 Config: $XDG_CONFIG_HOME/watchtower/config.toml (default ~/.config/watchtower/config.toml)
 
@@ -82,6 +95,7 @@ where
         ["--help" | "-h"] => Ok(Command::Help),
         ["status", rest @ ..] => parse_status(rest),
         ["update" | "--update", rest @ ..] => parse_update(rest),
+        ["hook", rest @ ..] => Ok(parse_hook(rest)),
         [one] => Err(format!("unknown argument `{one}`")),
         _ => Err("too many arguments".to_owned()),
     }
@@ -98,6 +112,24 @@ fn parse_status(rest: &[&str]) -> Result<Command, String> {
         }
     }
     Ok(Command::Status { json })
+}
+
+/// Never an error: `tower hook` must stay silent (doc/0029).
+fn parse_hook(rest: &[&str]) -> Command {
+    match rest {
+        [] => Command::Hook {
+            dir: None,
+            valid: true,
+        },
+        ["--dir", dir] if !dir.is_empty() => Command::Hook {
+            dir: Some(std::path::PathBuf::from(dir)),
+            valid: true,
+        },
+        _ => Command::Hook {
+            dir: None,
+            valid: false,
+        },
+    }
 }
 
 fn parse_update(rest: &[&str]) -> Result<Command, String> {
@@ -200,6 +232,38 @@ mod tests {
         assert!(parse(["update", "--check", "--force"]).is_err());
         assert!(parse(["update", "--check", "--check"]).is_err());
         assert!(parse(["update", "--now"]).is_err());
+    }
+
+    #[test]
+    fn parses_hook() {
+        assert_eq!(
+            parse(["hook"]),
+            Ok(Command::Hook {
+                dir: None,
+                valid: true
+            })
+        );
+        assert_eq!(
+            parse(["hook", "--dir", "/home/user/.config/watchtower"]),
+            Ok(Command::Hook {
+                dir: Some("/home/user/.config/watchtower".into()),
+                valid: true
+            })
+        );
+        for bad in [
+            &["hook", "--dir"][..],
+            &["hook", "--dir", ""],
+            &["hook", "x"],
+        ] {
+            assert_eq!(
+                parse(bad.iter().copied()),
+                Ok(Command::Hook {
+                    dir: None,
+                    valid: false
+                }),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

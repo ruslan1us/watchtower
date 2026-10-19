@@ -1,6 +1,6 @@
 # 0008. New-session dialog
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -45,6 +45,11 @@ Dispatch runs, with the project as working directory:
 ```
 
 - Flags left at `default` are omitted, so Claude Code's own defaults apply.
+- *Amended by [0029](0029-tracking-subagents.md):* while `[sessions]
+  track_subagents` is on (default), `--settings <config dir>/claude-settings.json`
+  follows `--permission-mode`, before the task: tower's observe-only subagent
+  hooks. Tower writes that file first when its content is not current; when it
+  cannot, the dispatch runs without the flag.
 - The permission mode has no `default` entry, so `--permission-mode` is always passed
   (`default_permission_mode`, built-in `auto`, unless changed).
 - The task is trimmed and passed as one argument, never through a shell. The dialog rejects
