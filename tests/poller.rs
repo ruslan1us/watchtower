@@ -217,3 +217,23 @@ fn poll_now_returns_a_cycle_every_later_result_reaches() {
         .expect("forced poll");
     assert!(u.cycle >= cycle, "{} < {cycle}", u.cycle);
 }
+
+#[test]
+fn a_new_interval_applies_while_polling_runs() {
+    let source = Arc::new(FakeSource::default());
+    let poller = Poller::start(
+        vec![account("main")],
+        source.clone(),
+        Duration::from_secs(60),
+    );
+    let first = poller
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first poll");
+    assert_eq!(first.cycle, 1);
+    // A 60 s tick would not come during this test; the new one does.
+    assert!(poller.recv_timeout(Duration::from_millis(200)).is_none());
+    poller.set_interval(Duration::from_millis(20));
+    assert_eq!(poller.interval(), Duration::from_millis(20));
+    let tick = poller.recv_timeout(Duration::from_secs(5)).expect("a tick");
+    assert!(tick.cycle > 1);
+}

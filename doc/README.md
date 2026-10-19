@@ -19,7 +19,7 @@ This directory records the design decisions behind it, one file per decision.
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
 | 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted |
-| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted |
+| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
@@ -39,6 +39,8 @@ This directory records the design decisions behind it, one file per decision.
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted |
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
+| 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted |
+| 0023 | [Self-update command](0023-self-update.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

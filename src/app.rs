@@ -33,6 +33,7 @@ use ratatui::widgets::ListState;
 use crate::actions::{RemoveError, StopError};
 use crate::activity;
 use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
+use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -131,6 +132,36 @@ pub enum Effect {
     /// [`App::orchestrator_trust_finished`], which retries the start once
     /// (doc/0008, doc/0010).
     OrchestratorTrust(OrchestratorJob),
+    /// Look for changes to `config.toml`: the job from
+    /// [`App::start_config_check`], run on a worker thread, then
+    /// [`App::config_checked`] (doc/0022).
+    CheckConfig,
+    /// A reloaded config changed `poll_interval_secs`: the poller ticks at
+    /// this interval from now on (doc/0022).
+    SetPollInterval(Duration),
+    /// Save the Settings window's changes to `config.toml` on a worker
+    /// thread ([`config_edit::SaveJob::run`]), then call
+    /// [`App::config_saved`] (doc/0022).
+    SaveConfig(config_edit::SaveJob),
+    /// Suspend tower like an attach and open this config file in
+    /// `$VISUAL`, else `$EDITOR` ([`config_edit::edit_in_editor`]), then
+    /// call [`App::config_editor_finished`] (doc/0022).
+    EditConfig(PathBuf),
+}
+
+/// The note shown while the config's accounts differ from the ones tower
+/// started with: they are not applied live (doc/0022).
+pub const RESTART_NOTE: &str = "accounts changed — restart tower to apply";
+
+/// A look at `config.toml` for changes (doc/0022), run on a worker thread;
+/// report with [`App::config_checked`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigCheckJob {
+    /// The app's config epoch when the check started: a result from before
+    /// a save or an editor run is dropped.
+    pub epoch: u64,
+    /// The check itself.
+    pub check: ConfigCheck,
 }
 
 /// The start of the orchestrator session (doc/0010).
@@ -543,6 +574,25 @@ impl PendingAttach {
     }
 }
 
+/// The config reload check in flight (doc/0022).
+#[derive(Debug, Default)]
+struct ConfigIo {
+    /// A check runs; at most one at a time.
+    busy: bool,
+    /// Bumped by every save and editor run: a check that started before
+    /// is stale and dropped.
+    epoch: u64,
+    /// The stamp of the config file version tower last read or wrote;
+    /// `None` at start, so the first check reads the file once.
+    stamp: Option<crate::sidecar::FileStamp>,
+    /// Why the last reload was refused; shown until a reload succeeds.
+    error: Option<String>,
+    /// [`RESTART_NOTE`] while the file's accounts differ from tower's.
+    restart_note: Option<&'static str>,
+    /// The last finished save, for the Settings window to take.
+    saved: Option<Result<SaveOutcome, SaveError>>,
+}
+
 impl SidecarIo {
     fn take_seq(&mut self) -> u64 {
         let seq = self.next_seq;
@@ -821,6 +871,8 @@ pub struct App {
     attached_id: Option<String>,
     /// Why the last sidecar check failed; shown until one succeeds.
     check_error: Option<String>,
+    /// `config.toml` reloads and saves (doc/0022).
+    config_io: ConfigIo,
     /// Number of the latest project scan; the open dialog waits for it.
     scan: u64,
     /// Whether tower runs as root (hides `bypassPermissions`, doc/0008).
@@ -913,6 +965,7 @@ impl App {
             activity_pending: false,
             attached_id: None,
             check_error: None,
+            config_io: ConfigIo::default(),
             scan: 0,
             root: dispatch::is_root(),
             orchestrator_dir,
@@ -954,10 +1007,34 @@ impl App {
     /// warning in the status line.
     pub fn set_config_source(&mut self, source: ConfigSource) {
         if !source.found {
-            self.add_warning(format!(
-                "no config at {}; using defaults — see config.example.toml",
-                source.shown(Some(&self.home))
-            ));
+            self.add_warning(self.missing_config_warning(&source));
+        }
+        self.config_source = Some(source);
+    }
+
+    /// The warning for a missing config file.
+    fn missing_config_warning(&self, source: &ConfigSource) -> String {
+        format!(
+            "no config at {}; using defaults — see config.example.toml",
+            source.shown(Some(&self.home))
+        )
+    }
+
+    /// The config file now exists (`found`) or not: updates the source and
+    /// its warning.
+    fn set_config_found(&mut self, found: bool) {
+        let Some(mut source) = self.config_source.clone() else {
+            return;
+        };
+        if source.found == found {
+            return;
+        }
+        let warning = self.missing_config_warning(&source);
+        source.found = found;
+        if found {
+            self.warnings.retain(|w| *w != warning);
+        } else {
+            self.add_warning(warning);
         }
         self.config_source = Some(source);
     }
@@ -1380,6 +1457,18 @@ impl App {
         if let Some(err) = &self.check_error {
             out.push(StatusSegment {
                 text: err.clone(),
+                severity: Severity::Warning,
+            });
+        }
+        if let Some(err) = &self.config_io.error {
+            out.push(StatusSegment {
+                text: err.clone(),
+                severity: Severity::Error,
+            });
+        }
+        if let Some(note) = self.config_io.restart_note {
+            out.push(StatusSegment {
+                text: note.to_owned(),
                 severity: Severity::Warning,
             });
         }
@@ -2982,6 +3071,232 @@ impl App {
         }
         effects.extend(self.attach_progress(Instant::now()));
         effects
+    }
+
+    // ---- config.toml: reload, save, editor (doc/0022) ----------------------
+
+    /// Applies a new config to the running tower (doc/0022): the style and
+    /// theme redraw at once; the dialog defaults, project roots and extras
+    /// (rescanned when the dialog next opens), the hand-off prompt and
+    /// guard apply from their next use; a changed poll interval gives
+    /// [`Effect::SetPollInterval`]. Accounts are not applied live: while
+    /// the new config's accounts differ from tower's, tower keeps its own
+    /// (and its `default_account` when the new one names none of them) and
+    /// the status line shows [`RESTART_NOTE`].
+    pub fn apply_config(&mut self, new: Config) -> Vec<Effect> {
+        let mut live = new;
+        let accounts_changed = live.accounts != self.config.accounts;
+        if accounts_changed {
+            live.accounts = self.config.accounts.clone();
+            if live.account(&live.default_account).is_none() {
+                live.default_account = self.config.default_account.clone();
+            }
+        }
+        self.config_io.restart_note = accounts_changed.then_some(RESTART_NOTE);
+        let mut effects = Vec::new();
+        if live.poll_interval_secs != self.config.poll_interval_secs {
+            effects.push(Effect::SetPollInterval(live.poll_interval()));
+        }
+        self.style = live.ui_style;
+        self.set_theme(live.ui_theme);
+        self.config = live;
+        effects
+    }
+
+    /// The note shown while the config file's accounts differ from the
+    /// running ones ([`RESTART_NOTE`]).
+    pub fn restart_note(&self) -> Option<&'static str> {
+        self.config_io.restart_note
+    }
+
+    /// Why the last reload of `config.toml` was refused, until one works.
+    pub fn config_error(&self) -> Option<&str> {
+        self.config_io.error.as_deref()
+    }
+
+    /// The check to run for [`Effect::CheckConfig`]; `None` while one runs
+    /// or when the runtime has not said where the config is.
+    pub fn start_config_check(&mut self) -> Option<ConfigCheckJob> {
+        let path = self.config_source.as_ref()?.path.clone();
+        if self.config_io.busy {
+            return None;
+        }
+        self.config_io.busy = true;
+        Some(ConfigCheckJob {
+            epoch: self.config_io.epoch,
+            check: ConfigCheck {
+                path,
+                home: self.home.clone(),
+                known: self.config_io.stamp,
+            },
+        })
+    }
+
+    /// Takes back a finished check: a changed file is applied
+    /// ([`App::config_reloaded`]). A check older than the last save or
+    /// editor run is dropped.
+    pub fn config_checked(&mut self, epoch: u64, found: Option<ConfigSnapshot>) -> Vec<Effect> {
+        self.config_io.busy = false;
+        match found {
+            Some(snapshot) if epoch == self.config_io.epoch => self.config_reloaded(snapshot),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Takes in the config file as read: a valid one is applied
+    /// ([`App::apply_config`]) and said in the status line when anything
+    /// changed; an invalid one keeps the current config and shows the
+    /// error until the file is fixed.
+    pub fn config_reloaded(&mut self, snapshot: ConfigSnapshot) -> Vec<Effect> {
+        let (effects, changed) = self.take_in_config(snapshot);
+        if changed {
+            let file = self.config_file_shown();
+            match self.config_io.restart_note {
+                Some(note) => {
+                    self.set_message(format!("reloaded {file}; {note}"), Severity::Warning)
+                }
+                None => self.set_message(
+                    format!("reloaded {file}; the new settings apply now"),
+                    Severity::Info,
+                ),
+            }
+        }
+        effects
+    }
+
+    /// Records the version read and applies it. Returns the effects and
+    /// whether the running config or the restart note changed. A refused
+    /// reload sets the error and its message.
+    fn take_in_config(&mut self, snapshot: ConfigSnapshot) -> (Vec<Effect>, bool) {
+        self.config_io.stamp = snapshot.stamp;
+        match snapshot.result {
+            Ok(config) => {
+                self.config_io.error = None;
+                self.set_config_found(snapshot.found);
+                let before = (self.config.clone(), self.config_io.restart_note);
+                let effects = self.apply_config(config);
+                let changed = before != (self.config.clone(), self.config_io.restart_note);
+                (effects, changed)
+            }
+            Err(err) => {
+                let text = format!(
+                    "config not reloaded: {}; keeping the current settings",
+                    one_line(&err.to_string())
+                );
+                self.config_io.error = Some(text.clone());
+                self.set_message(text, Severity::Error);
+                (Vec::new(), false)
+            }
+        }
+    }
+
+    /// The config file as shown (`~/…`), or `config.toml`.
+    fn config_file_shown(&self) -> String {
+        self.config_source
+            .as_ref()
+            .map_or_else(|| "config.toml".to_owned(), |s| s.shown(Some(&self.home)))
+    }
+
+    /// Takes back a finished save of the Settings window
+    /// ([`Effect::SaveConfig`]): a written file is applied at once like a
+    /// reload ([`App::apply_config`]) and becomes the known version, so the
+    /// reload check does not read it again; the status line says what was
+    /// written. A conflict sets no message (the window asks). The result
+    /// is kept for the window: [`App::take_config_save_result`].
+    pub fn config_saved(&mut self, result: Result<SaveOutcome, SaveError>) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        match &result {
+            Ok(outcome) if !outcome.written.is_empty() => {
+                self.config_io.epoch += 1;
+                self.config_io.stamp = outcome.stamp;
+                self.config_io.error = None;
+                self.set_config_found(true);
+                effects = self.apply_config(outcome.config.clone());
+                let file = paths::shorten_home(&outcome.path.to_string_lossy(), &self.home);
+                let mut text = if outcome.created {
+                    format!("created {file}")
+                } else {
+                    format!("saved {file}; comments and formatting kept")
+                };
+                if let Some(bak) = &outcome.backup {
+                    let bak = paths::shorten_home(&bak.to_string_lossy(), &self.home);
+                    text.push_str(&format!("; the previous file is in {bak} (once)"));
+                }
+                match self.config_io.restart_note {
+                    Some(note) => {
+                        text.push_str(&format!("; {note}"));
+                        self.set_message(text, Severity::Warning);
+                    }
+                    None => {
+                        text.push_str("; applied now");
+                        self.set_message(text, Severity::Info);
+                    }
+                }
+            }
+            Ok(_) => self.set_message("nothing to save", Severity::Info),
+            Err(SaveError::Conflict(_)) => {}
+            Err(err) => self.set_message(
+                format!("not saved: {}", one_line(&err.to_string())),
+                Severity::Error,
+            ),
+        }
+        self.config_io.saved = Some(result);
+        effects
+    }
+
+    /// The last finished config save, once ([`App::config_saved`]); the
+    /// Settings window takes it to update its session
+    /// ([`config_edit::EditSession::finish_save`]) or to ask about a
+    /// conflict.
+    pub fn take_config_save_result(&mut self) -> Option<Result<SaveOutcome, SaveError>> {
+        self.config_io.saved.take()
+    }
+
+    /// [`Effect::EditConfig`] for the config file, or a message when the
+    /// runtime has not said where it is.
+    pub fn edit_config(&mut self) -> Vec<Effect> {
+        match &self.config_source {
+            Some(source) => vec![Effect::EditConfig(source.path.clone())],
+            None => {
+                self.set_message("no config file is known", Severity::Error);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The editor of [`Effect::EditConfig`] exited: the file read back is
+    /// applied like a reload, or the error (an invalid file keeps the
+    /// current config) or the editor's failure is shown.
+    pub fn config_editor_finished(
+        &mut self,
+        result: Result<ConfigSnapshot, String>,
+    ) -> Vec<Effect> {
+        self.config_io.epoch += 1;
+        match result {
+            Ok(snapshot) => {
+                let ok = snapshot.result.is_ok();
+                let (effects, changed) = self.take_in_config(snapshot);
+                if ok {
+                    let file = self.config_file_shown();
+                    let text = match (changed, self.config_io.restart_note) {
+                        (_, Some(note)) => format!("reloaded {file}; {note}"),
+                        (true, None) => format!("reloaded {file}; the new settings apply now"),
+                        (false, None) => format!("{file}: no setting changed"),
+                    };
+                    let severity = if self.config_io.restart_note.is_some() {
+                        Severity::Warning
+                    } else {
+                        Severity::Info
+                    };
+                    self.set_message(text, severity);
+                }
+                effects
+            }
+            Err(err) => {
+                self.set_message(err, Severity::Error);
+                Vec::new()
+            }
+        }
     }
 
     // ---- the project scan (doc/0008) --------------------------------------

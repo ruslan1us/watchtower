@@ -1,6 +1,7 @@
 //! `config.toml` (doc/0002) and the configured accounts (doc/0003).
 //!
-//! Tower only reads this file. A missing file means built-in defaults: one
+//! This module reads the file; [`crate::config_edit`] edits it for the
+//! Settings window (doc/0022). A missing file means built-in defaults: one
 //! account `main` running `claude` with config dir `~/.claude`. Every key
 //! documented in doc/0002 is accepted; unknown keys are ignored and missing
 //! keys get defaults.
@@ -13,6 +14,8 @@ use crate::paths::Dirs;
 
 /// Default `poll_interval_secs` (doc/0001).
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
+/// The allowed `poll_interval_secs` range, in seconds (doc/0022).
+pub const POLL_INTERVAL_RANGE: std::ops::RangeInclusive<u64> = 1..=60;
 /// Default account config dir when `config_dir` is unset (doc/0003).
 pub const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude";
 
@@ -192,7 +195,7 @@ pub struct Config {
     /// Account used for new sessions and the orchestrator. Always names one
     /// of [`Config::accounts`].
     pub default_account: String,
-    /// Seconds between polls; at least 1.
+    /// Seconds between polls; 1 to 60 ([`POLL_INTERVAL_RANGE`]).
     pub poll_interval_secs: u64,
     /// Configured accounts, in file order; never empty, names are unique.
     pub accounts: Vec<Account>,
@@ -402,10 +405,12 @@ impl Config {
             )));
         }
         let poll_interval_secs = raw.poll_interval_secs.unwrap_or(DEFAULT_POLL_INTERVAL_SECS);
-        if poll_interval_secs == 0 {
-            return Err(ConfigError::Invalid(
-                "poll_interval_secs must be at least 1".into(),
-            ));
+        if !POLL_INTERVAL_RANGE.contains(&poll_interval_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "poll_interval_secs must be {} to {} seconds, not {poll_interval_secs}",
+                POLL_INTERVAL_RANGE.start(),
+                POLL_INTERVAL_RANGE.end()
+            )));
         }
         let ui = raw.ui.unwrap_or_default();
         let ui_style = match ui.style {

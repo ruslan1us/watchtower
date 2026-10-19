@@ -77,6 +77,8 @@ pub struct PollUpdate {
 enum Command {
     /// A forced poll with the cycle number [`Poller::poll_now`] gave it.
     PollNow(u64),
+    /// [`Poller::set_interval`] changed the interval.
+    IntervalChanged,
 }
 
 #[derive(Default)]
@@ -96,6 +98,9 @@ pub struct Poller {
     cycle: Arc<AtomicU64>,
     /// One message per restart of the coordinator after a panic.
     restarts: Receiver<String>,
+    /// The tick interval in milliseconds; [`Poller::set_interval`] changes
+    /// it while polling runs (doc/0022).
+    interval: Arc<AtomicU64>,
 }
 
 impl Poller {
@@ -116,6 +121,8 @@ impl Poller {
         let (result_tx, results) = mpsc::channel();
         let (restart_tx, restarts) = mpsc::channel();
         let cycle = Arc::new(AtomicU64::new(0));
+        let interval = Arc::new(AtomicU64::new(millis(interval)));
+        let shared_interval = Arc::clone(&interval);
         let slots: Vec<Arc<Mutex<Slot>>> = accounts
             .iter()
             .map(|_| Arc::new(Mutex::new(Slot::default())))
@@ -135,7 +142,7 @@ impl Poller {
                             &result_tx,
                             &command_rx,
                             &counter,
-                            interval,
+                            &shared_interval,
                         )
                     });
                     let Err(message) = ran else {
@@ -158,7 +165,21 @@ impl Poller {
             results,
             cycle,
             restarts,
+            interval,
         }
+    }
+
+    /// Changes the time between ticks (a reloaded `poll_interval_secs`,
+    /// doc/0022). The next tick comes `interval` after the last one, or at
+    /// once when that time has passed.
+    pub fn set_interval(&self, interval: Duration) {
+        self.interval.store(millis(interval), Ordering::SeqCst);
+        let _ = self.commands.send(Command::IntervalChanged);
+    }
+
+    /// The current time between ticks.
+    pub fn interval(&self) -> Duration {
+        Duration::from_millis(self.interval.load(Ordering::SeqCst))
     }
 
     /// Requests an immediate poll of every account and returns its cycle
@@ -196,8 +217,9 @@ fn coordinate(
     result_tx: &Sender<PollUpdate>,
     command_rx: &Receiver<Command>,
     counter: &AtomicU64,
-    interval: Duration,
+    interval: &AtomicU64,
 ) {
+    let interval = || Duration::from_millis(interval.load(Ordering::SeqCst));
     let trigger = |forced: bool, cycle: u64| {
         source.cycle_started(cycle);
         for (account, slot) in accounts.iter().zip(slots) {
@@ -206,18 +228,26 @@ fn coordinate(
     };
     let next = || counter.fetch_add(1, Ordering::SeqCst) + 1;
     trigger(true, next());
-    let mut next_tick = Instant::now() + interval;
+    let mut last_tick = Instant::now();
+    let mut next_tick = last_tick + interval();
     loop {
         let wait = next_tick.saturating_duration_since(Instant::now());
         match command_rx.recv_timeout(wait) {
             Ok(Command::PollNow(cycle)) => trigger(true, cycle),
+            Ok(Command::IntervalChanged) => next_tick = last_tick + interval(),
             Err(RecvTimeoutError::Timeout) => {
                 trigger(false, next());
-                next_tick = Instant::now() + interval;
+                last_tick = Instant::now();
+                next_tick = last_tick + interval();
             }
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
+}
+
+/// `d` in whole milliseconds, at least 1.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX).max(1)
 }
 
 fn lock(slot: &Mutex<Slot>) -> std::sync::MutexGuard<'_, Slot> {

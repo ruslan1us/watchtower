@@ -1,6 +1,6 @@
 //! `tower`: the Watchtower TUI. All logic lives in the library; this only
 //! parses arguments, loads config and state, and starts the TUI, or runs
-//! `tower status` without it.
+//! `tower status` or `tower update` without it.
 
 use std::process::ExitCode;
 
@@ -9,11 +9,17 @@ use watchtower::attach::printable;
 use watchtower::config::{Config, ConfigSource};
 use watchtower::paths::Dirs;
 use watchtower::sidecar::Sidecar;
+use watchtower::update;
 
 fn main() -> ExitCode {
     match args::parse(std::env::args().skip(1)) {
         Ok(Command::Run) => {}
         Ok(Command::Status { json }) => return status(json),
+        Ok(Command::Update {
+            check,
+            version,
+            force,
+        }) => return update(check, version, force),
         Ok(Command::Version) => {
             println!("tower {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -113,6 +119,36 @@ fn status(json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::from(status::exit_code(&config, &report))
+}
+
+/// `tower update` (doc/0023). With `check`, prints whether a newer release
+/// exists: exit 0 up to date, 10 available, 1 error. Otherwise replaces the
+/// running binary: exit 0 when updated or already up to date, 1 on error.
+fn update(check: bool, version: Option<update::Version>, force: bool) -> ExitCode {
+    let updater = update::Updater::new();
+    if check {
+        return match updater.check() {
+            Ok(result) => {
+                println!("{}", result.line());
+                ExitCode::from(result.exit_code())
+            }
+            Err(err) => {
+                eprintln!("tower: {}", shown(&err));
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let result = update::current_target().and_then(|target| {
+        let request = update::Request { version, force };
+        updater.update(&target, &request, &mut std::io::stdout())
+    });
+    match result {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("tower: {}", shown(&err));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The help text with the config file this run would use (doc/0002).

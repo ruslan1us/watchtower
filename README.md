@@ -70,6 +70,7 @@ summary of what that means, not legal advice.
 - Linux x86_64 (account detection reads `/proc`).
 - Claude Code 2.1.300 or newer, with background sessions and agent view (`claude --bg`,
   `claude agents`); see [doc/reference/claude-code-cli.md](doc/reference/claude-code-cli.md).
+- `curl`, only for `tower update`.
 - Rust 1.88 or newer (via rustup), only to build from source.
 
 ## Build and install
@@ -84,8 +85,7 @@ mkdir -p ~/.local/bin
 curl -Lo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-x86_64-linux-musl && chmod +x ~/.local/bin/tower
 ```
 
-To update, run the same command again. When installing as root you may prefer
-`/usr/local/bin/tower`.
+When installing as root you may prefer `/usr/local/bin/tower`.
 
 To check the download against the published checksum, fetch both files under their
 release names, verify, then install:
@@ -96,6 +96,29 @@ base=https://github.com/ruslan1us/watchtower/releases/latest/download
 curl -LO "$base/tower-x86_64-linux-musl" -LO "$base/tower-x86_64-linux-musl.sha256"
 sha256sum -c tower-x86_64-linux-musl.sha256 && install -m 755 tower-x86_64-linux-musl ~/.local/bin/tower
 ```
+
+### Updating
+
+`tower update` (or `tower --update`) replaces the installed binary with the latest
+release ([0023](doc/0023-self-update.md)):
+
+```sh
+tower update                    # install the latest release
+tower update --check            # only report; exit 0 up to date, 10 newer release, 1 error
+tower update --version v0.2.1   # install that release (reinstall or downgrade)
+```
+
+It downloads the binary and its checksum with the system `curl` into a temp dir next to
+the installed file, verifies the SHA-256, checks that the new binary runs and reports the
+expected version, and only then swaps it in with one atomic rename, keeping the file's
+permissions. On any failure the old binary stays as it was. If the binary's directory is
+not yours (e.g. `/usr/local/bin`), run `sudo tower update`. Running tower instances keep
+the old version until restarted. This is the only command that uses the network; tower
+never checks for updates on its own. A cargo build under `target/` is refused unless you
+pass `--force`.
+
+Versions before `update` existed (v0.2.x) need the install command above once, to get
+the first release that has it.
 
 ### Build from source
 
@@ -127,10 +150,19 @@ For another host, copy that one file into its `~/.local/bin` (e.g. with `scp`).
 ## Configuration
 
 The config is `$XDG_CONFIG_HOME/watchtower/config.toml` (default
-`~/.config/watchtower/config.toml`). Tower only reads it. Every key is optional; see
+`~/.config/watchtower/config.toml`). Every key is optional; see
 [`config.example.toml`](config.example.toml) for each key with its default, and
 [0002](doc/0002-tech-stack-and-files.md) for the details. The example defines two
 accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt`).
+
+Tower's Settings window can change the file for you
+([0022](doc/0022-tower-writes-its-own-config.md)). It writes only the keys you change
+and keeps your comments and formatting; resetting a setting to its default removes the
+key (its comment lines stay). Before its first write it copies the file once to
+`config.toml.bak`, and a symlinked config is written through to its target. A running
+tower reloads `config.toml` when it changes, whoever changed it: everything applies at
+once except `[[accounts]]`, which need a restart (the status line says so). A file that
+does not parse is not applied; the status line shows the error until it is fixed.
 
 - **Accounts.** Each account has a `name`, the `command` tower runs for it, and its
   `config_dir`. `default_account` is used for new sessions and the orchestrator; the
@@ -285,6 +317,9 @@ Next to the config, in `~/.config/watchtower/`:
   state-change times, acknowledged highlights, recent projects. Written atomically; losing
   it loses only conveniences, and a corrupt one is moved aside as `state.json.corrupt`.
 - `state.json.lock`: the lock that lets several tower instances share `state.json`.
+- `config.toml.bak`: a one-time copy of your config, made before tower first writes it;
+  `config.toml.lock`: the lock held while tower saves the config
+  ([0022](doc/0022-tower-writes-its-own-config.md)).
 - `orchestrator/`: the orchestrator's folder.
 
 ## Safety notes

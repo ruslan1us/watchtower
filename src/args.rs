@@ -12,12 +12,23 @@ pub enum Command {
     Version,
     /// `--help` / `-h`.
     Help,
+    /// `tower update [--check | --version vX.Y.Z] [--force]`, also spelled
+    /// `tower --update …` (doc/0023).
+    Update {
+        /// `--check`: only compare with the latest release.
+        check: bool,
+        /// `--version`: install exactly this release.
+        version: Option<crate::update::Version>,
+        /// `--force`: replace a cargo build output or the same version.
+        force: bool,
+    },
 }
 
 /// Short usage text.
 pub const USAGE: &str = "\
 Usage: tower [--version | --help]
        tower status [--json]
+       tower update [--check | --version vX.Y.Z] [--force]
 
 A terminal UI over Claude Code background sessions.
 Run without arguments to start it. Press ? inside for the keys.
@@ -25,6 +36,12 @@ Run without arguments to start it. Press ? inside for the keys.
 Commands:
   status         Poll every account once and print the merged sessions
   status --json  The same as JSON, for scripts and the orchestrator
+  update         Replace this binary with the latest GitHub release, after
+                 checking its checksum and that it runs (also `--update`)
+    --check            Only report: exit 0 up to date, 10 newer release, 1 error
+    --version vX.Y.Z   Install that release, also to reinstall or downgrade
+    --force            Also replace a cargo build output or the same version
+                 Only `update` uses the network (through curl), never on its own.
 
 Config: $XDG_CONFIG_HOME/watchtower/config.toml (default ~/.config/watchtower/config.toml)
 
@@ -64,6 +81,7 @@ where
         ["--version" | "-V"] => Ok(Command::Version),
         ["--help" | "-h"] => Ok(Command::Help),
         ["status", rest @ ..] => parse_status(rest),
+        ["update" | "--update", rest @ ..] => parse_update(rest),
         [one] => Err(format!("unknown argument `{one}`")),
         _ => Err("too many arguments".to_owned()),
     }
@@ -80,6 +98,50 @@ fn parse_status(rest: &[&str]) -> Result<Command, String> {
         }
     }
     Ok(Command::Status { json })
+}
+
+fn parse_update(rest: &[&str]) -> Result<Command, String> {
+    use crate::update::Version;
+    let (mut check, mut force) = (false, false);
+    let mut version: Option<Version> = None;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        let value = match *arg {
+            "--check" if !check => {
+                check = true;
+                continue;
+            }
+            "--force" if !force => {
+                force = true;
+                continue;
+            }
+            "--check" | "--force" => return Err(format!("`{arg}` given twice")),
+            "--help" | "-h" => return Ok(Command::Help),
+            "--version" => match args.next() {
+                Some(value) => *value,
+                None => return Err("`--version` needs a version, e.g. v1.2.3".to_owned()),
+            },
+            other => match other.strip_prefix("--version=") {
+                Some(value) => value,
+                None => return Err(format!("unknown argument `{other}` for `update`")),
+            },
+        };
+        if version.is_some() {
+            return Err("`--version` given twice".to_owned());
+        }
+        version = Some(
+            Version::parse(value)
+                .ok_or_else(|| format!("`{value}` is not a version (e.g. v1.2.3)"))?,
+        );
+    }
+    if check && (version.is_some() || force) {
+        return Err("`--check` takes no other options".to_owned());
+    }
+    Ok(Command::Update {
+        check,
+        version,
+        force,
+    })
 }
 
 #[cfg(test)]
@@ -108,6 +170,36 @@ mod tests {
         assert!(parse(["status", "--json", "--json"]).is_err());
         assert!(parse(["status", "--yaml"]).is_err());
         assert!(parse(["--json", "status"]).is_err());
+    }
+
+    #[test]
+    fn parses_update() {
+        use crate::update::Version;
+        let plain = Command::Update {
+            check: false,
+            version: None,
+            force: false,
+        };
+        assert_eq!(parse(["update"]), Ok(plain.clone()));
+        assert_eq!(parse(["--update"]), Ok(plain));
+        assert_eq!(
+            parse(["update", "--version", "v1.2.3", "--force"]),
+            Ok(Command::Update {
+                check: false,
+                version: Version::parse("1.2.3"),
+                force: true,
+            })
+        );
+        assert_eq!(
+            parse(["--update", "--version=1.2.3"]),
+            parse(["update", "--version", "v1.2.3"])
+        );
+        assert_eq!(parse(["update", "-h"]), Ok(Command::Help));
+        assert!(parse(["update", "--version"]).is_err());
+        assert!(parse(["update", "--version", "latest"]).is_err());
+        assert!(parse(["update", "--check", "--force"]).is_err());
+        assert!(parse(["update", "--check", "--check"]).is_err());
+        assert!(parse(["update", "--now"]).is_err());
     }
 
     #[test]

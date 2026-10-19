@@ -56,6 +56,7 @@ use crate::app::{App, Effect, Severity};
 use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
 use crate::cli::{CliError, CliRunner};
 use crate::config::{Config, ConfigSource};
+use crate::config_edit;
 use crate::dispatch::DispatchError;
 use crate::jobs::{self, JobResult, Jobs};
 use crate::merge::ProcEnviron;
@@ -571,8 +572,9 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
         }
         if polled {
             // Other towers' sidecar changes, looked for once per poll
-            // (doc/0017 section 8).
+            // (doc/0017 section 8), and changes to config.toml (doc/0022).
             effects.push(Effect::CheckSidecar);
+            effects.push(Effect::CheckConfig);
         }
         while let Some(message) = rt.poller.try_restart() {
             app.set_message(
@@ -695,6 +697,31 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             Effect::Stop(action) => rt.jobs.stop(action),
             Effect::Remove(action) => rt.jobs.remove(action),
             Effect::FetchLogs(target) => rt.jobs.logs(target),
+            Effect::CheckConfig => {
+                if let Some(job) = app.start_config_check() {
+                    rt.jobs.config_check(job);
+                }
+            }
+            Effect::SetPollInterval(interval) => rt.poller.set_interval(interval),
+            Effect::SaveConfig(job) => rt.jobs.config_save(job),
+            Effect::EditConfig(path) => {
+                let termination = rt.termination;
+                let home = app.home().to_path_buf();
+                let result = config_edit::editor_from_env().and_then(|cmd| {
+                    config_edit::edit_in_editor(
+                        &mut rt.handover(),
+                        &mut InheritSpawner,
+                        &cmd,
+                        &path,
+                        &home,
+                        termination,
+                    )
+                });
+                if termination.pending().is_some() {
+                    return Ok(false);
+                }
+                queue.extend(app.config_editor_finished(result));
+            }
         }
     }
     Ok(true)

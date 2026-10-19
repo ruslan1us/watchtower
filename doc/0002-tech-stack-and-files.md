@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 
 ## Context
@@ -32,7 +32,10 @@ session list with account and tracked times for the orchestrator
 only reads `state.json`, never writes it.
 
 **Config:** `$XDG_CONFIG_HOME/watchtower/config.toml`, default
-`~/.config/watchtower/config.toml`. Tower only reads it. A missing file means
+`~/.config/watchtower/config.toml`. Tower reads it, and since
+[0022](0022-tower-writes-its-own-config.md) the Settings window also writes it,
+keeping comments and formatting; a running tower reloads it when it changes.
+A missing file means
 built-in defaults with a single account `main` using `claude`. `~` is expanded
 in all paths. Because a missing file is easy to miss, tower names the file it
 uses: `tower --help` prints it with whether it exists, `tower status` starts
@@ -46,7 +49,7 @@ dialog's empty project list names the file and whether it was loaded
 # Account used for new sessions and the orchestrator.
 default_account = "main"
 
-poll_interval_secs = 2
+poll_interval_secs = 2               # 1 to 60 (see 0022)
 
 # Folders scanned for git clones in the new-session dialog (see 0008).
 project_roots = ["~/workspace"]
@@ -201,8 +204,10 @@ in [0010](0010-orchestrator.md).
 - **State under `$XDG_STATE_HOME`.** Arguably more correct, but keeping it next
   to the config gives the user one directory to inspect or back up. This can
   move later without changing the format.
-- **Tower writing its own config.** Rejected; the user edits `config.toml`, and
-  tower writes only `state.json`.
+- **Tower writing its own config.** Rejected at first (the user edits
+  `config.toml`, and tower writes only `state.json`); superseded by
+  [0022](0022-tower-writes-its-own-config.md), which lets the Settings window
+  write it.
 
 ## Open items
 

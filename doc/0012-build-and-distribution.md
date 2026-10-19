@@ -1,7 +1,7 @@
 # 0012. Static musl build and distribution
 
 - Status: Accepted · 2026-10-18
-- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md)
 
 ## Context
 
@@ -17,7 +17,7 @@ glibc, so a binary built on the development machine may fail on the target with
 - The toolchain is installed with rustup in the user's home directory, plus
   `rustup target add x86_64-unknown-linux-musl`. No system packages are changed.
 - Dependencies stay pure Rust (`ratatui`, `crossterm`, `serde`, `serde_json`, `toml`,
-  `vt100`), so the musl build needs no C toolchain or cross-compiled C libraries.
+  `vt100`, `sha2`), so the musl build needs no C toolchain or cross-compiled C libraries.
   A new dependency with C code needs a justification.
 - Release profile:
 
@@ -45,6 +45,10 @@ glibc, so a binary built on the development machine may fail on the target with
   - `tower-x86_64-linux-musl.sha256`, the `sha256sum` line for that file name.
 
   The release notes are GitHub's generated notes plus a short install snippet.
+- `tower update` consumes these releases: it reads the latest tag from the GitHub API and
+  fetches both assets from the versioned `releases/download/vX.Y.Z/` URLs, so the asset
+  names, the `sha256sum` format and `tower --version` printing `tower X.Y.Z` must stay as
+  they are ([0023](0023-self-update.md)).
 
 ### Release checklist
 

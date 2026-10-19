@@ -34,10 +34,12 @@ use std::time::Duration;
 
 use crate::actions::{self, RemoveError, StopError};
 use crate::app::{
-    App, DispatchJob, Effect, HandoffJob, LogsTarget, OrchestratorJob, ProjectScan, SessionAction,
-    SidecarJob,
+    App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, LogsTarget, OrchestratorJob, ProjectScan,
+    SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
+use crate::config::ConfigError;
+use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::logview::{self, LogScreen, LogsError};
@@ -70,6 +72,12 @@ pub enum JobResult {
     Checked(u64, io::Result<Reloaded>),
     /// The projects for the dialog of scan `id` (doc/0008).
     Projects(u64, ProjectList),
+    /// A finished look for changes to `config.toml`, with the app's config
+    /// epoch when it started; `None`: unchanged (doc/0022).
+    ConfigChecked(u64, Option<ConfigSnapshot>),
+    /// A finished save of the Settings window (doc/0022), boxed to keep the
+    /// enum small.
+    ConfigSaved(Box<Result<SaveOutcome, SaveError>>),
 }
 
 impl JobResult {
@@ -92,6 +100,8 @@ impl JobResult {
                 app.projects_found(id, list);
                 Vec::new()
             }
+            JobResult::ConfigChecked(epoch, found) => app.config_checked(epoch, found),
+            JobResult::ConfigSaved(result) => app.config_saved(*result),
         }
     }
 }
@@ -257,6 +267,40 @@ impl Jobs {
                 SidecarJob::Check { seq, job } => JobResult::Checked(seq, job.run(&path)),
             },
         );
+    }
+
+    /// Looks for changes to `config.toml` and reads it when it changed
+    /// (doc/0022). A failed worker reports a read error, so the next check
+    /// tries again.
+    pub fn config_check(&self, job: ConfigCheckJob) {
+        let fail = |job: ConfigCheckJob, err: CliError| {
+            let snapshot = ConfigSnapshot {
+                stamp: None,
+                found: true,
+                result: Err(ConfigError::Read {
+                    path: job.check.path.clone(),
+                    source: io::Error::other(err.to_string()),
+                }),
+            };
+            JobResult::ConfigChecked(job.epoch, Some(snapshot))
+        };
+        self.launch("config-check", job, fail, |_, _, job| {
+            JobResult::ConfigChecked(job.epoch, job.check.run())
+        });
+    }
+
+    /// Saves the Settings window's changes to `config.toml` (doc/0022).
+    pub fn config_save(&self, job: config_edit::SaveJob) {
+        let fail = |job: config_edit::SaveJob, err: CliError| {
+            JobResult::ConfigSaved(Box::new(Err(SaveError::Io {
+                what: "save",
+                path: job.path().to_path_buf(),
+                source: io::Error::other(err.to_string()),
+            })))
+        };
+        self.launch("config-save", job, fail, |_, _, job| {
+            JobResult::ConfigSaved(Box::new(job.run()))
+        });
     }
 
     /// Scans for the dialog's candidate projects (doc/0008). A failed

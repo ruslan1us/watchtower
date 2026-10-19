@@ -4,6 +4,8 @@
 //! The pieces, in the order a poll uses them:
 //!
 //! - [`config`]: `config.toml` and the configured accounts (doc/0002, doc/0003).
+//! - [`config_edit`]: the Settings window's edits of `config.toml`, its save,
+//!   reload check and editor (doc/0022).
 //! - [`cli`]: runs `<account command> …` with a timeout; `agents --json --all`
 //!   and the `attach` command line (doc/0001, doc/0005).
 //! - [`listing`]: the lenient parser and model of the JSON listing (doc/0001,
@@ -56,6 +58,7 @@ pub mod args;
 pub mod attach;
 pub mod cli;
 pub mod config;
+pub mod config_edit;
 pub mod dialog;
 pub mod dispatch;
 pub mod editor;
@@ -74,3 +77,4 @@ pub mod sidecar;
 pub mod status;
 pub mod tui;
 pub mod ui;
+pub mod update;

@@ -1,10 +1,17 @@
 # Watchtower (tower) example config.
 #
 # Copy to $XDG_CONFIG_HOME/watchtower/config.toml (by default
-# ~/.config/watchtower/config.toml). Tower only reads this file; it never
-# writes it. Every key is optional: a missing file, or a missing key, means
-# the built-in default given in the comment. Unknown keys are ignored.
-# `~` is expanded in all paths. See doc/0002-tech-stack-and-files.md.
+# ~/.config/watchtower/config.toml). Every key is optional: a missing file,
+# or a missing key, means the built-in default given in the comment. Unknown
+# keys are ignored. `~` is expanded in all paths. See
+# doc/0002-tech-stack-and-files.md.
+#
+# Tower's Settings window can also change this file: it edits only the keys
+# you change there and keeps comments and formatting, removes a key you reset
+# to its default (its comment lines stay), and copies the file once to
+# config.toml.bak before its first write. A running tower reloads the file
+# when it changes; changed [[accounts]] apply after a restart.
+# See doc/0022-tower-writes-its-own-config.md.
 
 # Account used for new sessions and the orchestrator. Must name one of the
 # [[accounts]] below.
@@ -12,7 +19,7 @@
 default_account = "main"
 
 # Seconds between polls of `<command> agents --json --all`, per account.
-# At least 1.
+# 1 to 60.
 # Default: 2
 poll_interval_secs = 2
 

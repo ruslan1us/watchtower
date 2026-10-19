@@ -242,7 +242,8 @@ pub struct FileStamp {
 }
 
 impl FileStamp {
-    fn of(meta: &std::fs::Metadata) -> FileStamp {
+    /// The stamp of the file `meta` describes.
+    pub fn of(meta: &std::fs::Metadata) -> FileStamp {
         use std::os::unix::fs::MetadataExt;
         FileStamp {
             dev: meta.dev(),
@@ -916,7 +917,7 @@ pub fn lock_path(path: &Path) -> PathBuf {
 
 /// Takes `flock(LOCK_EX)` on `path` (created if missing), retrying
 /// `LOCK_NB` until `wait` has passed. The lock lasts as long as the file.
-fn lock(path: &Path, wait: Duration) -> std::io::Result<std::fs::File> {
+pub(crate) fn lock(path: &Path, wait: Duration) -> std::io::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
