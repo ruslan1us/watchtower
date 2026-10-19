@@ -1,7 +1,7 @@
 # 0010. Orchestrator session
 
 - Status: Accepted · 2026-10-18
-- Related: [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0008](0008-new-session-dialog.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
+- Related: [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -20,6 +20,7 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
 - **Permission mode `auto`.** Bypass mode would hold every incoming cross-session reply for approval, and it is refused when tower runs as root ([permission modes](https://code.claude.com/docs/en/permission-modes)). Auto mode is unavailable with Haiku 4.5, so the orchestrator uses `default_model` (no `--model` flag when it is `default`), never Haiku: when `default_model` names a Haiku model (any name containing `haiku`), tower passes no `--model` and Claude Code's default applies.
 - **Attach.** `o` on a listed orchestrator attaches exactly like `Enter` on its row: with the owning account's command ([0003](0003-accounts-and-session-ownership.md)), after the refresh, through the account picker when the owner is unknown, and refused while it is being handed off; `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach.md)).
 - **Accounts.** Switchable with the normal hand-off, `a` on its row ([0004](0004-account-hand-off.md)).
+- **Place in the list.** Every background row named exactly `orchestrator` is shown in its own group, `Orchestrator`, pinned at the top in both state and project grouping, before Needs me, in the order `o` picks from (see Duplicates) ([0006](0006-session-states-and-grouping.md)). Its detail is its state's detail, with "ready" while it waits for the user (a turn that ended with or without a question), e.g. "working" while busy. It ends almost every turn with a question, which Claude Code lists as `blocked` + `idle` with no `waitingFor`, so it is excluded from attention: no `●`, not in the counter, never in Needs me or Failed ([0007](0007-visual-only-attention.md)). Every row key works on it as on any row (`Enter`, `Space`, `s`, `d`, `a`; `m` says it is not highlighted), and the text filter applies to it.
 - **Role: report and relay only.** It summarises state, reads logs, forwards questions and answers, and sets idle notices. It does not answer other sessions' questions on its own, does not try to approve permissions (messages cannot do that), never asks a session to do something that was denied elsewhere, and does not start, stop, remove or hand off sessions; those stay user actions in tower.
 
 ### Tools available to it
@@ -54,14 +55,14 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
   }
   ```
 
-  Fields from the listing keep their names and values. `account` is the configured name or `"?"`, with `accountCommand` `null` when unknown. `group` is the overview group of [0006](0006-session-states-and-grouping.md) (`needs-me`, `failed`, `ready-for-review`, `working`, `other`, `stopped`, `interactive`) and `detail` the row's detail text from the same table. `lastChangeAt` is Unix ms of the last state change tracked by tower (the sidecar's `last_change_ms` while its `last_state` is the row's current tuple; the time of this call when the tuple has changed since), falling back to `startedAt` ([0006](0006-session-states-and-grouping.md)). Exit code 0 when at least one account was listed, 1 when every listing failed (the JSON is still printed), 2 for a config error (nothing on stdout). Warnings (skipped rows, an unreadable sidecar, an inherited `CLAUDE_CONFIG_DIR`) go to stderr. Without `--json`, `tower status` prints a short table for people, starting with a `config: <path>` line (`(not found — using defaults)` appended when the file is missing).
+  Fields from the listing keep their names and values. `account` is the configured name or `"?"`, with `accountCommand` `null` when unknown. `group` is the overview group of [0006](0006-session-states-and-grouping.md) (`orchestrator`, `needs-me`, `failed`, `ready-for-review`, `working`, `other`, `stopped`, `interactive`; `orchestrator` for every row named so, whatever its state) and `detail` the row's detail text from the same table. `lastChangeAt` is Unix ms of the last state change tracked by tower (the sidecar's `last_change_ms` while its `last_state` is the row's current tuple; the time of this call when the tuple has changed since), falling back to `startedAt` ([0006](0006-session-states-and-grouping.md)). Exit code 0 when at least one account was listed, 1 when every listing failed (the JSON is still printed), 2 for a config error (nothing on stdout). Warnings (skipped rows, an unreadable sidecar, an inherited `CLAUDE_CONFIG_DIR`) go to stderr. Without `--json`, `tower status` prints a short table for people, starting with a `config: <path>` line (`(not found — using defaults)` appended when the file is missing).
 - `<accountCommand> logs <id>` for recent output (raw terminal stream; the instructions tell it to read it as a screen snapshot).
 - Built-in `ListAgents` / `SendMessage`, and `notify_when_idle` for "tell me when X finishes". It sends one notice and expires after 12 h.
 
 ### Outline of `CLAUDE.md`
 
 - Who you are: the Watchtower orchestrator; you report and relay, you do not do project work.
-- For an overview, run `<path of tower> status --json` (plain `tower` if that path is gone); group the answer by `group`: needs-me and failed, ready for review, working.
+- For an overview, run `<path of tower> status --json` (plain `tower` if that path is gone); group the answer by `group`: needs-me and failed, ready for review, working; the `orchestrator` group is itself and is left out.
 - For detail on one session, run `<accountCommand> logs <id>`, always with the command from the status output, never another account's; read it as a screen snapshot.
 - Relay questions with `SendMessage`, name the target session, and report replies verbatim when short.
 - For "tell me when…", use `notify_when_idle` and say it expires after 12 h.
@@ -74,7 +75,7 @@ The orchestrator is an **ordinary Claude Code background session named `orchestr
 
 - The orchestrator is not pinned (no CLI), so after about 1 h idle its process stops; it wakes on the next `o`, and the first answer is slower. Accepted.
 - It costs quota like any session, but only once the user presses `o`; the first dispatch is one short turn.
-- Its row is listed like any other session; it can be handed off, stopped or removed. After removal, the next `o` dispatches a new one.
+- Its row has its own group at the top but otherwise acts like any other session; it can be handed off, stopped or removed. After removal, the next `o` dispatches a new one.
 - Changes to the instruction text take effect on the next wake.
 
 ## Alternatives considered

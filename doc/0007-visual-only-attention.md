@@ -1,7 +1,7 @@
 # 0007. Attention is visual only
 
 - Status: Accepted · 2026-10-18
-- Related: [0002](0002-tech-stack-and-files.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
 
@@ -28,10 +28,20 @@ Only background rows are highlighted. Interactive rows (`kind: interactive`, no
 `id`, not attachable) stay in their own dimmed group ([0006](0006-session-states-and-grouping.md))
 and are never highlighted or counted in the attention counter.
 
+The orchestrator ([0010](0010-orchestrator.md)) is never highlighted either.
+It ends almost every turn with a question, which Claude Code reports as
+`state: blocked`, `status: idle` with no `waitingFor`
+([CLI reference](reference/claude-code-cli.md#json-listing-claude-agents---json)),
+so it would sit in Needs me and in the counter all the time. Waiting for the
+user is its normal state, not a signal. Its rows have their own Orchestrator
+group at the top ([0006](0006-session-states-and-grouping.md)): no marker, no
+header count, not in the attention counter, whatever its state, `failed`
+included (shown as plain text). `m` on it says it is not highlighted.
+
 Put exactly: a background row is highlighted while it is in the Needs me or
 Failed group and the sidecar's `acknowledged` tuple is not its current
 (`state`, `status`, `waitingFor`) tuple. Stopped rows (no live process) are in
-neither group, whatever their `state`.
+neither group, whatever their `state`, and neither are orchestrator rows.
 
 **When the highlight clears.**
 

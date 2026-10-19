@@ -111,6 +111,7 @@ Observed `state` / `status` / `waitingFor` combinations (verified):
 | Working on a turn | `working` | `busy` | — |
 | Writing command in `manual` mode (e.g. `touch <file>`); a read-only command such as `date` ran without a prompt | `blocked` | `waiting` | `permission prompt` |
 | Question asked with the question tool | `blocked` | `waiting` | `input needed` |
+| Turn ended with a question in the reply (e.g. "What would you like to know?"), seen on the orchestrator session | `blocked` | `idle` | — |
 | Turn finished | `done` | `idle` | — |
 | Failed (e.g. unknown `--model` name); the process stays alive, `pid` present | `failed` | `idle` | — |
 | Woken with `--resume <sessionId> --bg` and no prompt, right after the wake | `working` | `idle` | — |
@@ -119,8 +120,10 @@ Observed `state` / `status` / `waitingFor` combinations (verified):
 Observed oddities (verified):
 
 - Interactive sessions are listed but have no `id` and no `state`; they cannot be attached.
-- `state: "blocked"` with `status: "idle"` and no `waitingFor` occurs, e.g. when a session
-  failed with `Login expired · Please run /login`.
+- `state: "blocked"` with `status: "idle"` and no `waitingFor` is what a session reports when
+  its turn ended by asking the user something in the reply (verified with the orchestrator
+  session, which ends almost every turn with a question). The same combination was also
+  seen on a session whose login had expired, so it does not say why the session waits.
 - The short `id` was observed to equal the first 8 characters of `sessionId`. This is
   undocumented; do not rely on it.
 - `startedAt` is reset when a session is woken; it is not the session's creation time.

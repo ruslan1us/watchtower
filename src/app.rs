@@ -3701,11 +3701,12 @@ pub fn interactive_hint(name: &str) -> String {
     )
 }
 
-/// Whether `stop` asks first: rows that are working or blocked, i.e. in the
-/// Needs me or Working group (doc/0009). Rows without a live process are
-/// shown as stopped and stop directly.
+/// Whether `stop` asks first: rows that are working or blocked, i.e. whose
+/// state puts them in the Needs me or Working group (doc/0009), the
+/// orchestrator included. Rows without a live process are shown as stopped
+/// and stop directly.
 pub fn stop_needs_confirmation(s: &Session) -> bool {
-    matches!(groups::classify(s), Group::NeedsMe | Group::Working)
+    matches!(groups::state_group(s), Group::NeedsMe | Group::Working)
 }
 
 /// Identity of a row for keeping the selection across polls.

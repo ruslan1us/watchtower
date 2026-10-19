@@ -31,7 +31,9 @@ pub fn last_change_at(session: &Session, sidecar: &Sidecar, now_ms: i64) -> Opti
 
 /// Whether the row is in a state that wants the user: the Needs me or
 /// Failed group (`state: blocked`, `status: waiting`, `state: failed` with a
-/// live process). Interactive rows never are (doc/0007).
+/// live process). Interactive rows never are, and neither is the
+/// orchestrator, which has its own group: waiting for the user is its
+/// normal state (doc/0007).
 pub fn needs_attention(session: &Session) -> bool {
     !session.is_interactive() && matches!(groups::classify(session), Group::NeedsMe | Group::Failed)
 }

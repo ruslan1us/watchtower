@@ -14,9 +14,10 @@ The overview is built from `claude agents --json [--all]` (field list in the
   `sandbox request`, `worker request`, `dialog open`.
 
 Interactive sessions (running in some other terminal) are listed with
-`kind: interactive` but have no `id` and no `state`. Combinations are not
-always tidy: a session whose login had expired was listed as `state: blocked`,
-`status: idle`, with no `waitingFor`.
+`kind: interactive` but have no `id` and no `state`. `state: blocked`,
+`status: idle` with no `waitingFor` is what a session reports when its turn
+ended with a question to the user; a session whose login had expired was
+listed the same way ([CLI reference](reference/claude-code-cli.md#json-listing-claude-agents---json)).
 
 `state: stopped` is documented but was not seen after `claude stop`: the stopped
 session disappears from `--json`, appears only in `--json --all`, and keeps its
@@ -37,7 +38,8 @@ view shows a one-line summary and an activity age, but they are not in the JSON
 
 | Group | Rows | Detail shown | Default |
 |---|---|---|---|
-| Needs me | `state: blocked`, or `status: waiting` in any state | `waitingFor`; "blocked (no reason given)" when absent | expanded |
+| Orchestrator | background rows named exactly `orchestrator` ([0010](0010-orchestrator.md)), whatever their state | the detail of the group its state gives it below; "ready" when it waits for the user (`blocked` without `waitingFor`, or `done`) | expanded |
+| Needs me | `state: blocked`, or `status: waiting` in any state | `waitingFor`; "waiting for your reply" when absent | expanded |
 | Failed | `state: failed` | "failed" | expanded |
 | Ready for review | `state: done` (turn finished, waiting for the next prompt) | "done" | expanded |
 | Working | `state: working` | from `status`: `busy` → "working", `idle` → "idle" | expanded |
@@ -47,7 +49,14 @@ view shows a one-line summary and an activity age, but they are not in the JSON
 
 Rules:
 
-- The no-live-process check comes first: a background row without `pid` and
+- The Orchestrator check comes first: every background row named exactly
+  `orchestrator` goes there, live or not, in the order `o` picks from (a live
+  one first, then the most recently started, [0010](0010-orchestrator.md)).
+  Ending a turn with a question is its normal state, so it never sits in
+  Needs me or Failed and is never highlighted ([0007](0007-visual-only-attention.md)).
+  Its state still counts for actions, e.g. `s` asks first while it is
+  working or blocked ([0009](0009-stop-remove-and-logs.md)).
+- The no-live-process check comes next: a background row without `pid` and
   `status` goes to Stopped & finished even when its `state` is `done`, `failed`
   or anything else. The other groups apply only to rows with a live process.
 - Parsing is lenient: unknown fields are ignored, missing fields get defaults,
@@ -71,7 +80,8 @@ ordered by the state order above, and the Interactive toggle still applies.
 - Inside a project, rows follow the group order of the table, then last change
   (most recent first), then name. Rows keep their state detail and highlight.
 - Interactive rows keep their own Interactive group, last, so `i` hides them
-  in either mode.
+  in either mode, and the orchestrator rows keep their Orchestrator group,
+  first.
 
 **Collapsing.** `Tab` folds or unfolds the group of the selected line, and so
 does `Enter` on a group header. The selection can rest on headers, and a group

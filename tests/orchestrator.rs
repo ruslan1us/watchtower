@@ -17,10 +17,11 @@ use fake_claude::{Fake, cat, cat_err, lock};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
-use watchtower::app::{App, AttachRequest, Effect, OrchestratorJob, Overlay};
+use watchtower::app::{App, AttachRequest, Effect, Entry, OrchestratorJob, Overlay};
 use watchtower::cli::CliRunner;
 use watchtower::config::Config;
 use watchtower::dispatch::{DispatchError, Dispatched};
+use watchtower::groups::Group;
 use watchtower::jobs::Jobs;
 use watchtower::listing::parse_listing;
 use watchtower::orchestrator::{self, StartError};
@@ -680,4 +681,230 @@ fn an_untrusted_start_comes_back_as_the_trust_window() {
     assert!(done.apply(&mut app).is_empty());
     assert!(matches!(app.overlay(), Overlay::OrchestratorUntrusted(_)));
     assert_eq!(main.calls(), 1);
+}
+
+// ---- its place in the list (doc/0006, doc/0007) ---------------------------------
+
+/// A listing of `main`: the orchestrator ends its turn with a question
+/// (`blocked`, `idle`, no `waitingFor`), `fix-flaky-test` waits on a
+/// permission prompt, `update-deps` is done.
+const PLACE: &str = r#"[
+  { "pid": 5001, "id": "0c0c0c0c", "sessionId": "0c0c0c0c-0000-4000-8000-000000000000",
+    "cwd": "/home/user/.config/watchtower/orchestrator", "kind": "background",
+    "startedAt": 10, "name": "orchestrator", "status": "idle", "state": "blocked" },
+  { "pid": 5002, "id": "1a2b3c4d", "sessionId": "1a2b3c4d-0000-4000-8000-000000000000",
+    "cwd": "/home/user/workspace/example-repo", "kind": "background",
+    "startedAt": 20, "name": "fix-flaky-test", "status": "waiting",
+    "waitingFor": "permission prompt", "state": "blocked" },
+  { "pid": 5003, "id": "5e6f7a8b", "sessionId": "5e6f7a8b-0000-4000-8000-000000000000",
+    "cwd": "/home/user/workspace/example-web", "kind": "background",
+    "startedAt": 30, "name": "update-deps", "status": "idle", "state": "done" }
+]"#;
+
+/// `json` listed by `main` (owner recorded as `started`), nothing by `alt`.
+fn listed_raw(app: &mut App, json: &str) {
+    let listing = parse_listing(json).unwrap();
+    for s in &listing.sessions {
+        app.sidecar
+            .record_started(s.session_id.as_deref().unwrap(), "main");
+    }
+    app.apply_poll(PollUpdate {
+        account: "main".into(),
+        cycle: 0,
+        result: Ok(listing),
+    });
+    app.apply_poll(update("alt", 0, &[]));
+}
+
+fn raw_refresh(app: &mut App, effects: Vec<Effect>, json: &str) -> Vec<Effect> {
+    assert!(effects.contains(&Effect::PollForAttach), "{effects:?}");
+    app.attach_poll_started(common::ATTACH_CYCLE);
+    let mut out = app.apply_poll(PollUpdate {
+        account: "main".into(),
+        cycle: common::ATTACH_CYCLE,
+        result: Ok(parse_listing(json).unwrap()),
+    });
+    out.extend(app.apply_poll(update("alt", common::ATTACH_CYCLE, &[])));
+    out.extend(common::run_sidecar_check(
+        app,
+        Path::new(common::NO_STATE_FILE),
+    ));
+    out
+}
+
+fn orchestrator_row(app: &App) -> &watchtower::merge::MergedSession {
+    app.sessions()
+        .iter()
+        .find(|m| m.session.name.as_deref() == Some("orchestrator"))
+        .unwrap()
+}
+
+#[test]
+fn the_orchestrator_is_pinned_first_and_never_highlighted() {
+    let mut app = app_two();
+    listed_raw(&mut app, PLACE);
+    let titles =
+        |app: &App| -> Vec<String> { common::headers(app).into_iter().map(|h| h.0).collect() };
+    assert_eq!(
+        titles(&app),
+        ["Orchestrator", "Needs me", "Ready for review"]
+    );
+    // Blocked without `waitingFor` and never acknowledged, yet no highlight
+    // and no count: waiting for the user is its normal state.
+    assert!(!app.is_highlighted(orchestrator_row(&app)));
+    assert_eq!(app.attention_count(), 1);
+    assert_eq!(app.highlighted_in(Group::NeedsMe), 1);
+    assert_eq!(app.highlighted_in(Group::Orchestrator), 0);
+    assert!(matches!(
+        app.entries()[0],
+        Entry::Header { highlighted: 0, .. }
+    ));
+    assert_eq!(common::visible_rows(&app)[0], "orchestrator");
+
+    // Project grouping keeps it on top.
+    app.handle_key(ch('p'));
+    assert_eq!(
+        titles(&app),
+        [
+            "Orchestrator",
+            "~/workspace/example-web",
+            "~/workspace/example-repo"
+        ]
+    );
+    app.handle_key(ch('p'));
+
+    let screen = render(&mut app, 120, 12);
+    let lines: Vec<&str> = screen.lines().collect();
+    // Line 0 is the title bar; the list starts below it.
+    assert!(lines[1].contains("Orchestrator (1)"), "{screen}");
+    assert!(!lines[1].contains('●'), "{screen}");
+    let row = lines
+        .iter()
+        .find(|l| l.contains("orchestrator") && !l.contains("Orchestrator"))
+        .unwrap();
+    assert!(row.contains("ready"), "{screen}");
+    assert!(!row.contains('●'), "{screen}");
+    assert!(lines[3].contains("Needs me (1)  ● 1"), "{screen}");
+    let fix = lines.iter().find(|l| l.contains("fix-flaky-test")).unwrap();
+    assert!(
+        fix.contains('●') && fix.contains("permission prompt"),
+        "{screen}"
+    );
+    assert!(screen.contains("● 1 needs you"), "{screen}");
+
+    // A failed orchestrator: its state text, still no highlight.
+    let failed = PLACE.replacen(
+        r#""status": "idle", "state": "blocked""#,
+        r#""status": "idle", "state": "failed""#,
+        1,
+    );
+    listed_raw(&mut app, &failed);
+    assert_eq!(
+        titles(&app),
+        ["Orchestrator", "Needs me", "Ready for review"]
+    );
+    assert!(!app.is_highlighted(orchestrator_row(&app)));
+    assert_eq!(app.attention_count(), 1);
+    let screen = render(&mut app, 120, 12);
+    let row = screen
+        .lines()
+        .find(|l| l.contains("orchestrator") && !l.contains("Orchestrator"))
+        .unwrap();
+    assert!(row.contains("failed") && !row.contains('●'), "{screen}");
+}
+
+#[test]
+fn m_on_the_orchestrator_only_says_so() {
+    let mut app = app_two();
+    listed_raw(&mut app, PLACE);
+    common::select_name(&mut app, "orchestrator");
+    assert!(app.handle_key(ch('m')).is_empty());
+    assert!(
+        status_text(&app).contains("orchestrator is not highlighted"),
+        "{}",
+        status_text(&app)
+    );
+    let key = "0c0c0c0c-0000-4000-8000-000000000000";
+    assert!(app.sidecar.sessions[key].acknowledged.is_none());
+    // Its state still counts where it matters: `s` on a blocked one asks.
+    assert!(watchtower::app::stop_needs_confirmation(
+        &orchestrator_row(&app).session
+    ));
+}
+
+#[test]
+fn enter_and_o_attach_to_the_pinned_orchestrator() {
+    let mut app = app_two();
+    listed_raw(&mut app, PLACE);
+    common::select_name(&mut app, "orchestrator");
+    let effects = app.handle_key(key(KeyCode::Enter));
+    let effects = raw_refresh(&mut app, effects, PLACE);
+    let attach = attach_of(&effects);
+    assert_eq!(
+        (attach.id.as_str(), attach.account.name.as_str()),
+        ("0c0c0c0c", "main")
+    );
+
+    let mut app = app_two();
+    listed_raw(&mut app, PLACE);
+    common::select_name(&mut app, "update-deps");
+    let effects = app.handle_key(ch('o'));
+    let effects = raw_refresh(&mut app, effects, PLACE);
+    assert_eq!(attach_of(&effects).id, "0c0c0c0c");
+}
+
+#[test]
+fn the_filter_applies_to_the_orchestrator() {
+    let mut app = app_two();
+    listed_raw(&mut app, PLACE);
+    app.handle_key(ch('/'));
+    common::type_text(&mut app, "orch");
+    assert_eq!(common::visible_rows(&app), ["orchestrator"]);
+    assert_eq!(common::headers(&app)[0].0, "Orchestrator");
+    app.handle_key(ctrl('u'));
+    common::type_text(&mut app, "fix");
+    assert_eq!(common::visible_rows(&app), ["fix-flaky-test"]);
+    assert!(common::headers(&app).iter().all(|h| h.0 != "Orchestrator"));
+}
+
+#[test]
+fn several_orchestrators_share_the_group_in_the_order_o_uses() {
+    let mut app = app_two();
+    let rows = [
+        Row {
+            id: "11111111",
+            name: "orchestrator",
+            live: false,
+            started: 30,
+        },
+        Row {
+            id: "22222222",
+            name: "orchestrator",
+            live: true,
+            started: 10,
+        },
+        Row {
+            id: "aa11bb22",
+            name: "fix-flaky-test",
+            live: true,
+            started: 40,
+        },
+        Row {
+            id: "33333333",
+            name: "orchestrator",
+            live: true,
+            started: 20,
+        },
+    ];
+    listed_under(&mut app, "main", &rows);
+    let headers = common::headers(&app);
+    assert_eq!(headers[0], ("Orchestrator".to_owned(), 3, false));
+    let ids: Vec<String> = app.sessions()[..3]
+        .iter()
+        .map(|m| m.session.id.clone().unwrap())
+        .collect();
+    assert_eq!(ids, ["33333333", "22222222", "11111111"]);
+    let effects = app.handle_key(ch('o'));
+    let effects = refresh(&mut app, effects, "main", &rows);
+    assert_eq!(attach_of(&effects).id, "33333333");
 }

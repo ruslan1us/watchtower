@@ -3,11 +3,15 @@
 use std::path::Path;
 
 use crate::listing::{Session, State, Status};
+use crate::orchestrator;
 use crate::paths;
 
 /// The overview groups, in display order (doc/0006).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Group {
+    /// Background rows named exactly `orchestrator` (doc/0010), whatever
+    /// their state: pinned at the top and never highlighted (doc/0007).
+    Orchestrator,
     /// `state: blocked`, or `status: waiting` in any state.
     NeedsMe,
     /// `state: failed`.
@@ -27,7 +31,8 @@ pub enum Group {
 
 impl Group {
     /// All groups in display order.
-    pub const ALL: [Group; 7] = [
+    pub const ALL: [Group; 8] = [
+        Group::Orchestrator,
         Group::NeedsMe,
         Group::Failed,
         Group::ReadyForReview,
@@ -40,6 +45,7 @@ impl Group {
     /// Header title.
     pub fn title(self) -> &'static str {
         match self {
+            Group::Orchestrator => "Orchestrator",
             Group::NeedsMe => "Needs me",
             Group::Failed => "Failed",
             Group::ReadyForReview => "Ready for review",
@@ -57,10 +63,21 @@ impl Group {
     }
 }
 
-/// Maps a row to its group (doc/0006). Interactive rows go to Interactive.
-/// For other rows the no-live-process check comes first: no `pid` and no
-/// `status` means Stopped & finished even when `state` is `done` or `failed`.
+/// Maps a row to its group (doc/0006). The orchestrator rows
+/// ([`orchestrator::is_orchestrator`]) go to Orchestrator whatever their
+/// state; every other row to its [`state_group`].
 pub fn classify(s: &Session) -> Group {
+    if orchestrator::is_orchestrator(s) {
+        return Group::Orchestrator;
+    }
+    state_group(s)
+}
+
+/// The group a row's state alone gives it, never Orchestrator (doc/0006).
+/// Interactive rows go to Interactive. For other rows the no-live-process
+/// check comes first: no `pid` and no `status` means Stopped & finished
+/// even when `state` is `done` or `failed`.
+pub fn state_group(s: &Session) -> Group {
     if s.is_interactive() {
         return Group::Interactive;
     }
@@ -80,15 +97,38 @@ pub fn classify(s: &Session) -> Group {
     }
 }
 
+/// The detail of a Needs me row without `waitingFor`: what Claude Code
+/// reports (`state: blocked`, `status: idle`) when a turn ended with a
+/// question to the user (doc/0006).
+pub const WAITING_FOR_REPLY: &str = "waiting for your reply";
+
+/// The orchestrator's detail while it waits for the user: its turn ended,
+/// with a question or without (doc/0010).
+pub const READY: &str = "ready";
+
 /// The state detail shown in a row (doc/0006): `waitingFor` text or
-/// "blocked (no reason given)" for Needs me, "failed", "done", "working" or
+/// [`WAITING_FOR_REPLY`] for Needs me, "failed", "done", "working" or
 /// "idle" for Working, the raw `state` for Other, "stopped", and the `status`
-/// for interactive rows. Unknown values are shown as-is.
+/// for interactive rows. Unknown values are shown as-is. An orchestrator
+/// shows the detail of its [`state_group`], except [`READY`] where it waits
+/// for the user's next message.
 pub fn detail(s: &Session) -> String {
     match classify(s) {
+        Group::Orchestrator => match state_group(s) {
+            Group::NeedsMe if s.waiting_for.is_none() => READY.to_owned(),
+            Group::ReadyForReview => READY.to_owned(),
+            group => state_detail(s, group),
+        },
+        group => state_detail(s, group),
+    }
+}
+
+/// The detail of a row in the state group `group`.
+fn state_detail(s: &Session, group: Group) -> String {
+    match group {
         Group::NeedsMe => match &s.waiting_for {
             Some(w) => w.to_string(),
-            None => "blocked (no reason given)".to_owned(),
+            None => WAITING_FOR_REPLY.to_owned(),
         },
         Group::Failed => "failed".to_owned(),
         Group::ReadyForReview => "done".to_owned(),
@@ -105,6 +145,8 @@ pub fn detail(s: &Session) -> String {
             Some(status) => status.to_string(),
             None => "interactive".to_owned(),
         },
+        // Not a state group; `state_group` never returns it.
+        Group::Orchestrator => "orchestrator".to_owned(),
     }
 }
 
@@ -124,8 +166,9 @@ pub fn group_by_state<T: AsRef<Session>>(items: &[T]) -> Vec<GroupRows<'_, T>> {
 
 /// Groups rows by state for the overview: non-empty groups only, in display
 /// order (doc/0006). Within a group rows are sorted by last change, most
-/// recent first (a row without a time last), then by display name.
-/// `last_change` gives a row's change time, Unix ms (see
+/// recent first (a row without a time last), then by display name; the
+/// Orchestrator group instead in the order `o` picks from
+/// ([`orchestrator::rank`]). `last_change` gives a row's change time, Unix ms (see
 /// [`crate::activity::last_change_at`]).
 pub fn group_by_state_with<T, F>(items: &[T], last_change: F) -> Vec<GroupRows<'_, T>>
 where
@@ -142,7 +185,11 @@ where
         if rows.is_empty() {
             continue;
         }
-        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        if group == Group::Orchestrator {
+            rows.sort_by_key(|r| std::cmp::Reverse(orchestrator::rank(r.2.as_ref())));
+        } else {
+            rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        }
         out.push(GroupRows {
             group,
             rows: rows.into_iter().map(|(_, _, t)| t).collect(),
@@ -167,7 +214,8 @@ pub enum Grouping {
 /// to `~`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GroupKey {
-    /// A state group; in project mode only [`Group::Interactive`].
+    /// A state group; in project mode only [`Group::Orchestrator`] and
+    /// [`Group::Interactive`].
     State(Group),
     /// A project folder in project mode, e.g. `~/workspace/api`.
     Project(String),
@@ -237,7 +285,9 @@ where
 /// recent change, newest first (a group without any time last), then by
 /// name. Inside a group rows follow the state order of the state groups,
 /// then the last change, most recent first, then the display name.
-/// Interactive rows keep their own Interactive group, last.
+/// The orchestrator rows keep their own Orchestrator group, first, ordered
+/// as in [`group_by_state_with`]; interactive rows keep their own
+/// Interactive group, last.
 pub fn group_by_project_with<'a, T, F>(
     items: &'a [T],
     home: &Path,
@@ -250,8 +300,13 @@ where
     type Row<'r, T> = (Group, Option<i64>, String, &'r T);
     let mut projects: Vec<(String, Vec<Row<'a, T>>)> = Vec::new();
     let mut interactive: Vec<Row<'a, T>> = Vec::new();
+    let mut pinned: Vec<&'a T> = Vec::new();
     for t in items {
         let s = t.as_ref();
+        if orchestrator::is_orchestrator(s) {
+            pinned.push(t);
+            continue;
+        }
         let row = (classify(s), last_change(t), s.display_name(), t);
         if s.is_interactive() {
             interactive.push(row);
@@ -271,13 +326,18 @@ where
     let newest = |rows: &[Row<'a, T>]| rows.iter().filter_map(|r| r.1).max();
     projects.sort_by(|a, b| newest(&b.1).cmp(&newest(&a.1)).then(a.0.cmp(&b.0)));
     interactive.sort_by(by_state);
-    let mut out: Vec<KeyedRows<'a, T>> = projects
-        .into_iter()
-        .map(|(p, rows)| KeyedRows {
-            key: GroupKey::Project(p),
-            rows: rows.into_iter().map(|r| r.3).collect(),
-        })
-        .collect();
+    pinned.sort_by_key(|t| std::cmp::Reverse(orchestrator::rank(t.as_ref())));
+    let mut out: Vec<KeyedRows<'a, T>> = Vec::new();
+    if !pinned.is_empty() {
+        out.push(KeyedRows {
+            key: GroupKey::State(Group::Orchestrator),
+            rows: pinned,
+        });
+    }
+    out.extend(projects.into_iter().map(|(p, rows)| KeyedRows {
+        key: GroupKey::Project(p),
+        rows: rows.into_iter().map(|r| r.3).collect(),
+    }));
     if !interactive.is_empty() {
         out.push(KeyedRows {
             key: GroupKey::State(Group::Interactive),

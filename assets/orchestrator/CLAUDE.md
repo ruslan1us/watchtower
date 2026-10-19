@@ -14,7 +14,8 @@ The output is a JSON object. `sessions` has one entry per session, with `id`
 `accountCommand` and `lastChangeAt` (Unix ms). `errors` lists accounts that
 could not be listed; mention them. For an overview, group your answer by
 `group`: `needs-me` and `failed` first, then `ready-for-review`, then
-`working`; leave out `stopped` sessions unless asked.
+`working`; leave out `stopped` sessions unless asked. The `orchestrator`
+group is you; leave it out.
 
 ## Reading one session's output
 

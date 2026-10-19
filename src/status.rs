@@ -101,6 +101,7 @@ pub struct Report {
 /// A machine-readable name for an overview group (doc/0006).
 pub fn group_slug(group: Group) -> &'static str {
     match group {
+        Group::Orchestrator => "orchestrator",
         Group::NeedsMe => "needs-me",
         Group::Failed => "failed",
         Group::ReadyForReview => "ready-for-review",

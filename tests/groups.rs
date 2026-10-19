@@ -3,7 +3,12 @@
 mod common;
 
 use common::{by_name, listing};
-use watchtower::groups::{Group, classify, detail, group_by_state, group_by_state_with};
+use std::path::Path;
+
+use watchtower::groups::{
+    Group, GroupKey, Grouping, classify, detail, group_by_state, group_by_state_with, group_with,
+    state_group,
+};
 use watchtower::listing::{Session, parse_listing};
 
 fn row(json: &str) -> Session {
@@ -60,7 +65,8 @@ fn needs_me_variants() {
         r#"{ "kind": "background", "id": "1a2b3c4d", "pid": 1, "status": "idle", "state": "blocked" }"#,
     );
     assert_eq!(classify(&blocked_idle), Group::NeedsMe);
-    assert_eq!(detail(&blocked_idle), "blocked (no reason given)");
+    // What Claude Code reports when a turn ended with a question.
+    assert_eq!(detail(&blocked_idle), "waiting for your reply");
 
     let waiting_working = row(
         r#"{ "kind": "background", "id": "1a2b3c4d", "pid": 1, "status": "waiting", "waitingFor": "sandbox request", "state": "working" }"#,
@@ -170,4 +176,112 @@ fn rows_sort_by_last_change_then_name() {
         names(Group::ReadyForReview),
         ["print-date", "run-test-suite"]
     );
+}
+
+/// An orchestrator row: `extra` holds its state fields.
+fn orch(id: &str, extra: &str) -> Session {
+    row(&format!(
+        r#"{{ "kind": "background", "id": "{id}", "name": "orchestrator",
+             "cwd": "/home/user/.config/watchtower/orchestrator", {extra} }}"#
+    ))
+}
+
+#[test]
+fn the_orchestrator_has_its_own_group_and_plain_details() {
+    let cases = [
+        // A turn that ended with a question: ready, not "Needs me".
+        (
+            r#""pid": 1, "status": "idle", "state": "blocked", "startedAt": 1"#,
+            Group::NeedsMe,
+            "ready",
+        ),
+        (
+            r#""pid": 1, "status": "idle", "state": "done", "startedAt": 1"#,
+            Group::ReadyForReview,
+            "ready",
+        ),
+        (
+            r#""pid": 1, "status": "busy", "state": "working", "startedAt": 1"#,
+            Group::Working,
+            "working",
+        ),
+        (
+            r#""pid": 1, "status": "waiting", "waitingFor": "permission prompt", "state": "blocked", "startedAt": 1"#,
+            Group::NeedsMe,
+            "permission prompt",
+        ),
+        (
+            r#""pid": 1, "status": "idle", "state": "failed", "startedAt": 1"#,
+            Group::Failed,
+            "failed",
+        ),
+        (
+            r#""state": "done", "startedAt": 1"#,
+            Group::Stopped,
+            "stopped",
+        ),
+    ];
+    for (fields, state, text) in cases {
+        let s = orch("0c0c0c0c", fields);
+        assert_eq!(classify(&s), Group::Orchestrator, "{fields}");
+        assert_eq!(state_group(&s), state, "{fields}");
+        assert_eq!(detail(&s), text, "{fields}");
+    }
+    assert_eq!(Group::Orchestrator.title(), "Orchestrator");
+    // Only the exact name, and never an interactive row.
+    let other = row(
+        r#"{ "kind": "background", "id": "1a2b3c4d", "name": "orchestrator-old", "pid": 1, "status": "idle", "state": "blocked" }"#,
+    );
+    assert_eq!(classify(&other), Group::NeedsMe);
+    let interactive = row(r#"{ "kind": "interactive", "name": "orchestrator", "status": "idle" }"#);
+    assert_eq!(classify(&interactive), Group::Interactive);
+}
+
+#[test]
+fn the_orchestrator_group_comes_first_in_both_modes() {
+    let mut rows = listing("after-stop-all.json").sessions;
+    // Three orchestrators: a stopped recent one, an older live one, the
+    // most recent live one. `o` takes live first, then the most recent.
+    rows.push(orch(
+        "11111111",
+        r#""state": "done", "startedAt": 9000000000000"#,
+    ));
+    rows.push(orch(
+        "22222222",
+        r#""pid": 7, "status": "idle", "state": "blocked", "startedAt": 10"#,
+    ));
+    rows.push(orch(
+        "33333333",
+        r#""pid": 8, "status": "busy", "state": "working", "startedAt": 20"#,
+    ));
+    let ids =
+        |rows: &[&Session]| -> Vec<String> { rows.iter().map(|s| s.id.clone().unwrap()).collect() };
+    let expected = ["33333333", "22222222", "11111111"];
+
+    let by_state = group_by_state(&rows);
+    assert_eq!(by_state[0].group, Group::Orchestrator);
+    assert_eq!(ids(&by_state[0].rows), expected);
+    assert_eq!(by_state[1].group, Group::NeedsMe);
+    assert!(by_state.iter().skip(1).all(|g| {
+        g.rows
+            .iter()
+            .all(|s| s.name.as_deref() != Some("orchestrator"))
+    }));
+
+    let by_project = group_with(Grouping::Project, &rows, Path::new("/home/user"), |s| {
+        s.started_at
+    });
+    assert_eq!(by_project[0].key, GroupKey::State(Group::Orchestrator));
+    assert_eq!(by_project[0].key.title(), "Orchestrator");
+    assert_eq!(ids(&by_project[0].rows), expected);
+    assert!(
+        by_project[1..]
+            .iter()
+            .all(|g| g.key != GroupKey::State(Group::Orchestrator))
+    );
+    assert!(by_project[1..].iter().all(|g| {
+        g.rows
+            .iter()
+            .all(|s| s.name.as_deref() != Some("orchestrator"))
+    }));
 }

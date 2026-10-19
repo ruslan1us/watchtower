@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::CliRunner;
 use crate::config::Config;
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
+use crate::listing::Session;
 use crate::merge::MergedSession;
 
 /// The orchestrator's session name; `o` looks for a background row with
@@ -55,25 +56,34 @@ pub fn dir(config_dir: &Path) -> PathBuf {
     config_dir.join(DIR_NAME)
 }
 
-/// The row `o` attaches to: background rows named exactly [`NAME`]; with
-/// several, one with a live process first, then the most recently started.
+/// Whether the row is an orchestrator: a background row named exactly
+/// [`NAME`]. The overview gives these rows their own group and never
+/// highlights them (doc/0006, doc/0007).
+pub fn is_orchestrator(s: &Session) -> bool {
+    !s.is_interactive() && s.name.as_deref() == Some(NAME)
+}
+
+/// How `o` ranks several orchestrators, higher first: one with a live
+/// process, then the most recently started. Rows with equal ranks keep
+/// their display order.
+pub fn rank(s: &Session) -> (bool, i64) {
+    (s.has_live_process(), s.started_at.unwrap_or(i64::MIN))
+}
+
+/// The row `o` attaches to: background rows named exactly [`NAME`]
+/// ([`is_orchestrator`]); with several, the first by [`rank`].
 /// Returns its index into `sessions` and how many rows carry the name.
 pub fn find(sessions: &[MergedSession]) -> Option<(usize, usize)> {
     let candidates: Vec<usize> = sessions
         .iter()
         .enumerate()
-        .filter(|(_, m)| !m.session.is_interactive() && m.session.name.as_deref() == Some(NAME))
+        .filter(|(_, m)| is_orchestrator(&m.session))
         .map(|(i, _)| i)
         .collect();
     let best = candidates.iter().copied().max_by_key(|&i| {
-        let s = &sessions[i].session;
         // `max_by_key` keeps the last of equal keys; the reversed index
         // makes it keep the first in display order instead.
-        (
-            s.has_live_process(),
-            s.started_at.unwrap_or(i64::MIN),
-            std::cmp::Reverse(i),
-        )
+        (rank(&sessions[i].session), std::cmp::Reverse(i))
     })?;
     Some((best, candidates.len()))
 }

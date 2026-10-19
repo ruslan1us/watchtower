@@ -603,3 +603,50 @@ fn last_change_at_matches_the_tuis_tracking() {
     let print = by_name(&report, "print-date");
     assert_eq!(print["lastChangeAt"], print["startedAt"], "first sighting");
 }
+
+#[test]
+fn the_orchestrator_and_a_question_turn_in_json_and_table() {
+    let _guard = lock();
+    // Both end a turn with a question: `blocked`, `idle`, no `waitingFor`.
+    let row = |id: &str, name: &str, pid: u64| {
+        json!({
+            "pid": pid, "id": id, "sessionId": format!("{id}-0000-4000-8000-000000000000"),
+            "cwd": "/home/user/workspace/example-repo", "kind": "background",
+            "startedAt": 1700000000000_i64, "name": name, "status": "idle", "state": "blocked"
+        })
+    };
+    let rows = vec![
+        row("0c0c0c0c", "orchestrator", NO_PID),
+        row("1a2b3c4d", "ask-question", NO_PID + 1),
+    ];
+    let setup = Setup::two("true", "true");
+    let body = setup.serve("main.json", &rows);
+    let empty = setup.serve("alt.json", &[]);
+    let setup = Setup {
+        fakes: vec![Fake::new("claude", &body), Fake::new("claude-alt", &empty)],
+        ..setup
+    };
+    let out = setup.run(&["status", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let report = parse(&out);
+    let orch = by_name(&report, "orchestrator");
+    assert_eq!(orch["group"], "orchestrator");
+    assert_eq!(orch["detail"], "ready");
+    let asking = by_name(&report, "ask-question");
+    assert_eq!(asking["group"], "needs-me");
+    assert_eq!(asking["detail"], "waiting for your reply");
+
+    let out = setup.run(&["status"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let line = |name: &str| {
+        text.lines()
+            .find(|l| l.starts_with(name))
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        line("ask-question").contains("waiting for your reply"),
+        "{text}"
+    );
+    assert!(line("orchestrator").contains("ready"), "{text}");
+}
