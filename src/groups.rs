@@ -123,6 +123,38 @@ pub fn detail(s: &Session) -> String {
     }
 }
 
+/// What the STATE column appends to the detail of a [`bg_task`] row
+/// (doc/0032): `done · bg task`, the orchestrator's `ready · bg task`.
+pub const BG_TASK_SUFFIX: &str = " · bg task";
+
+/// The dashboard detail panel's status of a [`bg_task`] row (doc/0032).
+pub const BG_TASK_STATUS: &str = "busy — a background task (e.g. a shell) is still running; \
+     Claude Code may continue this session when it ends";
+
+/// The compact form of [`BG_TASK_STATUS`], for the detail strip
+/// (doc/0032).
+pub const BG_TASK_STATUS_SHORT: &str = "busy (bg task)";
+
+/// Whether the row's busy spinner is drawn (doc/0032): a live background
+/// row with `state: working` and `status: busy`.
+pub fn spins(s: &Session) -> bool {
+    !s.is_interactive()
+        && s.has_live_process()
+        && s.state == Some(State::Working)
+        && s.status == Some(Status::Busy)
+}
+
+/// Whether a background task (e.g. a shell) outlived the session's turn
+/// (doc/0032): a live background row with `status: busy` in any `state`
+/// but `working`, e.g. `done` + `busy`. It keeps its state's group and
+/// glyph; the STATE column appends [`BG_TASK_SUFFIX`].
+pub fn bg_task(s: &Session) -> bool {
+    !s.is_interactive()
+        && s.has_live_process()
+        && s.state != Some(State::Working)
+        && s.status == Some(Status::Busy)
+}
+
 /// The detail of a row in the state group `group`.
 fn state_detail(s: &Session, group: Group) -> String {
     match group {

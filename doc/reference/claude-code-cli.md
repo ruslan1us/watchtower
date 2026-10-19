@@ -114,6 +114,7 @@ Observed `state` / `status` / `waitingFor` combinations (verified):
 | Question asked with the question tool | `blocked` | `waiting` | `input needed` |
 | Turn ended with a question in the reply (e.g. "What would you like to know?"), seen on the orchestrator session | `blocked` | `idle` | — |
 | Turn finished | `done` | `idle` | — |
+| Turn finished while a background task it started (e.g. a shell) still runs; the footer shows `1 shell` (2.1.303, see [Background shells and the turn](#background-shells-and-the-turn)) | `done` | `busy` | — |
 | Failed (e.g. unknown `--model` name); the process stays alive, `pid` present | `failed` | `idle` | — |
 | Woken with `--resume <sessionId> --bg` and no prompt, right after the wake | `working` | `idle` | — |
 | Stopped with `claude stop` (only with `--all`) | last value kept (observed: `done`) | absent | — |
@@ -396,6 +397,21 @@ Verified with Claude Code 2.1.303:
 Not verified: what a subagent's permission prompt looks like in the listing.
 
 How Watchtower uses it: [0029](../0029-tracking-subagents.md).
+
+## Background shells and the turn
+
+Verified with Claude Code 2.1.303:
+
+- A session that starts a background shell and ends its turn in the same turn stays
+  `state: working` / `status: busy` while the shell runs.
+- When the shell finishes, Claude Code notifies the session, which starts a new turn by
+  itself (no prompt from the user) and replies; then it goes `done` / `idle`.
+- A session can also be listed `state: done` with `status: busy`: the turn has finished,
+  but a background task (a shell) outlived it, and the session's footer shows `1 shell`.
+  That the task's completion wakes this session for a new turn too is expected from the
+  case above but was not observed directly.
+
+How Watchtower uses it: [0032](../0032-background-task-after-a-finished-turn.md).
 
 ## Hooks passed with `--settings`
 

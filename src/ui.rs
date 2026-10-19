@@ -557,12 +557,17 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// The text columns of one row: name, project, detail, account.
+/// The text columns of one row: name, project, detail, account. The
+/// detail ends with `· not attachable` on interactive rows and
+/// [`groups::BG_TASK_SUFFIX`] when a background task outlived the turn
+/// (doc/0032).
 pub fn row_columns(m: &MergedSession, home: &std::path::Path) -> [String; 4] {
     let s = &m.session;
     let mut detail = groups::detail(s);
     if s.is_interactive() {
         detail.push_str(" · not attachable");
+    } else if groups::bg_task(s) {
+        detail.push_str(groups::BG_TASK_SUFFIX);
     }
     [
         s.display_name(),

@@ -22,7 +22,6 @@ use super::theme::{Lb, Theme, rfit};
 use super::{DETACH_HINT, FOOTER_HELP, MARKER, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
 use crate::groups::{self, Group, GroupKey, Grouping};
-use crate::listing::Status;
 
 /// The smallest terminal the dashboard draws on, columns × rows; below it
 /// tower uses the minimal layout (doc/0020).
@@ -372,8 +371,12 @@ fn short_project(project: &str) -> String {
 
 /// A shorter state detail for narrow lists: `permission prompt` →
 /// `permission`, `waiting for your reply` → `reply`; the interactive
-/// rows' `· not attachable` goes.
+/// rows' `· not attachable` goes, and `· bg task` becomes `· bg`
+/// (doc/0032).
 fn short_state(detail: &str) -> String {
+    if let Some(head) = detail.strip_suffix(groups::BG_TASK_SUFFIX) {
+        return format!("{} · bg", short_state(head));
+    }
     let detail = detail.split(" · ").next().unwrap_or(detail);
     if detail == groups::WAITING_FOR_REPLY {
         return "reply".to_owned();
@@ -748,7 +751,9 @@ fn session_row(
     let dim = m.session.is_interactive();
     let group = groups::classify(&m.session);
     let gc = th.group_color(group);
-    let busy = !dim && m.session.status == Some(Status::Busy);
+    // Only a working turn spins; a busy row in another state keeps its
+    // state's glyph (doc/0032).
+    let busy = !dim && groups::spins(&m.session);
     let text = if dim { th.faint() } else { th.text() };
     let soft = if dim { th.faint() } else { th.muted() };
 
@@ -917,6 +922,11 @@ mod tests {
         assert_eq!(short_state("waiting for your reply"), "reply");
         assert_eq!(short_state("idle · not attachable"), "idle");
         assert_eq!(short_state("done"), "done");
+        assert_eq!(short_state("done · bg task"), "done · bg");
+        assert_eq!(
+            short_state("waiting for your reply · bg task"),
+            "reply · bg"
+        );
     }
 
     #[test]

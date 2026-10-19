@@ -1,6 +1,6 @@
 # 0006. Session states, grouping and activity times
 
-- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md)
+- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md) · busy rows outside `working` (`done · bg task`, no spinner) amended by [0032](0032-background-task-after-a-finished-turn.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0029](0029-tracking-subagents.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -141,12 +141,18 @@ selection, the keys, the actions, the group counts, `N of M shown` and the filte
 see only rows and headers; the lines follow their row (hidden while its group is
 collapsed or the filter hides it), and the selection's highlight covers them.
 
+*Amended by [0032](0032-background-task-after-a-finished-turn.md):* a live
+background row with `status: busy` in a `state` other than `working` (a
+background task such as a shell outlived its turn) keeps its group and appends
+` · bg task` to its state detail in the STATE column, e.g. `done · bg task`.
+
 **Styles.** Everything above holds in both styles of
 [0020](0020-visual-styles.md); only the drawing differs. The minimal style
 shows headers as `▾ Needs me (3)  ● 2` and the title line's session count.
 The dashboard draws headers as separators joined to the list border
 (`├─▾ Needs me 3  ● 2 ──┤`), adds a column header, a spinner or state glyph
-before the name, `N of M shown` in the list's title when rows are hidden,
+before the name (the spinner only for `state: working`, amended by
+[0032](0032-background-task-after-a-finished-turn.md)), `N of M shown` in the list's title when rows are hidden,
 per-state count pills above the list, and a detail panel for the selected
 row or group.
 

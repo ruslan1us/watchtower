@@ -15,7 +15,6 @@ use crate::app::{App, Entry};
 use crate::config::Account;
 use crate::groups::{self, Group, GroupKey};
 use crate::handoff;
-use crate::listing::Status;
 use crate::merge::MergedSession;
 use crate::paths;
 
@@ -85,9 +84,13 @@ fn headline(app: &App, m: &MergedSession, th: Theme) -> Lb {
 }
 
 /// `status`, with `waitingFor` when waiting; "no live process" for
-/// stopped rows (doc/0006).
+/// stopped rows (doc/0006); the background-task sentence when a task
+/// outlived the turn (doc/0032).
 fn status_text(m: &MergedSession) -> String {
     let s = &m.session;
+    if groups::bg_task(s) {
+        return groups::BG_TASK_STATUS.to_owned();
+    }
     match (&s.status, &s.waiting_for) {
         (Some(status), Some(w)) => format!("{status} · {w}"),
         (Some(status), None) => status.to_string(),
@@ -248,23 +251,43 @@ fn group_lines(app: &App, key: &GroupKey, count: usize, lit: usize, th: Theme) -
     lines
 }
 
-/// The side panel's lines for a session.
-fn session_lines(app: &App, m: &MergedSession, now_ms: i64, th: Theme) -> Vec<Lb> {
+/// A `label     value` line, the value wrapped at spaces to `width`
+/// columns less a one-column margin, continued under itself.
+fn kv_wrapped(label: &str, value: &str, width: usize, style: Style, th: Theme) -> Vec<Lb> {
+    let room = width.saturating_sub(1 + KEY_W + 1).max(8);
+    super::dialog::wrap(value, room)
+        .into_iter()
+        .enumerate()
+        .map(|(k, part)| {
+            if k == 0 {
+                kv(label, part, style, th)
+            } else {
+                kv("", part, style, th)
+            }
+        })
+        .collect()
+}
+
+/// The side panel's lines for a session, `width` columns wide.
+fn session_lines(app: &App, m: &MergedSession, width: usize, now_ms: i64, th: Theme) -> Vec<Lb> {
     let s = &m.session;
     let group = groups::classify(s);
     let (id, kind) = id_text(m);
     let state = s.state.as_ref().map_or("-".to_owned(), ToString::to_string);
     let mut status = status_text(m);
-    if s.status == Some(Status::Busy) && !s.is_interactive() {
+    // Only a working turn spins (doc/0032).
+    if groups::spins(s) {
         status = format!("{} {status}", spinner(now_ms));
     }
     let text = th.text();
-    vec![
+    let mut lines = vec![
         headline(app, m, th),
         Lb::new(),
         kv("group", group.title(), th.bold(th.group_color(group)), th),
         kv("state", state, text, th),
-        kv("status", status, text, th),
+    ];
+    lines.extend(kv_wrapped("status", &status, width, text, th));
+    lines.extend([
         kv("changed", changed_text(app, m, now_ms), text, th),
         Lb::new(),
         kv("folder", paths::shorten_home(&s.cwd, app.home()), text, th),
@@ -273,7 +296,8 @@ fn session_lines(app: &App, m: &MergedSession, now_ms: i64, th: Theme) -> Vec<Lb
         kv("kind", kind, text, th),
         Lb::new(),
         kv("hand-off", handoff_text(app, m), th.muted(), th),
-    ]
+    ]);
+    lines
 }
 
 /// The panel's title and border colour.
@@ -304,7 +328,7 @@ pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Them
         return;
     }
     let lines = match &subject {
-        Subject::Session(m) => session_lines(app, m, now_ms, th),
+        Subject::Session(m) => session_lines(app, m, usize::from(inner.width), now_ms, th),
         Subject::Group {
             key, count, lit, ..
         } => group_lines(app, key, *count, *lit, th),
@@ -370,10 +394,14 @@ pub fn draw_strip(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: The
                 format!(
                     " {state} · {} · changed {}",
                     // What it waits for is on the line above.
-                    m.session
-                        .status
-                        .as_ref()
-                        .map_or_else(|| status_text(m), ToString::to_string),
+                    if groups::bg_task(&m.session) {
+                        groups::BG_TASK_STATUS_SHORT.to_owned()
+                    } else {
+                        m.session
+                            .status
+                            .as_ref()
+                            .map_or_else(|| status_text(m), ToString::to_string)
+                    },
                     changed_text(app, m, now_ms)
                 ),
                 th.text(),
