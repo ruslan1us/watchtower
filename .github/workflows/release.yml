@@ -1,0 +1,112 @@
+# Publishes a release for a version tag (doc/0012): the static musl binary
+# under a stable name, so releases/latest/download/<name> always works, plus
+# its checksum. The release checklist is in doc/0012.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  TARGET: x86_64-unknown-linux-musl
+  ASSET: tower-x86_64-linux-musl
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$version" ]; then
+            echo "::error::no package version found in Cargo.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version (expected v$version)"
+            exit 1
+          fi
+          echo "Releasing $GITHUB_REF_NAME"
+
+      - name: Install the stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add "$TARGET"
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      - name: Static musl release build
+        run: cargo build --release --target "$TARGET"
+
+      - name: Prepare the assets
+        run: |
+          mkdir dist
+          cp "target/$TARGET/release/tower" "dist/$ASSET"
+          chmod 755 "dist/$ASSET"
+          file "dist/$ASSET" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+          test "$("./dist/$ASSET" --version)" = "tower ${GITHUB_REF_NAME#v}"
+          cd dist
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+          sha256sum -c "$ASSET.sha256"
+
+      - name: Write the release notes
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          cat > notes.md <<NOTES
+          ## Install
+
+          A static x86_64 Linux binary that runs whatever the glibc version:
+
+          \`\`\`sh
+          mkdir -p ~/.local/bin
+          curl -Lo ~/.local/bin/tower $url/$ASSET && chmod +x ~/.local/bin/tower
+          \`\`\`
+
+          To check the download against its checksum first:
+
+          \`\`\`sh
+          cd "\$(mktemp -d)"
+          curl -LO $url/$ASSET -LO $url/$ASSET.sha256
+          sha256sum -c $ASSET.sha256 && install -m 755 $ASSET ~/.local/bin/tower
+          \`\`\`
+
+          \`releases/latest/download/$ASSET\` always points at the newest release; see the README.
+          NOTES
+          cat notes.md
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag \
+            --latest \
+            "dist/$ASSET" "dist/$ASSET.sha256"

@@ -32,6 +32,30 @@ glibc, so a binary built on the development machine may fail on the target with
   `tower` binary to the target, e.g. `scp` into `~/.local/bin`.
 - Building directly on the target with cargo (rustup in the user's home) is an accepted
   alternative; either target triple works there.
+- GitHub Actions gates every push to `main` and every pull request
+  (`.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --all-targets -- -D
+  warnings`, `cargo test` and the musl release build.
+- GitHub Actions publishes release artifacts on version tags `v*`
+  (`.github/workflows/release.yml`). It fails unless the tag is `v` + the `version` in
+  `Cargo.toml`, runs the same gates, builds the static musl binary only, and creates a
+  normal (not draft, not pre-release) GitHub release with two assets under stable names:
+  - `tower-x86_64-linux-musl`, the binary, so
+    `https://github.com/ruslan1us/watchtower/releases/latest/download/tower-x86_64-linux-musl`
+    always fetches the newest release;
+  - `tower-x86_64-linux-musl.sha256`, the `sha256sum` line for that file name.
+
+  The release notes are GitHub's generated notes plus a short install snippet.
+
+### Release checklist
+
+1. Set `version` in `Cargo.toml` to `X.Y.Z` and run `cargo build` so `Cargo.lock`
+   follows; the gates above must pass.
+2. Commit, e.g. `Release vX.Y.Z`, and push to `main`; wait for CI to pass.
+3. Tag that commit and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. Check the Release workflow run and the release page: both assets are attached, it is
+   marked latest, and the `releases/latest/download/...` URL serves the new binary.
+5. If the workflow fails, fix on `main`, delete the tag locally and remotely
+   (`git push origin :refs/tags/vX.Y.Z`) and tag again.
 
 ## Consequences
 
@@ -51,5 +75,4 @@ glibc, so a binary built on the development machine may fail on the target with
 
 ## Open items
 
-- Optional future: publish release artifacts (static binary and checksum) from GitHub
-  Actions.
+- Other architectures (e.g. aarch64) and signed artifacts are not published yet.

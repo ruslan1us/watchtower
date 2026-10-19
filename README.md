@@ -66,13 +66,37 @@ summary of what that means, not legal advice.
 - Linux x86_64 (account detection reads `/proc`).
 - Claude Code 2.1.300 or newer, with background sessions and agent view (`claude --bg`,
   `claude agents`); see [doc/reference/claude-code-cli.md](doc/reference/claude-code-cli.md).
-- Rust 1.88 or newer (via rustup), only to build it.
+- Rust 1.88 or newer (via rustup), only to build from source.
 
 ## Build and install
 
-`cargo build --release` builds `target/release/tower` for the local machine. For a fully
-static binary that runs on any x86_64 Linux whatever its glibc
-([0012](doc/0012-build-and-distribution.md)):
+### Install from a release
+
+Each release ships a fully static x86_64 Linux binary that runs whatever the glibc
+version ([0012](doc/0012-build-and-distribution.md)):
+
+```sh
+mkdir -p ~/.local/bin
+curl -Lo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-x86_64-linux-musl && chmod +x ~/.local/bin/tower
+```
+
+To update, run the same command again. When installing as root you may prefer
+`/usr/local/bin/tower`.
+
+To check the download against the published checksum, fetch both files under their
+release names, verify, then install:
+
+```sh
+cd "$(mktemp -d)"
+base=https://github.com/ruslan1us/watchtower/releases/latest/download
+curl -LO "$base/tower-x86_64-linux-musl" -LO "$base/tower-x86_64-linux-musl.sha256"
+sha256sum -c tower-x86_64-linux-musl.sha256 && install -m 755 tower-x86_64-linux-musl ~/.local/bin/tower
+```
+
+### Build from source
+
+`cargo build --release` builds `target/release/tower` for the local machine. For the same
+static binary as the releases:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
@@ -264,6 +288,9 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release --target x86_64-unknown-linux-musl
 ```
+
+CI runs the same checks on every push to `main` and on pull requests; a pushed `vX.Y.Z` tag
+builds and publishes a release (checklist in [0012](doc/0012-build-and-distribution.md)).
 
 The tests need no Claude Code account: they use sanitized fixtures under `tests/fixtures/`
 and a fake `claude` placed on `PATH` ([0015](doc/0015-testing-strategy.md)). Nothing
