@@ -6,9 +6,22 @@
 //! not text lines (reference/claude-code-cli.md, "`claude logs` output").
 //! [`fetch`] runs the call with the owning account's command; [`render`]
 //! replays the bytes into a fresh [`vt100::Parser`] and converts the final
-//! screen into ratatui [`Line`]s and plain strings. The conversion is done here
-//! rather than with `tui-term`, so the panel can trim blank rows, keep only
-//! the rows that fit, and fall back to plain text.
+//! screen, and the lines that scrolled off its top, into ratatui [`Line`]s
+//! and plain strings. The conversion is done here rather than with
+//! `tui-term`, so the panel can trim blank rows, keep only the rows that
+//! fit, scroll, and fall back to plain text.
+//!
+//! ## History
+//!
+//! The emulator keeps a bounded scrollback (doc/0028): lines that scroll
+//! off the top of the screen during the replay are kept, at most
+//! [`scrollback_len`] of them ([`SCROLLBACK_LINES`], fewer on screens wider
+//! than 200 columns, so the scrollback never holds more than
+//! [`SCROLLBACK_CELLS`] cells). [`LogScreen`] keeps them above the screen;
+//! [`LogScreen::history_lines`] gives both, [`LogScreen::page`] the part a
+//! scrolled panel shows. Claude Code's own streams draw in place with
+//! cursor addressing and never scroll the screen, so for them the history
+//! is the screen (reference/claude-code-cli.md, "`claude logs` output").
 //!
 //! ## Emulator size
 //!
@@ -69,6 +82,19 @@ pub const MAX_ROWS: u16 = 300;
 pub const MAX_COLS: u16 = 600;
 /// Only this many bytes from the end of the stream are replayed.
 pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+/// Most lines the replay keeps above the screen (doc/0028).
+pub const SCROLLBACK_LINES: usize = 5000;
+/// Most cells the scrollback holds. vt100 keeps every cell of a line (32
+/// bytes each), so this caps the scrollback at 32 MB while the replay
+/// runs, however wide the screen.
+pub const SCROLLBACK_CELLS: usize = 1_000_000;
+
+/// The scrollback for a screen `cols` wide: [`SCROLLBACK_LINES`], or fewer
+/// so it holds at most [`SCROLLBACK_CELLS`] cells (5000 lines up to 200
+/// columns, 1666 at 600).
+pub fn scrollback_len(cols: u16) -> usize {
+    (SCROLLBACK_CELLS / usize::from(cols.max(1))).min(SCROLLBACK_LINES)
+}
 
 /// Why [`fetch`] returned no stream.
 #[derive(Debug, thiserror::Error)]
@@ -133,16 +159,24 @@ impl Row {
     }
 }
 
-/// The reconstructed screen of a `claude logs` stream.
+/// The reconstructed screen of a `claude logs` stream, with the lines that
+/// scrolled off its top during the replay.
 ///
-/// Rows are screen-aligned: index `i` is screen row `i` (0-based), from the
-/// top of the screen through the last row with visible text; blank rows below
-/// it are dropped. Trailing spaces are removed from each row (in the styled
-/// form only those with no visible background, reverse or underline).
+/// The screen methods ([`LogScreen::plain_lines`], [`LogScreen::lines`],
+/// [`LogScreen::content_range`], [`LogScreen::tail`], …) are
+/// screen-aligned: index `i` is screen row `i` (0-based), from the top of
+/// the screen through the last row with visible text; blank rows below it
+/// are dropped. Trailing spaces are removed from each row (in the styled
+/// form only those with no visible background, reverse or underline). The
+/// history methods ([`LogScreen::history_lines`], [`LogScreen::page`], …)
+/// put the scrollback, oldest line first, above the screen (doc/0028).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogScreen {
     size: (u16, u16),
+    /// The scrollback, oldest line first, then the screen rows.
     rows: Vec<Row>,
+    /// Index of screen row 0 in `rows`: the number of scrollback lines.
+    screen_start: usize,
 }
 
 impl LogScreen {
@@ -151,25 +185,29 @@ impl LogScreen {
         self.size
     }
 
-    /// Number of screen rows from the top through the last non-blank row.
-    pub fn row_count(&self) -> usize {
-        self.rows.len()
+    fn screen(&self) -> &[Row] {
+        &self.rows[self.screen_start..]
     }
 
-    /// True when the screen has no visible text at all.
+    /// Number of screen rows from the top through the last non-blank row.
+    pub fn row_count(&self) -> usize {
+        self.screen().len()
+    }
+
+    /// True when neither the screen nor the scrollback has visible text.
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.rows.iter().all(Row::is_blank)
     }
 
     /// The rows the panel shows (doc/0009): without blank rows at the top
     /// and bottom. Empty when the screen is empty.
     pub fn content_range(&self) -> Range<usize> {
-        let start = self
-            .rows
+        let screen = self.screen();
+        let start = screen
             .iter()
             .position(|r| !r.is_blank())
-            .unwrap_or(self.rows.len());
-        start..self.rows.len()
+            .unwrap_or(screen.len());
+        start..screen.len()
     }
 
     /// Number of rows in [`LogScreen::content_range`].
@@ -179,13 +217,17 @@ impl LogScreen {
 
     /// Widest content row in terminal columns.
     pub fn content_width(&self) -> usize {
-        self.rows.iter().map(|r| r.plain.width()).max().unwrap_or(0)
+        self.screen()
+            .iter()
+            .map(|r| r.plain.width())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Screen-aligned plain text, one string per row (see [`LogScreen`]).
     /// Blank interior rows are empty strings.
     pub fn plain_lines(&self) -> Vec<String> {
-        self.rows.iter().map(|r| r.plain.clone()).collect()
+        self.screen().iter().map(|r| r.plain.clone()).collect()
     }
 
     /// Screen-aligned styled lines (see [`LogScreen`]), with colours and
@@ -194,56 +236,155 @@ impl LogScreen {
     /// are as wide as the stream drew them; render them without wrapping so
     /// a narrow panel clips the right-hand side.
     pub fn lines(&self) -> Vec<Line<'static>> {
-        self.rows.iter().map(Row::line).collect()
+        self.screen().iter().map(Row::line).collect()
     }
 
     /// [`LogScreen::lines`] without blank rows at the top and bottom.
     pub fn content_lines(&self) -> Vec<Line<'static>> {
-        self.rows[self.content_range()]
+        self.screen()[self.content_range()]
             .iter()
             .map(Row::line)
             .collect()
     }
 
-    /// At most `rows` styled lines for a panel `rows` high.
+    /// At most `rows` styled lines of the screen for a panel `rows` high.
     ///
     /// When the content ([`LogScreen::content_lines`]) fits it is returned
     /// unchanged. Otherwise runs of blank rows are first collapsed to a single
     /// blank row (Claude Code leaves a large gap between the conversation and
     /// the prompt box at the bottom), and if it still does not fit only the
     /// last `rows` rows are kept: the newest conversation, the prompt box or
-    /// dialog, and the footer.
+    /// dialog, and the footer. The scrollback is not used; the scrolled
+    /// panel uses [`LogScreen::page`].
     pub fn tail(&self, rows: usize) -> Vec<Line<'static>> {
+        let screen = self.screen();
         self.tail_indices(rows)
             .into_iter()
-            .map(|i| self.rows[i].line())
+            .map(|i| screen[i].line())
             .collect()
     }
 
     /// Plain-text form of [`LogScreen::tail`], e.g. for a narrow fallback.
     pub fn tail_plain(&self, rows: usize) -> Vec<String> {
+        let screen = self.screen();
         self.tail_indices(rows)
+            .into_iter()
+            .map(|i| screen[i].plain.clone())
+            .collect()
+    }
+
+    fn tail_indices(&self, rows: usize) -> Vec<usize> {
+        let mut picked = fit_indices(self.screen(), self.content_range(), rows);
+        let skip = picked.len().saturating_sub(rows);
+        picked.split_off(skip)
+    }
+
+    /// Number of lines kept above the screen.
+    pub fn scrollback_rows(&self) -> usize {
+        self.screen_start
+    }
+
+    /// The history as indices into `rows`: the scrollback, oldest line
+    /// first, then the screen, without blank rows at the top and bottom of
+    /// the whole.
+    fn history_range(&self) -> Range<usize> {
+        let start = self
+            .rows
+            .iter()
+            .position(|r| !r.is_blank())
+            .unwrap_or(self.rows.len());
+        let end = self
+            .rows
+            .iter()
+            .rposition(|r| !r.is_blank())
+            .map_or(start, |p| p + 1);
+        start..end
+    }
+
+    /// Number of lines in [`LogScreen::history_lines`].
+    pub fn history_rows(&self) -> usize {
+        self.history_range().len()
+    }
+
+    /// The scrollback, oldest line first, then the screen, as plain text,
+    /// without blank rows at the top and bottom of the whole.
+    pub fn history_plain(&self) -> Vec<String> {
+        self.rows[self.history_range()]
+            .iter()
+            .map(|r| r.plain.clone())
+            .collect()
+    }
+
+    /// Styled form of [`LogScreen::history_plain`].
+    pub fn history_lines(&self) -> Vec<Line<'static>> {
+        self.rows[self.history_range()]
+            .iter()
+            .map(Row::line)
+            .collect()
+    }
+
+    /// The lines a panel `height` rows high scrolls through, as indices
+    /// into `rows`: the history unchanged when it fits, else with runs of
+    /// blank rows collapsed to one, as [`LogScreen::tail`] does.
+    fn scroll_indices(&self, height: usize) -> Vec<usize> {
+        fit_indices(&self.rows, self.history_range(), height)
+    }
+
+    /// Number of lines a panel `height` rows high scrolls through: the
+    /// history, with runs of blank rows collapsed when it does not fit.
+    pub fn scroll_len(&self, height: usize) -> usize {
+        self.scroll_indices(height).len()
+    }
+
+    /// The largest first line of a page `height` rows high: 0 when
+    /// everything fits.
+    pub fn max_top(&self, height: usize) -> usize {
+        self.scroll_len(height).saturating_sub(height)
+    }
+
+    /// The page a panel `height` rows high shows: `height` lines from line
+    /// `top` (clamped to [`LogScreen::max_top`]) of the lines it scrolls
+    /// through, or the last `height` lines when `top` is `None` (following
+    /// the output). Without scrollback the last page is
+    /// [`LogScreen::tail`].
+    pub fn page(&self, height: usize, top: Option<usize>) -> Vec<Line<'static>> {
+        self.page_indices(height, top)
+            .into_iter()
+            .map(|i| self.rows[i].line())
+            .collect()
+    }
+
+    /// Plain-text form of [`LogScreen::page`].
+    pub fn page_plain(&self, height: usize, top: Option<usize>) -> Vec<String> {
+        self.page_indices(height, top)
             .into_iter()
             .map(|i| self.rows[i].plain.clone())
             .collect()
     }
 
-    fn tail_indices(&self, rows: usize) -> Vec<usize> {
-        let range = self.content_range();
-        if range.len() <= rows {
-            return range.collect();
-        }
-        let mut picked: Vec<usize> = Vec::with_capacity(range.len());
-        for i in range {
-            let blank = self.rows[i].is_blank();
-            if blank && picked.last().is_some_and(|&p| self.rows[p].is_blank()) {
-                continue;
-            }
-            picked.push(i);
-        }
-        let skip = picked.len().saturating_sub(rows);
-        picked.split_off(skip)
+    fn page_indices(&self, height: usize, top: Option<usize>) -> Vec<usize> {
+        let all = self.scroll_indices(height);
+        let max_top = all.len().saturating_sub(height);
+        let top = top.map_or(max_top, |t| t.min(max_top));
+        all.into_iter().skip(top).take(height).collect()
     }
+}
+
+/// The indices of `range` in `rows` for a panel `height` rows high: all of
+/// them when they fit, else with runs of blank rows collapsed to one.
+fn fit_indices(rows: &[Row], range: Range<usize>, height: usize) -> Vec<usize> {
+    if range.len() <= height {
+        return range.collect();
+    }
+    let mut picked: Vec<usize> = Vec::with_capacity(range.len());
+    for i in range {
+        let blank = rows[i].is_blank();
+        if blank && picked.last().is_some_and(|&p| rows[p].is_blank()) {
+            continue;
+        }
+        picked.push(i);
+    }
+    picked
 }
 
 /// Replays a `claude logs` byte stream at an inferred size and returns the
@@ -252,7 +393,8 @@ pub fn render(bytes: &[u8]) -> LogScreen {
     render_sized(bytes, None)
 }
 
-/// Replays a `claude logs` byte stream and returns the final screen.
+/// Replays a `claude logs` byte stream and returns the final screen, with
+/// the lines that scrolled off its top (see the module docs).
 ///
 /// `real` is the session terminal's size as `(rows, cols)` when it is known
 /// (doc/0025); see [`emulator_size`]. Never fails; see the module docs for
@@ -261,17 +403,29 @@ pub fn render_sized(bytes: &[u8], real: Option<(u16, u16)>) -> LogScreen {
     let bytes = replay_window(bytes);
     let (rows, cols) = emulator_size(bytes, real);
     let bytes = bound_counts(bytes, rows, cols);
-    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let mut parser = vt100::Parser::new(rows, cols, scrollback_len(cols));
     parser.process(&bytes);
-    let screen = parser.screen();
+    let screen = parser.screen_mut();
 
-    let mut out: Vec<Row> = (0..rows).map(|r| convert_row(screen, r, cols)).collect();
-    while out.last().is_some_and(Row::is_blank) {
+    // The scrollback, oldest line first: scrolled back by `kept - first`
+    // lines, the screen's visible row `r` is scrollback line `first + r`.
+    screen.set_scrollback(usize::MAX);
+    let kept = screen.scrollback();
+    let mut out: Vec<Row> = Vec::with_capacity(kept + usize::from(rows));
+    for first in (0..kept).step_by(usize::from(rows.max(1))) {
+        screen.set_scrollback(kept - first);
+        let n = (kept - first).min(usize::from(rows)) as u16;
+        out.extend((0..n).map(|r| convert_row(screen, r, cols)));
+    }
+    screen.set_scrollback(0);
+    out.extend((0..rows).map(|r| convert_row(screen, r, cols)));
+    while out.len() > kept && out.last().is_some_and(Row::is_blank) {
         out.pop();
     }
     LogScreen {
         size: (rows, cols),
         rows: out,
+        screen_start: kept,
     }
 }
 
@@ -356,6 +510,21 @@ pub const COUNT_BUDGET: u64 = 20_000_000;
 /// the largest size).
 pub const SCREEN_BUDGET: u64 = 250_000_000;
 
+/// Work `bound_counts` lets line feeds (LF, VT, FF) and reverse index
+/// (`ESC M`) do per replay, in cells touched. Each may scroll the screen,
+/// which costs a new row and a shift of all rows, and with the scrollback
+/// (doc/0028) keeps the old row; one byte per scroll, so 2 MiB of line
+/// feeds on a 300 × 600 screen took about two seconds. Each is charged as
+/// a scroll (rows + columns), whether it scrolls or not: about 470 000
+/// line feeds at 64 × 200, 138 000 at 300 × 600. Claude Code's streams
+/// have none: they move the cursor with escape sequences.
+pub const SCROLL_BUDGET: u64 = 125_000_000;
+
+/// Whether `b` is a line feed for vt100 (LF, VT or FF).
+fn is_line_feed(b: u8) -> bool {
+    matches!(b, 0x0a..=0x0c)
+}
+
 /// `bytes` with the count and position parameters of CSI sequences clamped
 /// to the `rows` × `cols` screen, as [`render`] replays them.
 ///
@@ -367,20 +536,31 @@ pub const SCREEN_BUDGET: u64 = 250_000_000;
 /// CNL `E`, CPL `F`, VPA `d` and the CUP/HVP row; REP to one screenful plus
 /// its remainder modulo the width, so the cursor ends up where it would.
 /// Every clamped value has the same effect as the original. Once a kind of
-/// sequence has used up its budget ([`COUNT_BUDGET`], [`SCREEN_BUDGET`]),
-/// further ones of that kind are dropped. Sequences that need no change are
-/// kept byte for byte.
+/// sequence has used up its budget ([`COUNT_BUDGET`], [`SCREEN_BUDGET`],
+/// [`SCROLL_BUDGET`] for line feeds and reverse index), further ones of
+/// that kind are dropped. Sequences that need no change are kept byte for
+/// byte.
 ///
 /// The scan follows vt100's parser (vte): only the first value of each
 /// parameter counts, values saturate at 65535, and control characters
 /// inside a sequence are carried out before it, so a rewritten or dropped
-/// sequence leaves them in its place.
+/// sequence leaves them in its place (line feeds among them are charged
+/// like any other, and dropped together once the budget is spent).
 fn bound_counts(bytes: &[u8], rows: u16, cols: u16) -> Cow<'_, [u8]> {
     let mut budget = Budget::new(rows, cols);
     let mut out: Option<Vec<u8>> = None;
     let mut copied = 0;
     let mut i = 0;
     while i < bytes.len() {
+        if is_line_feed(bytes[i]) {
+            if !budget.line_feeds(1) {
+                let buf = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
+                buf.extend_from_slice(&bytes[copied..i]);
+                copied = i + 1;
+            }
+            i += 1;
+            continue;
+        }
         if bytes[i] != 0x1b {
             i += 1;
             continue;
@@ -391,13 +571,21 @@ fn bound_counts(bytes: &[u8], rows: u16, cols: u16) -> Cow<'_, [u8]> {
             continue;
         };
         i = seq.end;
+        let feeds = seq.executed.iter().filter(|&&b| is_line_feed(b)).count();
+        let keep_feeds = budget.line_feeds(feeds);
         let change = budget.change(&seq);
-        if change == Change::Keep {
+        if change == Change::Keep && keep_feeds {
             continue;
         }
         let buf = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
         buf.extend_from_slice(&bytes[copied..start]);
-        buf.extend_from_slice(&seq.executed);
+        let kept = |b: &&u8| keep_feeds || !is_line_feed(**b);
+        if change == Change::Keep {
+            // Only its line feeds go.
+            buf.extend(bytes[start..seq.end].iter().filter(kept));
+        } else {
+            buf.extend(seq.executed.iter().filter(kept));
+        }
         if let Change::Replace(values) = change {
             buf.extend_from_slice(b"\x1b[");
             let text: Vec<String> = values.iter().map(u16::to_string).collect();
@@ -427,28 +615,30 @@ enum Change {
 }
 
 /// An escape sequence as vte sees it: a CSI sequence without intermediates,
-/// or a reset (`ESC c`).
+/// a reset (`ESC c`) or a reverse index (`ESC M`).
 struct Escape {
     /// The private marker of a CSI sequence (`?` in `ESC[?1049h`).
     private: Option<u8>,
     /// The first value of each parameter, saturated at 65535; 0 if missing.
     params: Vec<u16>,
-    /// The final byte; `c` with no parameters for a reset.
+    /// The final byte; `c` or `M` with no parameters for the two escapes.
     final_byte: u8,
-    /// Whether this is `ESC c` rather than a CSI sequence.
-    reset: bool,
+    /// Whether this is `ESC c` or `ESC M` rather than a CSI sequence.
+    plain: bool,
     /// Control characters inside the sequence, carried out before it.
     executed: Vec<u8>,
     /// Index just past the final byte.
     end: usize,
 }
 
-/// The work left for one replay ([`COUNT_BUDGET`], [`SCREEN_BUDGET`]).
+/// The work left for one replay ([`COUNT_BUDGET`], [`SCREEN_BUDGET`],
+/// [`SCROLL_BUDGET`]).
 struct Budget {
     rows: u16,
     cols: u16,
     counts: u64,
     screens: u64,
+    scrolls: u64,
 }
 
 impl Budget {
@@ -458,7 +648,23 @@ impl Budget {
             cols: cols.max(1),
             counts: COUNT_BUDGET,
             screens: SCREEN_BUDGET,
+            scrolls: SCROLL_BUDGET,
         }
+    }
+
+    /// The cost of one possible scroll: a new row and a shift of the rows.
+    fn scroll_cost(&self) -> u64 {
+        u64::from(self.rows) + u64::from(self.cols)
+    }
+
+    /// Charges `n` line feeds; false when they do not all fit and must be
+    /// dropped.
+    fn line_feeds(&mut self, n: usize) -> bool {
+        if n == 0 {
+            return true;
+        }
+        let cost = self.scroll_cost().saturating_mul(n as u64);
+        Budget::charge(&mut self.scrolls, cost, Change::Keep) == Change::Keep
     }
 
     /// What to do with `seq`, charging its work.
@@ -466,8 +672,14 @@ impl Budget {
         let (rows, cols) = (self.rows, self.cols);
         let cells = u64::from(rows) * u64::from(cols);
         let first = seq.params.first().copied().unwrap_or(0);
-        if seq.reset {
-            return Budget::charge(&mut self.screens, 8 * cells, Change::Keep);
+        if seq.plain {
+            return match seq.final_byte {
+                b'M' => {
+                    let cost = self.scroll_cost();
+                    Budget::charge(&mut self.scrolls, cost, Change::Keep)
+                }
+                _ => Budget::charge(&mut self.screens, 8 * cells, Change::Keep),
+            };
         }
         match (seq.private, seq.final_byte) {
             (None | Some(b'?'), b'J') if first <= 2 => {
@@ -543,9 +755,9 @@ fn clamp(params: &[u16], bounds: &[u16]) -> Change {
 }
 
 /// Follows vte from just after an `ESC` at `bytes[at - 1]`. Returns the
-/// reset or CSI sequence that starts there, or `None` when it is another
-/// escape, has intermediates or a misplaced marker, is cut short, or is
-/// cancelled.
+/// reset, reverse index or CSI sequence that starts there, or `None` when
+/// it is another escape, has intermediates or a misplaced marker, is cut
+/// short, or is cancelled.
 fn scan_escape(bytes: &[u8], at: usize) -> Option<Escape> {
     let mut executed = Vec::new();
     let mut i = at;
@@ -555,12 +767,12 @@ fn scan_escape(bytes: &[u8], at: usize) -> Option<Escape> {
         i += 1;
         match b {
             b'[' => break,
-            b'c' => {
+            b'c' | b'M' => {
                 return Some(Escape {
                     private: None,
                     params: Vec::new(),
                     final_byte: b,
-                    reset: true,
+                    plain: true,
                     executed,
                     end: i,
                 });
@@ -606,7 +818,7 @@ fn scan_escape(bytes: &[u8], at: usize) -> Option<Escape> {
                     private,
                     params,
                     final_byte: b,
-                    reset: false,
+                    plain: false,
                     executed,
                     end: i,
                 });
@@ -842,6 +1054,51 @@ mod tests {
         let kept = bound_counts(&inserts, rows, cols);
         let allowed = usize::try_from(COUNT_BUDGET / (600 * 600)).unwrap();
         assert_eq!(count(&kept, b"\x1b[600@"), allowed);
+    }
+
+    #[test]
+    fn line_feeds_and_reverse_index_share_the_scroll_budget() {
+        let (rows, cols) = (MAX_ROWS, MAX_COLS);
+        let cost = u64::from(rows) + u64::from(cols);
+        let allowed = usize::try_from(SCROLL_BUDGET / cost).unwrap();
+        let count = |bytes: &[u8], b: u8| bytes.iter().filter(|&&x| x == b).count();
+
+        let feeds = b"\n\x0b\x0c".repeat(allowed);
+        let kept = bound_counts(&feeds, rows, cols);
+        assert_eq!(kept.len(), allowed, "only the budget's worth is kept");
+        assert_eq!(&kept[..3], b"\n\x0b\x0c");
+
+        let ri = b"\x1bM".repeat(allowed + 10);
+        let kept = bound_counts(&ri, rows, cols);
+        assert_eq!(kept.len(), allowed * 2);
+
+        // Line feeds inside a sequence count too, and go together once the
+        // budget is spent; the sequence itself stays.
+        let mut bytes = b"\n".repeat(allowed - 1);
+        bytes.extend_from_slice(b"\x1b[\n\n5A\x1b[\n\n5B");
+        let kept = bound_counts(&bytes, rows, cols);
+        assert_eq!(count(&kept, b'\n'), allowed - 1);
+        assert!(
+            kept.ends_with(b"\x1b[5A\x1b[5B"),
+            "{:?}",
+            &kept[kept.len() - 12..]
+        );
+
+        // Within the budget nothing changes.
+        let text = b"one\r\ntwo\x1bM\r\nthree".to_vec();
+        assert!(matches!(bound_counts(&text, 24, 80), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn scrollback_is_capped_by_lines_and_cells() {
+        assert_eq!(scrollback_len(80), SCROLLBACK_LINES);
+        assert_eq!(scrollback_len(200), 5000);
+        assert_eq!(scrollback_len(231), 4329);
+        assert_eq!(scrollback_len(600), 1666);
+        assert_eq!(scrollback_len(0), SCROLLBACK_LINES);
+        for cols in [1, 80, 200, 231, 600] {
+            assert!(scrollback_len(cols) * usize::from(cols) <= SCROLLBACK_CELLS.max(cols.into()));
+        }
     }
 
     #[test]

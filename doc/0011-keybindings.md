@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18
-- Related: [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md)
+- Status: Accepted · 2026-10-18 · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md)
+- Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md)
 
 ## Context
 
@@ -25,6 +25,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `Enter` | Attach to the selected session after a refresh ([0005](0005-attach-and-detach.md)); on a group header, collapse/expand |
 | `Tab` | Collapse/expand the group of the selected row or header ([0006](0006-session-states-and-grouping.md)) |
 | `Space` | Toggle the logs panel for the selected row ([0009](0009-stop-remove-and-logs.md)) |
+| `→`, `l` | *Added by [0028](0028-scrolling-the-logs-panel.md):* give the keys to the open logs panel to scroll it; its own keys (lines, pages, top, bottom, `f` full screen, `←` / `h` / `Esc` back) are listed there |
 | `n` | New session dialog ([0008](0008-new-session-dialog.md)) |
 | `a` | Continue under another of the user's accounts ([0004](0004-account-hand-off.md)); always confirm, same group only unless `allow_cross_group_handoff = true` ([0018](0018-account-groups-and-handoff-guard.md)) |
 | `o` | Attach to the orchestrator as `Enter` on its row would, starting it if missing ([0010](0010-orchestrator.md)); after a `Workspace not trusted` start a window offers `Ctrl+T` (run the account's command in its folder, then retry once) and `Esc` |
@@ -156,17 +157,24 @@ setting.
   user's muscle memory for "back to the agent list" should not do something
   different in tower. Inside tower's own dialogs `←` / `→` move the cursor,
   which is safe because those keys only reach tower when it is in the foreground.
+  *Amended by [0028](0028-scrolling-the-logs-panel.md):* with the logs panel
+  focused, `←` returns to the list, the same "back" meaning.
 - `Ctrl+Z` is reserved for detaching from Claude Code. Tower never suspends
   itself; in raw mode `Ctrl+Z` arrives as a key and tower treats it as a no-op,
   optionally with a hint that it is the detach key inside sessions.
 - `l` is not used for logs because it means "right" to vim users.
+  *Amended by [0028](0028-scrolling-the-logs-panel.md):* `l` moves the focus
+  right into the open logs panel, `h` back, which keeps that meaning.
 - The footer always shows the most used keys (including `m seen`) and the
   detach hint (`in a session: Ctrl+Z returns to tower`). On a narrow terminal
   it drops whole key hints, least used first, and keeps `? help` and the
   detach hint.
 - The help overlay fits a 24-row terminal: related list keys share a line
   (`s, d`, `p, i`, `c, r, ?`, …), followed by the dialog keys. The Settings
-  window has its own key list (`?` there).
+  window has its own key list (`?` there). *Amended by
+  [0028](0028-scrolling-the-logs-panel.md):* opened from the focused logs panel,
+  the help lists the panel's keys instead of the dialog keys, and the footer
+  shows the panel's keys while it has the focus.
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
 - A window that a background result opens (the hand-off and orchestrator

@@ -26,9 +26,9 @@ This directory records the design decisions behind it, one file per decision.
 | 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted |
-| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025) |
+| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted |
-| 0011 | [Keybindings](0011-keybindings.md) | Accepted |
+| 0011 | [Keybindings](0011-keybindings.md) | Accepted (logs panel keys amended by 0028) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |
@@ -44,6 +44,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0024 | [Settings window](0024-settings-window.md) | Accepted |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
+| 0028 | [Scrolling the logs panel](0028-scrolling-the-logs-panel.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files
