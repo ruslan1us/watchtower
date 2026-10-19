@@ -26,6 +26,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -49,6 +50,7 @@ use crate::projects::{self, ProjectList};
 use crate::rename::{self, RenameError, RenameStep, RenameTiming, Renamed};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
+use crate::subagents::{self, Subagent};
 
 /// A finished background job.
 #[derive(Debug)]
@@ -86,6 +88,9 @@ pub enum JobResult {
     ConfigSaved(Box<Result<SaveOutcome, SaveError>>),
     /// The Settings window's folder checks and completion (doc/0024).
     Folders(FolderResult),
+    /// The running subagents by `sessionId`, read from tower's files
+    /// (doc/0029).
+    Subagents(HashMap<String, Vec<Subagent>>),
 }
 
 impl JobResult {
@@ -115,6 +120,10 @@ impl JobResult {
             JobResult::ConfigChecked(epoch, found) => app.config_checked(epoch, found),
             JobResult::ConfigSaved(result) => app.config_saved(*result),
             JobResult::Folders(result) => app.folders_checked(result),
+            JobResult::Subagents(found) => {
+                app.subagents_read(found);
+                Vec::new()
+            }
         }
     }
 }
@@ -224,6 +233,19 @@ impl Jobs {
             let result = orchestrator::start(runner, &job.request, &tower);
             JobResult::Orchestrator(job, result)
         });
+    }
+
+    /// Reads (and now and then prunes) the subagent files of `job`
+    /// (doc/0029). A read that panics or cannot start reports none.
+    pub fn subagents(&self, job: subagents::ReadJob) {
+        let tx = self.tx.clone();
+        let body = Box::new(move || {
+            let found = guarded(|| job.run(std::time::SystemTime::now())).unwrap_or_default();
+            let _ = tx.send(JobResult::Subagents(found));
+        });
+        if (self.spawner)("tower-subagents".to_owned(), body).is_err() {
+            let _ = self.tx.send(JobResult::Subagents(HashMap::new()));
+        }
     }
 
     /// Runs `<account command> stop <id>` (doc/0009).

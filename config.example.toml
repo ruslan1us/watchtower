@@ -83,6 +83,18 @@ style = "dashboard"
 # Default: "neutral"
 theme = "neutral"
 
+# Sessions tower starts (doc/0029).
+[sessions]
+# Show the subagents (Agent tool) each session runs. Tower passes the
+# sessions it starts (new-session dialog, orchestrator) a settings file with
+# three observe-only hooks (SubagentStart, SubagentStop, PostToolUse for
+# Agent) that run `tower hook`, which records the running subagents in
+# tower's own files. They are combined with your own hooks; no Claude Code
+# settings file is changed. Sessions started elsewhere show no subagents.
+# false: no --settings is passed and the files are ignored.
+# Default: true
+track_subagents = true
+
 # Accounts (doc/0003). Each one is a Claude Code config dir with its own
 # login and background-session supervisor.
 #

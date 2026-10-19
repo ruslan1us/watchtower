@@ -21,6 +21,8 @@ What it adds on top:
   marker and bold text until you attach or mark it seen. No bell, sound or desktop
   notifications.
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
+- **Subagents under their session.** A working session tower started shows its running
+  subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
   panel for the selected session; `[ui] style = "minimal"` gives the plain list
   ([Configuration](#configuration)).
@@ -31,6 +33,9 @@ Tower never runs, supervises or reconfigures agents. It has no PTY handling, no 
 Agent SDK and no direct API calls, and it does not read Claude Code's internal files
 ([0001](doc/0001-thin-wrapper-over-claude-cli.md)). It never changes Claude
 Code's settings, keybindings or defaults ([0016](doc/0016-do-not-change-claude-code-defaults.md)).
+The one thing it adds to the sessions it starts is a `--settings` file with three
+observe-only hooks that record their running subagents in tower's own files; turn it off
+with `[sessions] track_subagents = false` ([0029](doc/0029-tracking-subagents.md)).
 It never reads, stores or passes on credentials or session tokens, never runs
 `claude setup-token`, never proxies or routes requests, and has no hosted, shared or
 multi-user mode: it is a single-user local tool around the unmodified official `claude`
@@ -161,7 +166,7 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 Press `c` in tower to change settings: the Settings window
 ([0024](doc/0024-settings-window.md)) edits the style and theme (previewed as you
 browse), the new-session defaults, the project folders, the hand-off prompt and guard,
-and the poll interval; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
+the poll interval and subagent tracking; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
 and keeps your comments and formatting; resetting a setting to its default removes the
@@ -327,7 +332,7 @@ Settings window ([0024](doc/0024-settings-window.md)):
 `tower status` polls every account once and prints the merged sessions as a short table;
 `tower status --json` prints them as JSON with `config` (the config file and whether it
 was found), `sessions` (id, name, folder, state, group, owning account and its command,
-last change time) and `errors` (accounts whose listing failed). The table starts with a
+last change time, running subagents) and `errors` (accounts whose listing failed). The table starts with a
 `config: <path>` line. It reads `state.json` but never writes it, so it is safe to run next to a running
 tower. Exit code 0 when at least one account was listed, 1 when every listing failed, 2 for
 a config error. The format is in [0010](doc/0010-orchestrator.md).

@@ -113,11 +113,12 @@ pub enum SettingKey {
     HandoffPrompt,
     AllowCrossGroupHandoff,
     PollIntervalSecs,
+    TrackSubagents,
 }
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 11] = [
+    pub const ALL: [SettingKey; 12] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
         SettingKey::DefaultAccount,
@@ -129,6 +130,7 @@ impl SettingKey {
         SettingKey::HandoffPrompt,
         SettingKey::AllowCrossGroupHandoff,
         SettingKey::PollIntervalSecs,
+        SettingKey::TrackSubagents,
     ];
 
     /// The key's path in the file: `["ui", "style"]`, `["default_model"]`.
@@ -145,6 +147,7 @@ impl SettingKey {
             SettingKey::HandoffPrompt => &["handoff_prompt"],
             SettingKey::AllowCrossGroupHandoff => &["allow_cross_group_handoff"],
             SettingKey::PollIntervalSecs => &["poll_interval_secs"],
+            SettingKey::TrackSubagents => &["sessions", "track_subagents"],
         }
     }
 
@@ -166,7 +169,7 @@ impl SettingKey {
             | SettingKey::DefaultPermissionMode => Section::NewSessions,
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Section::Projects,
             SettingKey::HandoffPrompt | SettingKey::AllowCrossGroupHandoff => Section::Handoff,
-            SettingKey::PollIntervalSecs => Section::General,
+            SettingKey::PollIntervalSecs | SettingKey::TrackSubagents => Section::General,
         }
     }
 
@@ -184,6 +187,7 @@ impl SettingKey {
             SettingKey::HandoffPrompt => "hand-off prompt",
             SettingKey::AllowCrossGroupHandoff => "allow cross-group hand-off",
             SettingKey::PollIntervalSecs => "poll interval",
+            SettingKey::TrackSubagents => "track subagents",
         }
     }
 
@@ -227,6 +231,10 @@ impl SettingKey {
                  account's terms."
             }
             SettingKey::PollIntervalSecs => "Seconds between polls of every account's list.",
+            SettingKey::TrackSubagents => {
+                "List the subagents of sessions tower starts, through observe-only hooks passed \
+                 with --settings."
+            }
         }
     }
 
@@ -245,6 +253,9 @@ impl SettingKey {
             }
             SettingKey::HandoffPrompt | SettingKey::AllowCrossGroupHandoff => "the next hand-off",
             SettingKey::PollIntervalSecs => "from the next poll",
+            SettingKey::TrackSubagents => {
+                "sessions started from now on; the list from the next poll"
+            }
         }
     }
 
@@ -252,7 +263,7 @@ impl SettingKey {
     fn shape(self) -> Shape {
         match self {
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Shape::Paths,
-            SettingKey::AllowCrossGroupHandoff => Shape::Bool,
+            SettingKey::AllowCrossGroupHandoff | SettingKey::TrackSubagents => Shape::Bool,
             SettingKey::PollIntervalSecs => Shape::Int,
             _ => Shape::Text,
         }
@@ -589,7 +600,7 @@ impl EditSession {
             }
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => SettingKind::Paths,
             SettingKey::HandoffPrompt => SettingKind::Text,
-            SettingKey::AllowCrossGroupHandoff => SettingKind::Bool,
+            SettingKey::AllowCrossGroupHandoff | SettingKey::TrackSubagents => SettingKind::Bool,
             SettingKey::PollIntervalSecs => SettingKind::Int {
                 min: *POLL_INTERVAL_RANGE.start() as i64,
                 max: *POLL_INTERVAL_RANGE.end() as i64,
@@ -623,6 +634,7 @@ impl EditSession {
             SettingKey::HandoffPrompt => text("continue"),
             SettingKey::AllowCrossGroupHandoff => SettingValue::Bool(false),
             SettingKey::PollIntervalSecs => SettingValue::Int(DEFAULT_POLL_INTERVAL_SECS as i64),
+            SettingKey::TrackSubagents => SettingValue::Bool(true),
         }
     }
 

@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 
 ## Context
@@ -181,6 +181,12 @@ CLI does not expose:
   and a short-id `started` entry when its row did not appear within 1 hour.
   Nothing is pruned while any account's poll fails or is partial
   ([0017](0017-ownership-evidence-rules.md)).
+
+**Subagent files.** *Added by [0029](0029-tracking-subagents.md):* next to
+`state.json`, tower keeps `claude-settings.json` (the hooks it passes with
+`--settings`) and `subagents/<sessionId>.json`, written by the internal `tower
+hook` subcommand under `subagents/.lock`. `[sessions] track_subagents`
+(default `true`) turns this off.
 
 **Orchestrator working directory:** under the config dir, e.g.
 `~/.config/watchtower/orchestrator/`, holding its instruction file. Details are

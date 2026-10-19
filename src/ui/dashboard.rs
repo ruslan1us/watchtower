@@ -17,6 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use super::subtree::{self, Part};
 use super::theme::{Lb, Theme, rfit};
 use super::{DETACH_HINT, FOOTER_HELP, MARKER, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
@@ -380,18 +381,22 @@ fn short_state(detail: &str) -> String {
     detail.split(' ').next().unwrap_or(detail).to_owned()
 }
 
-/// The texts of one row's columns: name, project, state, account.
+/// The texts of one row's columns: name (with its subagent badge,
+/// doc/0029), project, state, account.
 struct RowText {
     name: String,
+    badge: Option<String>,
     project: String,
     state: String,
     account: String,
 }
 
 fn row_text(app: &App, i: usize, level: Level) -> RowText {
-    let [name, project, state, account] = row_columns(&app.sessions()[i], app.home());
+    let m = &app.sessions()[i];
+    let [name, project, state, account] = row_columns(m, app.home());
     RowText {
         name,
+        badge: subtree::badge(app, m),
         project: if level >= Level::ShortProject {
             short_project(&project)
         } else {
@@ -438,7 +443,12 @@ fn widths(app: &App, w: usize) -> Widths {
         };
         let ws = Widths {
             level,
-            name: max(&|t| &t.name, NAME_MAX).max(4),
+            name: texts
+                .iter()
+                .map(|t| subtree::name_width(t.name.width().min(NAME_MAX), t.badge.as_deref()))
+                .max()
+                .unwrap_or(0)
+                .max(4),
             project: max(&|t| &t.project, PROJECT_MAX).max(7),
             state: max(&|t| &t.state, DETAIL_MAX).max(5),
             account: max(&|t| &t.account, 16).max(4),
@@ -459,14 +469,34 @@ fn widths(app: &App, w: usize) -> Widths {
     ws
 }
 
-/// The scroll offset that keeps `selected` in view of `h` lines.
+/// The scroll offset that keeps `selected` in view of `h` lines, one line
+/// per entry.
+#[cfg(test)]
 fn scroll(offset: usize, selected: Option<usize>, h: usize, len: usize) -> usize {
-    let mut offset = offset.min(len.saturating_sub(h));
-    if let Some(sel) = selected {
+    scroll_lines(offset, selected, h, &vec![1; len])
+}
+
+/// The scroll offset (an entry index) that keeps the selected entry and
+/// the lines drawn under it (its subagents, doc/0029) in view of `h`
+/// lines when they fit, else its first line; `heights` are the entries'
+/// heights. The list never scrolls past the point where its end fills
+/// the panel.
+fn scroll_lines(offset: usize, selected: Option<usize>, h: usize, heights: &[usize]) -> usize {
+    // The first offset from which every remaining entry fits.
+    let mut last = heights.len();
+    let mut below = 0;
+    while last > 0 && below + heights[last - 1] <= h {
+        below += heights[last - 1];
+        last -= 1;
+    }
+    let mut offset = offset.min(last);
+    if let Some(sel) = selected.filter(|&s| s < heights.len()) {
         if sel < offset {
             offset = sel;
-        } else if sel >= offset + h {
-            offset = sel + 1 - h;
+        } else {
+            while offset < sel && heights[offset..=sel].iter().sum::<usize>() > h {
+                offset += 1;
+            }
         }
     }
     offset
@@ -530,15 +560,36 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
     let h = usize::from(inner.height - head).max(1);
     app.page_size = h;
     let selected = app.selected_entry();
-    let offset = scroll(app.list_state.offset(), selected, h, app.entries().len());
+    // The subagents under each row (doc/0029), when the list is wide
+    // enough for them; they are drawn, not listed, so the selection and
+    // the keys skip them.
+    let tree = subtree::Columns {
+        name_at: 5,
+        age_at: 5 + ws.name + 2 + ws.project + 2 + ws.state + 2,
+        width: iw,
+        type_w: subtree::list_type_width(app),
+    };
+    let fit = tree.fit_children();
+    let heights: Vec<usize> = entry_children(app, fit)
+        .iter()
+        .map(|c| 1 + c.len())
+        .collect();
+    let offset = scroll_lines(app.list_state.offset(), selected, h, &heights);
     *app.list_state.offset_mut() = offset;
     app.list_state.select(selected);
 
     let app = &*app;
+    let children = entry_children(app, fit);
     let spin = spinner(now_ms);
-    for (k, entry) in app.entries().iter().enumerate().skip(offset).take(h) {
-        let y = head + (k - offset) as u16;
-        let r = row(inner, y);
+    let mut y = head;
+    let bottom = head + h as u16;
+    for (k, entry) in app.entries().iter().enumerate().skip(offset) {
+        if y >= bottom {
+            break;
+        }
+        let at = y;
+        let r = row(inner, at);
+        y += 1;
         let is_sel = selected == Some(k);
         match entry {
             Entry::Header {
@@ -547,7 +598,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
                 highlighted,
                 collapsed,
             } => {
-                let connect = y > 0;
+                let connect = at > 0;
                 // The selection bar of rows, else the rule joining the border.
                 let lead = match (is_sel, th.color) {
                     (true, true) => ("▌", th.fg(th.p.mark)),
@@ -583,7 +634,70 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
                 }
             }
         }
+        for child in &children[k] {
+            if y >= bottom {
+                break;
+            }
+            let r = row(inner, y);
+            y += 1;
+            put(frame, r, child_row(child, &tree, is_sel, now_ms, th));
+            if is_sel {
+                // The selection covers the row's subagents too.
+                frame.buffer_mut().set_style(r, th.selected());
+                if th.color && th.p.sel_fg.is_some() {
+                    frame.buffer_mut()[(r.x, r.y)].set_fg(th.p.mark);
+                }
+            }
+        }
     }
+}
+
+/// The lines under each entry of the list: a row's subagents (doc/0029)
+/// when `fit`, else none.
+fn entry_children(app: &App, fit: bool) -> Vec<Vec<subtree::Child<'_>>> {
+    app.entries()
+        .iter()
+        .map(|e| match e {
+            Entry::Row(i) if fit => {
+                subtree::children(app.subagents_of(&app.sessions()[*i].session))
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// A subagent line under a session (doc/0029), dimmed: the selection bar's
+/// cell, the tree glyph, description, type and age.
+fn child_row(
+    child: &subtree::Child,
+    tree: &subtree::Columns,
+    selected: bool,
+    now_ms: i64,
+    th: Theme,
+) -> Line<'static> {
+    let mut l = Lb::new();
+    match (selected, th.color) {
+        (true, true) => l.push("▌", th.fg(th.p.mark)),
+        _ => l.push(" ", th.text()),
+    };
+    for (k, (text, part)) in subtree::child_line(child, tree, now_ms)
+        .into_iter()
+        .enumerate()
+    {
+        // The first cell is the selection bar's.
+        let text = if k == 0 {
+            text.chars().skip(1).collect()
+        } else {
+            text
+        };
+        let st = match part {
+            Part::Pad => th.text(),
+            Part::Label => th.muted(),
+            Part::Tree | Part::Type | Part::Age => th.faint(),
+        };
+        l.push(text, st);
+    }
+    l.line()
 }
 
 /// A group's section separator: `─▾ Needs me 2  ● 2 ────`, joined to the
@@ -662,7 +776,22 @@ fn session_row(
     } else {
         text
     };
-    l.push(format!("{}  ", fit(&t.name, ws.name)), name_st);
+    match &t.badge {
+        Some(b) => {
+            // The badge, in the row's colour, ends the name cell; a
+            // narrow cell holds only the badge.
+            let cell = subtree::name_cell(&t.name, Some(b), ws.name);
+            let (name, badge) = match cell.strip_suffix(b.as_str()) {
+                Some(name) => (name.to_owned(), b.clone()),
+                None => (String::new(), cell),
+            };
+            l.push(name, name_st);
+            l.push(format!("{badge}  "), th.fg(gc));
+        }
+        None => {
+            l.push(format!("{}  ", fit(&t.name, ws.name)), name_st);
+        }
+    }
     l.push(format!("{}  ", fit(&t.project, ws.project)), soft);
     let mut state_st = if dim { th.faint() } else { th.fg(gc) };
     if lit {
@@ -796,6 +925,26 @@ mod tests {
         assert_eq!(scroll(0, Some(7), 5, 20), 3);
         assert_eq!(scroll(6, Some(2), 5, 20), 2);
         assert_eq!(scroll(18, None, 5, 20), 15);
+    }
+
+    #[test]
+    fn scroll_keeps_a_row_and_its_subagents_in_view() {
+        // Entry 3 has four lines under it (doc/0029).
+        let heights = [1, 1, 1, 5, 1, 1, 1, 1];
+        // In view already.
+        assert_eq!(scroll_lines(0, Some(3), 8, &heights), 0);
+        // Its last child line would be cut: scroll until it fits.
+        assert_eq!(scroll_lines(0, Some(3), 6, &heights), 2);
+        assert_eq!(scroll_lines(0, Some(3), 5, &heights), 3);
+        // Taller than the panel: its own line first.
+        assert_eq!(scroll_lines(0, Some(3), 3, &heights), 3);
+        // Selecting above the offset scrolls up to it.
+        assert_eq!(scroll_lines(4, Some(1), 5, &heights), 1);
+        // The end fills the panel: the 4 last single lines and entry 3
+        // need 9 lines, so with 6 the offset stays at most 4.
+        assert_eq!(scroll_lines(7, None, 6, &heights), 4);
+        assert_eq!(scroll_lines(7, Some(7), 9, &heights), 3);
+        assert_eq!(scroll_lines(0, None, 4, &[]), 0);
     }
 
     #[test]

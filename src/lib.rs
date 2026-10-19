@@ -57,6 +57,8 @@
 //! - [`args`]: command-line arguments.
 //! - [`status`]: `tower status [--json]`, one merged snapshot without the
 //!   TUI (doc/0010).
+//! - [`subagents`]: the observe-only hooks passed to sessions tower starts,
+//!   `tower hook`, and the per-session subagent files it keeps (doc/0029).
 
 #[macro_use]
 mod strenum;
@@ -90,6 +92,7 @@ pub mod rename;
 pub mod settings;
 pub mod sidecar;
 pub mod status;
+pub mod subagents;
 pub mod tui;
 pub mod ui;
 pub mod update;

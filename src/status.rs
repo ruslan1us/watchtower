@@ -30,6 +30,7 @@ use crate::listing::{Kind, Listing, Session, State, Status, WaitingFor};
 use crate::merge::{AccountListing, EnvironReader, Resolver};
 use crate::paths;
 use crate::sidecar::Sidecar;
+use crate::subagents::{self, Subagent};
 
 /// Exit code when no account could be listed.
 pub const EXIT_ALL_FAILED: u8 = 1;
@@ -61,6 +62,10 @@ pub struct Row {
     pub detail: String,
     /// Unix ms of the last state change ([`last_change_at`]).
     pub last_change_at: Option<i64>,
+    /// The running subagents (doc/0029): `id`, `type`, `description`,
+    /// `startedAt`. Empty unless the row is live and `working` and tower's
+    /// hooks recorded some ([`add_subagents`]).
+    pub subagents: Vec<Subagent>,
 }
 
 /// An account whose listing failed.
@@ -208,6 +213,7 @@ pub fn build(
                 group: group_slug(groups::classify(s)),
                 detail: groups::detail(s),
                 last_change_at: last_change_at(s, sidecar, now_ms),
+                subagents: Vec::new(),
             }
         })
         .collect();
@@ -220,6 +226,21 @@ pub fn build(
         },
         warnings,
     )
+}
+
+/// Fills in the subagents of every row that is live and `working`, from
+/// tower's files in `dir` (`<config dir>/subagents`, doc/0029). Read only:
+/// nothing is locked, written or pruned. `main` calls it only while
+/// `[sessions] track_subagents` is on.
+pub fn add_subagents(report: &mut Report, dir: &Path) {
+    for row in &mut report.sessions {
+        let live = row.pid.is_some() || row.status.is_some();
+        if subagents::is_current_state(live, row.state.as_ref())
+            && let Some(id) = &row.session_id
+        {
+            row.subagents = subagents::read(dir, id);
+        }
+    }
 }
 
 /// Reads the sidecar without changing anything on disk: a missing file is

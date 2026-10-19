@@ -11,7 +11,9 @@ path no longer exists, run `tower status --json` instead.
 
 The output is a JSON object. `sessions` has one entry per session, with `id`
 (the short id), `name`, `cwd`, `group`, `detail`, `account`,
-`accountCommand` and `lastChangeAt` (Unix ms). `errors` lists accounts that
+`accountCommand` and `lastChangeAt` (Unix ms). `subagents` lists the
+subagents a working session runs (`type`, `description`, `startedAt`); it is
+empty for sessions tower did not start. `errors` lists accounts that
 could not be listed; mention them. For an overview, group your answer by
 `group`: `needs-me` and `failed` first, then `ready-for-review`, then
 `working`; leave out `stopped` sessions unless asked. The `orchestrator`

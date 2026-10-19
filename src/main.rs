@@ -12,8 +12,14 @@ use watchtower::sidecar::Sidecar;
 use watchtower::update;
 
 fn main() -> ExitCode {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "hook") {
+        return hook(&raw);
+    }
     match args::parse(std::env::args().skip(1)) {
         Ok(Command::Run) => {}
+        // Handled above, before arguments that are not UTF-8 could panic.
+        Ok(Command::Hook { .. }) => return ExitCode::SUCCESS,
         Ok(Command::Status { json }) => return status(json),
         Ok(Command::Update {
             check,
@@ -87,7 +93,7 @@ fn status(json: bool) -> ExitCode {
         eprintln!("tower: {}", shown(&w));
     }
     let results = status::poll_all(&config.accounts, &watchtower::cli::CliRunner::new());
-    let (report, warnings) = status::build(
+    let (mut report, warnings) = status::build(
         &config,
         &source,
         &dirs.home,
@@ -96,6 +102,9 @@ fn status(json: bool) -> ExitCode {
         &watchtower::merge::ProcEnviron,
         watchtower::sidecar::now_ms(),
     );
+    if config.track_subagents {
+        status::add_subagents(&mut report, &watchtower::subagents::dir(&dirs.config_dir));
+    }
     for w in &warnings {
         eprintln!("tower: {}", shown(w));
     }
@@ -119,6 +128,37 @@ fn status(json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::from(status::exit_code(&config, &report))
+}
+
+/// `tower hook` (doc/0029): records one Claude Code hook payload from stdin
+/// in tower's subagent files. Prints nothing, not even a panic, and always
+/// exits 0, so it never changes what the session does; on any problem it
+/// records nothing.
+fn hook(raw: &[std::ffi::OsString]) -> ExitCode {
+    std::panic::set_hook(Box::new(|_| {}));
+    let _ = std::panic::catch_unwind(|| {
+        let Some(words) = raw
+            .iter()
+            .map(|a| a.to_str())
+            .collect::<Option<Vec<&str>>>()
+        else {
+            return;
+        };
+        let Ok(Command::Hook { dir, valid: true }) = args::parse(words) else {
+            return;
+        };
+        let Some(dir) = dir.or_else(|| Dirs::from_env().map(|d| d.config_dir)) else {
+            return;
+        };
+        if dir.is_absolute() {
+            watchtower::subagents::run_hook(
+                std::io::stdin().lock(),
+                &dir,
+                watchtower::sidecar::now_ms(),
+            );
+        }
+    });
+    ExitCode::SUCCESS
 }
 
 /// `tower update` (doc/0023). With `check`, prints whether a newer release

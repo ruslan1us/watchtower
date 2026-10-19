@@ -1,7 +1,7 @@
 # 0006. Session states, grouping and activity times
 
-- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md)
-- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [CLI reference](reference/claude-code-cli.md)
+- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0029](0029-tracking-subagents.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -133,6 +133,13 @@ table above, time since last change, account (`?` when unknown,
 
 The age column is right-aligned, four columns wide, rounded down: `now` under
 10 s (and for a time in the future), then `42s`, `5m`, `3h`, `2d`.
+
+*Amended by [0029](0029-tracking-subagents.md):* a working row of a session tower
+started can end its name column with a `+N` badge and carry up to five dimmed lines
+under it for its running subagents. They are drawn, not lines of the list: the
+selection, the keys, the actions, the group counts, `N of M shown` and the filter
+see only rows and headers; the lines follow their row (hidden while its group is
+collapsed or the filter hides it), and the selection's highlight covers them.
 
 **Styles.** Everything above holds in both styles of
 [0020](0020-visual-styles.md); only the drawing differs. The minimal style

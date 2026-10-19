@@ -118,7 +118,7 @@ pub fn instructions(tower: &Path) -> String {
 
 /// `word` as one shell word: unchanged when it holds only safe characters,
 /// else in single quotes.
-fn shell_word(word: &str) -> String {
+pub(crate) fn shell_word(word: &str) -> String {
     let safe = !word.is_empty()
         && word
             .chars()

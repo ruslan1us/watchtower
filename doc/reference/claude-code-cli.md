@@ -1,7 +1,7 @@
 # Claude Code CLI behaviour Watchtower relies on
 
 Verified against Claude Code 2.1.302 on 2026-10-18; facts marked 2.1.303 were verified
-with that version (renaming on 2026-10-19). Re-verify after upgrades.
+with that version (renaming and hooks passed with `--settings` on 2026-10-19). Re-verify after upgrades.
 
 This page collects the facts about Claude Code that Watchtower's design depends on. Each
 fact is marked:
@@ -34,8 +34,8 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 
 | Command | Behaviour | Source |
 |---|---|---|
-| `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
-| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. On a stopped session, flags beyond `--bg` (e.g. `--name X`) or the short id in place of the full `sessionId` also start a copy instead of waking it; a prompt such as `"/rename X"` does not ([Renaming a session](#renaming-a-session), 2.1.303). | CLI help, verified (stopped case) |
+| `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] [--settings F] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
+| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`; with `--settings` there, it lists `--settings` too and the hooks keep firing, 2.1.303). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself; a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. On a stopped session, flags beyond `--bg` (e.g. `--name X`) or the short id in place of the full `sessionId` also start a copy instead of waking it; a prompt such as `"/rename X"` does not ([Renaming a session](#renaming-a-session), 2.1.303). | CLI help, verified (stopped case) |
 | `claude --resume` (no argument) | Opens the interactive session picker for the current folder (its worktree; background sessions marked `bg`). In the picker `Ctrl+A` shows every project on the machine, `Ctrl+W` every worktree of the repository, `Esc` leaves. Picking a conversation of a background session that is still running attaches to it (v2.1.285+); picking one of an unrelated project copies a `cd` and resume command to the clipboard instead of resuming. A conversation picked here starts in the permission mode a new session would, except plan mode. Picking an ended conversation opens it in the foreground; backgrounding it then starts a copy under a new session id (see [Attach and detach keys](#attach-and-detach-keys)). Used by `R` ([0019](../0019-resume-past-sessions.md)). | documented ([sessions](https://code.claude.com/docs/en/sessions)); ended case verified (2.1.303) |
 | `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions, including sessions stopped with `claude stop`, which are missing without it; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
@@ -395,6 +395,43 @@ Verified with Claude Code 2.1.303:
 
 Not verified: what a subagent's permission prompt looks like in the listing.
 
+How Watchtower uses it: [0029](../0029-tracking-subagents.md).
+
+## Hooks passed with `--settings`
+
+Verified with Claude Code 2.1.303 (the hook payloads are documented in
+https://code.claude.com/docs/en/hooks):
+
+- `claude --bg --settings <file> "task"` is accepted, and hooks from that file fire in
+  the background session.
+- Hooks from `--settings` are **combined** with hooks from settings files: a project
+  `.claude/settings.json` hook and a `--settings` hook both fired for the same events.
+- A wake keeps them: after `claude stop`, `--resume <sessionId> --bg "…"` printed
+  `note: woke session <id> with its saved options (--name, --settings, --model).` and the
+  hooks fired again.
+- `SubagentStart` payload: `session_id` (the `sessionId` of `claude agents --json`),
+  `prompt_id`, `agent_id` (e.g. `a1b2c3d4e5f607182`), `agent_type` (e.g.
+  `general-purpose`), `hook_event_name`, plus the common fields (`transcript_path`,
+  `cwd`, `scratchpad_dir`, …).
+- `PostToolUse` with matcher `Agent`, for a background launch, fires at launch with
+  `tool_input.description`, `tool_input.subagent_type`, and `tool_response`
+  `{ "status": "async_launched", "agentId": …, "description": …, … }`.
+- `SubagentStop` payload: `agent_id`, `agent_type`, `stop_hook_active`,
+  `last_assistant_message`, `agent_transcript_path`, and `background_tasks`, a snapshot
+  such as `[{ "id": "a1b2c3d4e5f607182", "type": "subagent", "status": "running",
+  "description": "alpha waiter", "agent_type": "general-purpose" }, …]` that still lists
+  the agent that is stopping.
+- Claude Code's internal helpers also emit `SubagentStop`, with `agent_type: ""` and no
+  `SubagentStart` before it.
+- Hooks run concurrently: two subagents launched together fire their hooks at the same
+  time.
+- While subagents run, the parent row stays `state: working` / `status: busy`; it turns
+  `done` only after relaying their results. The JSON row still has only `pid`, `id`, `cwd`,
+  `kind`, `startedAt`, `sessionId`, `name`, `status`, `state`.
+
+Not verified: whether `--settings` given to the interactive `claude --resume` reaches the
+copy a backgrounded conversation starts as.
+
 ## Known messages and exit codes
 
 | Situation | Output | Exit code | Source |
@@ -423,7 +460,9 @@ Not verified: what a subagent's permission prompt looks like in the listing.
   [Subagents in background sessions](#subagents-in-background-sessions)).
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.
 - Whether `--effort` survives a wake with `--resume <sessionId> --bg` (the `note:` line lists
-  `--name`, `--permission-mode` and `--model` only).
+  `--name`, `--permission-mode`, `--settings` and `--model` only).
+- Whether `--settings` on the interactive `claude --resume` reaches the backgrounded copy
+  ([Hooks passed with `--settings`](#hooks-passed-with---settings)).
 - Whether attaching with the hosting account after the 1-hour idle stop keeps the account, and
   how such a row looks in the JSON (probably like a row after `claude stop`).
 - Whether `claude agents --json` starts a supervisor for an account with no live sessions.
