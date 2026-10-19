@@ -21,6 +21,9 @@ What it adds on top:
   marker and bold text until you attach or mark it seen. No bell, sound or desktop
   notifications.
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
+- **A dashboard look by default:** count pills per state, the list in panels, and a detail
+  panel for the selected session; `[ui] style = "minimal"` gives the plain list
+  ([Configuration](#configuration)).
 
 ## What it does not do
 
@@ -171,6 +174,21 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
   ```
 
   Here `a` refuses to move a session from `main` to `alt` and says which groups differ.
+
+- **Styles.** `[ui] style` picks the look of the session list
+  ([0020](doc/0020-visual-styles.md)). The default, `"dashboard"`, draws rounded panels:
+  a header with a count pill per state and the accounts, the session list with section
+  separators, and a detail panel for the selected session (on the right from 130 columns,
+  a strip under the list below that; the logs panel takes its place while open). It needs
+  at least 80×24 and uses the plain layout on a smaller terminal. For the plain
+  single-column list, switch back to `"minimal"`:
+
+  ```toml
+  [ui]
+  style = "minimal"
+  ```
+
+  Colours follow `NO_COLOR` in both styles.
 
 ## Keys
 

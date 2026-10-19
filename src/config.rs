@@ -16,6 +16,38 @@ pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 /// Default account config dir when `config_dir` is unset (doc/0003).
 pub const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude";
 
+/// The look of the session list, `[ui] style` (doc/0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiStyle {
+    /// Rounded panels: a header with per-state pills, the list with section
+    /// separators, and a detail panel for the selected row. The default.
+    #[default]
+    Dashboard,
+    /// The plain single-column list with a title, status line and footer.
+    Minimal,
+}
+
+impl UiStyle {
+    /// The config value: `dashboard` or `minimal`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiStyle::Dashboard => "dashboard",
+            UiStyle::Minimal => "minimal",
+        }
+    }
+
+    /// Parses a config value; anything else is an error naming the choices.
+    pub fn parse(value: &str) -> Result<UiStyle, ConfigError> {
+        match value {
+            "dashboard" => Ok(UiStyle::Dashboard),
+            "minimal" => Ok(UiStyle::Minimal),
+            other => Err(ConfigError::Invalid(format!(
+                "[ui] style `{other}` is not known; use \"dashboard\" or \"minimal\""
+            ))),
+        }
+    }
+}
+
 /// One Claude Code account (doc/0003).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
@@ -132,6 +164,8 @@ pub struct Config {
     /// Whether a hand-off may go to an account of another group (doc/0004).
     /// Default `false`: only accounts of the owner's group are targets.
     pub allow_cross_group_handoff: bool,
+    /// `[ui] style`: the look of the session list (doc/0020).
+    pub ui_style: UiStyle,
 }
 
 /// Where the config came from: the file tower looked at and whether it was
@@ -210,6 +244,13 @@ struct RawConfig {
     allow_cross_group_handoff: Option<bool>,
     #[serde(default)]
     accounts: Vec<RawAccount>,
+    ui: Option<RawUi>,
+}
+
+/// The `[ui]` table (doc/0020).
+#[derive(Debug, Default, Deserialize)]
+struct RawUi {
+    style: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +356,10 @@ impl Config {
                 "poll_interval_secs must be at least 1".into(),
             ));
         }
+        let ui_style = match raw.ui.and_then(|ui| ui.style) {
+            Some(style) => UiStyle::parse(&style)?,
+            None => UiStyle::default(),
+        };
         let expand = |v: Vec<String>| -> Vec<PathBuf> {
             v.iter()
                 .map(|p| crate::paths::expand_tilde(p, home))
@@ -331,6 +376,7 @@ impl Config {
             default_permission_mode: raw.default_permission_mode.unwrap_or_else(|| "auto".into()),
             handoff_prompt: raw.handoff_prompt.unwrap_or_else(|| "continue".into()),
             allow_cross_group_handoff: raw.allow_cross_group_handoff.unwrap_or(false),
+            ui_style,
         })
     }
 
@@ -403,7 +449,10 @@ mod tests {
             handoff_prompt,
             allow_cross_group_handoff,
             accounts,
+            ui,
         } = raw;
+        let RawUi { style } = ui.expect("[ui] is documented");
+        assert!(style.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(!project_roots.is_empty());

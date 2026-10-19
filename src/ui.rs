@@ -6,13 +6,22 @@
 //! of `R` ([`dialog`], doc/0019) and the
 //! popup window (doc/0006, doc/0008, doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
 //!
-//! The logs panel sits to the right of the list when the terminal is at
-//! least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise below it, taking
-//! half the space either way. Its lines are never wrapped: a narrow panel
-//! clips the right-hand side (doc/0009).
+//! Two styles draw the screen under the same windows (doc/0020): the
+//! minimal one here, and the dashboard ([`dashboard`], the default
+//! `[ui] style`), which falls back to the minimal layout on terminals
+//! smaller than [`DASHBOARD_MIN_SIZE`]. [`App::style`] picks one.
+//!
+//! In the minimal style the logs panel sits to the right of the list when
+//! the terminal is at least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise
+//! below it, taking half the space either way. Its lines are never wrapped:
+//! a narrow panel clips the right-hand side (doc/0009).
 
+mod dashboard;
+mod detail;
 mod dialog;
+mod theme;
 
+pub use dashboard::{MIN_SIZE as DASHBOARD_MIN_SIZE, SIDE_MIN_WIDTH as DASHBOARD_SIDE_MIN_WIDTH};
 pub use dialog::{resume_note, wrap};
 
 use std::time::Instant;
@@ -29,6 +38,7 @@ use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LogsPanel, LogsView, Overlay, Picker, Popup,
     Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff, UntrustedOrchestrator,
 };
+use crate::config::UiStyle;
 use crate::groups;
 use crate::merge::MergedSession;
 use crate::paths;
@@ -90,6 +100,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 /// [`draw`] with the wall-clock time `now_ms` (Unix ms) the age column
 /// counts from (doc/0006).
 pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
+    let area = frame.area();
+    match app.style {
+        UiStyle::Dashboard if dashboard::fits(area) => {
+            dashboard::draw_screen(frame, app, now, now_ms);
+        }
+        UiStyle::Dashboard => {
+            // Too small for the panels: the minimal layout, said once
+            // (doc/0020).
+            app.note_style_fallback(dashboard::MIN_SIZE);
+            draw_minimal(frame, app, now, now_ms);
+        }
+        UiStyle::Minimal => draw_minimal(frame, app, now, now_ms),
+    }
+    draw_windows(frame, app);
+}
+
+/// The minimal style's screen: title, list (and logs panel), the filter's
+/// input line, status line and footer.
+fn draw_minimal(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     // The filter's input line sits above the status bar while it is
     // edited (doc/0006).
     let input_h = u16::from(app.filter_editing());
@@ -122,7 +151,11 @@ pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     }
     draw_status(frame, app, status, now);
     draw_footer(frame, footer);
+}
 
+/// The windows above either style's screen: overlays, the dialogs, the
+/// popup and the quit question. They look the same in both styles.
+fn draw_windows(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     match app.overlay().clone() {
         Overlay::None => {}
@@ -181,7 +214,7 @@ fn draw_quit_prompt(frame: &mut Frame, app: &App, prompt: &QuitPrompt, area: Rec
 
 /// The filter's input line (doc/0006): `/` and the text with the cursor,
 /// then the match count and the keys.
-fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -256,18 +289,34 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
 
 /// The logs panel: the replayed screen's last rows, unwrapped (doc/0009).
 fn draw_logs(frame: &mut Frame, app: &App, panel: &LogsPanel, area: Rect) {
-    let title = if panel.title.is_empty() {
-        " logs ".to_owned()
-    } else {
-        format!(" logs · {} ", panel.title)
-    };
     let block = Block::new()
         .borders(Borders::ALL)
-        .title(title)
+        .title(logs_title(panel))
         .title_bottom(Line::styled(
             " Space/Esc close ",
             Style::new().add_modifier(Modifier::DIM),
         ));
+    draw_logs_in(frame, app, panel, area, block);
+}
+
+/// The logs panel's title: `logs`, or `logs · <name> (<account>)`.
+pub(crate) fn logs_title(panel: &LogsPanel) -> String {
+    if panel.title.is_empty() {
+        " logs ".to_owned()
+    } else {
+        format!(" logs · {} ", panel.title)
+    }
+}
+
+/// The logs panel's content inside `block`, which either style draws in
+/// its own look (doc/0009, doc/0020).
+pub(crate) fn draw_logs_in(
+    frame: &mut Frame,
+    app: &App,
+    panel: &LogsPanel,
+    area: Rect,
+    block: Block,
+) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {

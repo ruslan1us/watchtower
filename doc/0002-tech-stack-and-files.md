@@ -1,7 +1,7 @@
 # 0002. Tech stack, config and state files
 
 - Status: Accepted · 2026-10-18
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md)
 
 ## Context
 
@@ -63,6 +63,9 @@ handoff_prompt = "continue"
 # Allow hand-offs between accounts of different groups (see 0018).
 allow_cross_group_handoff = false
 
+[ui]
+style = "dashboard"                  # dashboard | minimal (see 0020)
+
 [[accounts]]
 name = "main"
 command = "claude"
@@ -83,6 +86,9 @@ in tower's own shell never reaches an account's command (a wrapper such as
 ([0017](0017-ownership-evidence-rules.md), environment hygiene).
 `config_dir` is used to recognise which account hosts a running session
 ([0003](0003-accounts-and-session-ownership.md)). It defaults to `~/.claude`.
+`[ui] style` picks the look of the session list: `dashboard` (default) or
+`minimal`; any other value is a config error naming both
+([0020](0020-visual-styles.md)).
 `group` is an optional string per account; accounts without it share one
 implicit group. A hand-off offers only accounts in the owner's group unless
 the top-level `allow_cross_group_handoff` (default `false`) is `true`

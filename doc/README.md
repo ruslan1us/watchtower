@@ -37,6 +37,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted |
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted |
+| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

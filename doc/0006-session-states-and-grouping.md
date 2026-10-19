@@ -1,7 +1,7 @@
 # 0006. Session states, grouping and activity times
 
 - Status: Accepted · 2026-10-18
-- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [CLI reference](reference/claude-code-cli.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -133,6 +133,15 @@ table above, time since last change, account (`?` when unknown,
 
 The age column is right-aligned, four columns wide, rounded down: `now` under
 10 s (and for a time in the future), then `42s`, `5m`, `3h`, `2d`.
+
+**Styles.** Everything above holds in both styles of
+[0020](0020-visual-styles.md); only the drawing differs. The minimal style
+shows headers as `▾ Needs me (3)  ● 2` and the title line's session count.
+The dashboard draws headers as separators joined to the list border
+(`├─▾ Needs me 3  ● 2 ──┤`), adds a column header, a spinner or state glyph
+before the name, `N of M shown` in the list's title when rows are hidden,
+per-state count pills above the list, and a detail panel for the selected
+row or group.
 
 **Activity times.** Tower tracks them itself:
 

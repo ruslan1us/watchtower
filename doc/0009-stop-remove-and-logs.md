@@ -1,7 +1,7 @@
 # 0009. Stop, remove and the logs panel
 
 - Status: Accepted · 2026-10-18
-- Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
+- Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -37,7 +37,9 @@ suggested command manually. These flags destroy work.
 
 **Logs panel.** `Space` toggles a side panel for the selected row
 ([0011](0011-keybindings.md)); on terminals narrower than 150 columns it sits below
-the list instead, since the replayed screen is wide:
+the list instead, since the replayed screen is wide. In the dashboard style
+([0020](0020-visual-styles.md)) it takes the detail panel's place: right of the
+list from 130 columns, below it on narrower terminals, half the space either way:
 
 - Run `<owning account command> logs <id>` and read **stdout only**; the
   `Session <id> · <name>` banner arrives on another stream and is ignored.

@@ -55,6 +55,17 @@ handoff_prompt = "continue"
 # Default: false
 allow_cross_group_handoff = false
 
+# Look of the session list (doc/0020).
+[ui]
+# "dashboard": rounded panels with per-state count pills, section
+#   separators and a detail panel for the selected row (side panel from 130
+#   columns, a strip under the list below that). Needs at least 80x24;
+#   a smaller terminal gets the minimal layout until it grows again.
+# "minimal": the plain single-column list.
+# Colours follow NO_COLOR either way.
+# Default: "dashboard"
+style = "dashboard"
+
 # Accounts (doc/0003). Each one is a Claude Code config dir with its own
 # login and background-session supervisor.
 #

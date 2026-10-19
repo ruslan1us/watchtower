@@ -431,6 +431,7 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     app.set_config_dir(&dirs.config_dir);
     app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    app.style = config.ui_style;
     if let Some(warning) = loaded.warning {
         app.add_warning(warning);
     }

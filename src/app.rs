@@ -32,7 +32,7 @@ use ratatui::widgets::ListState;
 
 use crate::actions::{RemoveError, StopError};
 use crate::activity;
-use crate::config::{Account, Config, ConfigSource};
+use crate::config::{Account, Config, ConfigSource, UiStyle};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -840,6 +840,13 @@ pub struct App {
     pub list_state: ListState,
     /// Whether colours may be used (`NO_COLOR` unset).
     pub color: bool,
+    /// The renderer (doc/0020). [`App::new`] starts with the minimal one;
+    /// the runtime applies the config's `[ui] style`, as it applies
+    /// `NO_COLOR` to [`App::color`].
+    pub style: UiStyle,
+    /// The dashboard fell back to the minimal layout on a small terminal
+    /// and the status line said so; said once per run.
+    style_fallback_noted: bool,
     /// Whether the terminal reports `Ctrl+Enter` distinctly (keyboard
     /// enhancement is on); the dialog footer then shows it instead of
     /// `Alt+Enter` (doc/0011).
@@ -912,6 +919,8 @@ impl App {
             page_size: 10,
             list_state: ListState::default(),
             color: true,
+            style: UiStyle::Minimal,
+            style_fallback_noted: false,
             keyboard_enhanced: false,
         }
     }
@@ -1226,6 +1235,23 @@ impl App {
         if !self.warnings.contains(&text) {
             self.warnings.push(text);
         }
+    }
+
+    /// Called by the renderer when the dashboard falls back to the minimal
+    /// layout because the terminal is smaller than `min` (columns, rows):
+    /// the first time, the status line says so (doc/0020).
+    pub fn note_style_fallback(&mut self, min: (u16, u16)) {
+        if self.style_fallback_noted {
+            return;
+        }
+        self.style_fallback_noted = true;
+        self.set_message(
+            format!(
+                "the dashboard needs {}x{}; minimal layout until the terminal is larger",
+                min.0, min.1
+            ),
+            Severity::Info,
+        );
     }
 
     /// Shows a transient status message.

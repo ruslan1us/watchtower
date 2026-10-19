@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use watchtower::config::{Account, Config, ConfigError, ConfigSource};
+use watchtower::config::{Account, Config, ConfigError, ConfigSource, UiStyle};
 use watchtower::paths::Dirs;
 
 const HOME: &str = "/home/user";
@@ -365,8 +365,18 @@ fn example_config_is_valid_and_complete() {
             "handoff_prompt",
             "poll_interval_secs",
             "project_roots",
+            "ui",
         ]
     );
+    let mut ui_keys: Vec<&str> = table["ui"]
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    ui_keys.sort_unstable();
+    assert_eq!(ui_keys, ["style"]);
+    assert_eq!(c.ui_style, defaults.ui_style);
     for account in table["accounts"].as_array().unwrap() {
         let mut keys: Vec<&str> = account
             .as_table()
@@ -414,4 +424,35 @@ fn load_reports_where_it_looked_and_whether_the_file_was_found() {
         Config::load_with_source(&dirs),
         Err(ConfigError::Parse { .. })
     ));
+}
+
+/// `[ui] style` (doc/0020): dashboard by default, minimal on request, and
+/// an unknown value is an error that names the choices.
+#[test]
+fn ui_style_defaults_to_dashboard_and_rejects_unknown_values() {
+    assert_eq!(parse("").unwrap().ui_style, UiStyle::Dashboard);
+    assert_eq!(parse("[ui]\n").unwrap().ui_style, UiStyle::Dashboard);
+    assert_eq!(
+        Config::defaults(Path::new(HOME)).ui_style,
+        UiStyle::Dashboard
+    );
+    assert_eq!(
+        parse("[ui]\nstyle = \"minimal\"\n").unwrap().ui_style,
+        UiStyle::Minimal
+    );
+    assert_eq!(
+        parse("[ui]\nstyle = \"dashboard\"\n").unwrap().ui_style,
+        UiStyle::Dashboard
+    );
+    let err = parse("[ui]\nstyle = \"fancy\"\n").unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
+    let text = err.to_string();
+    assert!(text.contains("[ui] style `fancy`"), "{text}");
+    assert!(text.contains("\"dashboard\" or \"minimal\""), "{text}");
+    // A value of the wrong type is a parse error, as for other keys.
+    assert!(matches!(
+        parse("[ui]\nstyle = 1\n"),
+        Err(ConfigError::Parse { .. })
+    ));
+    assert_eq!(UiStyle::Minimal.as_str(), "minimal");
 }
