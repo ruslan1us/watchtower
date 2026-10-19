@@ -1,7 +1,7 @@
 # 0029. Tracking the subagents of sessions tower starts
 
 - Status: Accepted · 2026-10-19
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0019](0019-resume-past-sessions.md), [0022](0022-tower-writes-its-own-config.md), [0024](0024-settings-window.md), [reference](reference/claude-code-cli.md#subagents-in-background-sessions)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0019](0019-resume-past-sessions.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md), [0024](0024-settings-window.md), [reference](reference/claude-code-cli.md#subagents-in-background-sessions)
 
 ## Context
 
@@ -97,7 +97,49 @@ live and `working`, and exposes their running agents (id, type, description, sta
 `sessionId`. A row in any other state has none: the parent stays `working` while its
 subagents run. `tower status --json` adds `subagents: [{id, type, description,
 startedAt}]` to every session, empty when none ([0010](0010-orchestrator.md)); it only
-reads. Drawing them is a later change.
+reads. The list draws them as below.
+
+**Display.** In both styles ([0020](0020-visual-styles.md)) a row with running agents
+gets a count badge at the end of its name column and its agents as a tree under it:
+
+```text
+├─▾ Working 2 ─────────────────────────────────────────────────────────────────────
+│▌  ⠋ schema-migration  +3  ~/workspace/billing-ui  working         5m  main
+│▌     ├─ Internet research Queue→Stream         general-purpose    2m
+│▌     ├─ Related docs search                    general-purpose    2m
+│▌     └─ Codebase queue audit                   Explore            1m
+│   ⠋ disk-analyze      +1  ~/workspace/analysis    working        29m  main
+│      └─ Pipeline watcher                       general-purpose    4m
+```
+
+- **Badge** `+N`, N the running agents, right-aligned in the name column so badges line
+  up; the column widens by the badge only when a badged name needs it, and a narrow column
+  cuts the name first. Plain ASCII on purpose: `⑂` (U+2442), the first idea, is one cell
+  for `unicode-width`, but none of the DejaVu and Ubuntu fonts checked has it (`↳` was
+  only in DejaVu), so terminals would draw it from a fallback font whose glyph can spill
+  into the next cell; `+` is in every font.
+- **Child lines**, at most four agents in start order (oldest first); with more, the
+  fourth is followed by `└─ … N more`. Each line: the tree glyph (`├─`, `└─` on the last;
+  box drawing, one cell) one cell right of the name column's start; the description (else
+  the type, else the id); the type in one column for the whole list, ending two cells
+  before the age; the time since `started_ms` in the age column, in its format
+  ([0006](0006-session-states-and-grouping.md)). The state and account columns stay empty.
+- **Dimmed** with the theme's tokens ([0021](0021-dashboard-themes.md)): the description
+  in the secondary grey, tree, type and age in the dim one, no background; in the minimal
+  style and with `NO_COLOR` the dim attribute.
+- **Not entries.** Child lines are drawn, not listed: every navigation key moves between
+  sessions and group headers only, actions act on the session, and the selection (bar,
+  `▌` and highlight) covers the row and its child lines. They follow their row: hidden
+  when its group is collapsed, under it in project grouping, shown when the filter
+  matches the session (the filter never matches child text). `N of M shown` and the group
+  counts count sessions.
+- **Viewport.** The list scrolls by whole entries and keeps the selected row with its
+  child lines in view when they fit, else the row itself.
+- **Narrow lists** cut descriptions first, then drop the type column; when fewer than
+  8 cells are left for a description (the minimal style puts the age at the right edge
+  when its age column is cut off), no child lines are drawn and only the badges show.
+- A row without running agents, any row while tracking is off, and every row of a
+  terminal without any subagents look exactly as before.
 
 **Pruning**, at most once a minute by the TUI, under the lock: a file not written for
 14 days; a file of a session that no listing shows, once it was not written for 1 hour,

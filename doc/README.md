@@ -23,7 +23,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
-| 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027) |
+| 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029) |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted (rename wake amended by 0027) |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028) |

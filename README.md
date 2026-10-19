@@ -21,6 +21,8 @@ What it adds on top:
   marker and bold text until you attach or mark it seen. No bell, sound or desktop
   notifications.
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
+- **Subagents under their session.** A working session tower started shows its running
+  subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
   panel for the selected session; `[ui] style = "minimal"` gives the plain list
   ([Configuration](#configuration)).

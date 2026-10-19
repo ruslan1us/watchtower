@@ -12,6 +12,9 @@
 //! `[ui] style`), which falls back to the minimal layout on terminals
 //! smaller than [`DASHBOARD_MIN_SIZE`]. [`App::style`] picks one.
 //!
+//! Both styles draw the running subagents of a row as a tree under it
+//! ([`subtree`], doc/0029); those lines are drawn, never selected.
+//!
 //! In the minimal style the logs panel sits to the right of the list when
 //! the terminal is at least [`SIDE_PANEL_MIN_WIDTH`] columns wide, otherwise
 //! below it, taking half the space either way. Its lines are never wrapped:
@@ -21,6 +24,7 @@ mod dashboard;
 mod detail;
 mod dialog;
 mod settings;
+mod subtree;
 mod theme;
 
 use theme::{Look, Theme};
@@ -577,6 +581,12 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
         .iter()
         .map(|m| row_columns(m, app.home()))
         .collect();
+    // The subagent count badges (doc/0029), at the end of the name column.
+    let badges: Vec<Option<String>> = app
+        .sessions()
+        .iter()
+        .map(|m| subtree::badge(app, m))
+        .collect();
     let width = |i: usize, max: usize| {
         columns
             .iter()
@@ -585,11 +595,22 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
             .unwrap_or(0)
             .min(max)
     };
-    let (nw, pw, dw) = (
-        width(0, NAME_MAX),
-        width(1, PROJECT_MAX),
-        width(2, DETAIL_MAX),
-    );
+    let nw = columns
+        .iter()
+        .zip(&badges)
+        .map(|(c, b)| subtree::name_width(c[0].width().min(NAME_MAX), b.as_deref()))
+        .max()
+        .unwrap_or(0);
+    let (pw, dw) = (width(1, PROJECT_MAX), width(2, DETAIL_MAX));
+    // Child lines start after the highlight symbol's two cells.
+    let gap = GAP.len();
+    let tree = subtree::Columns {
+        name_at: 2,
+        age_at: 2 + nw + gap + pw + gap + dw + gap,
+        width: usize::from(area.width).saturating_sub(2),
+        type_w: subtree::list_type_width(app),
+    };
+    let with_children = tree.fit_children();
 
     let items: Vec<ListItem> = app
         .entries()
@@ -637,6 +658,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
                     base
                 };
                 let age = age_column(app, m, now_ms);
+                let name = subtree::name_cell(&c[0], badges[*i].as_deref(), nw);
                 let line = Line::from(vec![
                     Span::styled(
                         if lit {
@@ -646,14 +668,27 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
                         },
                         accent,
                     ),
-                    Span::styled(
-                        format!("{}{GAP}{}{GAP}", fit(&c[0], nw), fit(&c[1], pw)),
-                        base,
-                    ),
+                    Span::styled(format!("{name}{GAP}{}{GAP}", fit(&c[1], pw)), base),
                     Span::styled(fit(&c[2], dw), accent),
                     Span::styled(format!("{GAP}{age:>AGE_W$}{GAP}{}", c[3]), base),
                 ]);
-                ListItem::new(line)
+                if !with_children || badges[*i].is_none() {
+                    return ListItem::new(line);
+                }
+                // The subagents under the row, dimmed (doc/0029); the
+                // highlight covers them with the row.
+                let mut lines = vec![line];
+                let dim = Style::new().add_modifier(Modifier::DIM);
+                for child in subtree::children(app.subagents_of(&m.session)) {
+                    let parts = subtree::child_line(&child, &tree, now_ms);
+                    lines.push(Line::from(
+                        parts
+                            .into_iter()
+                            .map(|(text, _)| Span::styled(text, dim))
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                ListItem::new(lines)
             }
         })
         .collect();
