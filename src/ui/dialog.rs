@@ -546,9 +546,9 @@ const RESUME_PROJECT_ROWS: usize = 8;
 pub fn resume_note(command: &str) -> String {
     format!(
         "Enter runs `{command} --resume` in the folder: Claude Code's own picker of past \
-         conversations (Ctrl+A there shows all projects). Then press ← on an empty prompt (or \
-         /bg) and Esc to return; the conversation keeps running in the background and appears \
-         in tower."
+         conversations (Ctrl+A there shows all projects). Then press ← on an empty prompt and \
+         Ctrl+C twice to come back to tower (Esc there reopens the conversation); it keeps \
+         running in the background as a copy and appears in tower."
     )
 }
 

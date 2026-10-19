@@ -263,8 +263,9 @@ pub fn attach(
 pub fn resume_announcement(req: &ResumeRequest, folder: &str) -> String {
     format!(
         "tower: `{} --resume` in {folder} ({}): pick a conversation (Ctrl+A shows all \
-         projects); then press ← on an empty prompt (or /bg) and Esc to return — it keeps \
-         running in the background and appears in tower",
+         projects); then press ← on an empty prompt and Ctrl+C twice to come back to tower \
+         (Esc there reopens the conversation) — it keeps running in the background as a copy \
+         and appears in tower",
         req.account.command, req.account.name
     )
 }

@@ -221,7 +221,16 @@ fn the_window_shows_fields_and_how_to_come_back() {
     );
     assert!(all.contains("(Ctrl+A"), "{all}");
     assert!(all.contains("there shows all projects"), "{all}");
-    assert!(all.contains("press ← on an empty prompt (or"), "{all}");
+    assert!(
+        all.contains("press ← on an empty prompt and Ctrl+C twice to come back to tower"),
+        "{all}"
+    );
+    assert!(
+        all.contains("(Esc there reopens the conversation)"),
+        "{all}"
+    );
+    assert!(all.contains("as a copy"), "{all}");
+    assert!(!all.contains("/bg"), "{all}");
     // `q` is typed into the filter; it does not quit.
     assert_eq!(app.handle_key(ch('q')), Vec::new());
     assert_eq!(app.resume_window().unwrap().filter.text(), "q");
@@ -324,8 +333,9 @@ fn the_picker_runs_in_the_folder_with_no_other_argument() {
     assert!(
         announce.contains(
             " --resume` in ~/workspace/api (alt): pick a conversation (Ctrl+A shows all \
-             projects); then press ← on an empty prompt (or /bg) and Esc to return — it keeps \
-             running in the background and appears in tower"
+             projects); then press ← on an empty prompt and Ctrl+C twice to come back to tower \
+             (Esc there reopens the conversation) — it keeps running in the background as a \
+             copy and appears in tower"
         ),
         "{announce}"
     );

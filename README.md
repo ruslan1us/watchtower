@@ -9,8 +9,9 @@ running when tower exits; tower holds nothing they depend on.
 What it adds on top:
 
 - **Several accounts in one view.** Every configured Claude Code account (each its own
-  `CLAUDE_CONFIG_DIR`) is polled and merged into one list, grouped by state (Needs me,
-  Failed, Ready for review, Working, Stopped & finished, Interactive) or by project.
+  `CLAUDE_CONFIG_DIR`) is polled and merged into one list, grouped by state (Orchestrator,
+  pinned at the top, then Needs me, Failed, Ready for review, Working, Stopped & finished,
+  Interactive) or by project.
 - **Hand-off between your own accounts.** `a` stops a session and continues it under another
   of your own accounts with the same history and project context, after asking. By default
   it stays inside the owner's account group ([Accounts and terms](#accounts-and-terms)).
@@ -185,7 +186,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `n` | New-session dialog |
 | `a` | Continue under another of your accounts (hand-off; always asks, same group only by default) |
 | `o` | Attach to the orchestrator, starting it if missing |
-| `R` | Resume a past conversation: pick an account and folder, then Claude Code's own `--resume` picker; background it with `←` (or `/bg`) and `Esc` to bring it into the list ([0019](doc/0019-resume-past-sessions.md)) |
+| `R` | Resume a past conversation: pick an account and folder, then Claude Code's own `--resume` picker; then `←` on an empty prompt and `Ctrl+C` twice to come back with it running in the background as a copy (`Esc` there reopens it) ([0019](doc/0019-resume-past-sessions.md)) |
 | `s` | Stop the session (asks first when it is working or blocked) |
 | `d` | Remove the session (asks first) |
 | `m` | Mark a highlighted session as seen |

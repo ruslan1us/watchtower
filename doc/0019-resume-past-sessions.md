@@ -19,10 +19,28 @@ argument opens its interactive session picker in the current folder
 (https://code.claude.com/docs/en/sessions). `Ctrl+A` there widens the list to
 every project, `Ctrl+W` to every worktree of the repository. Picking a
 conversation of a background session that is still running attaches to it
-instead of loading a copy. Inside the resumed conversation, `/bg` or `←` on
-an empty prompt moves it into the background, where it keeps running under
-the supervisor of the account that runs it, and `Esc` in the agent view
-then leaves Claude Code (https://code.claude.com/docs/en/agent-view).
+instead of loading a copy. Inside the resumed conversation, `←` on an empty
+prompt (or `/bg`, documented) moves it into the background, where it keeps
+running under the supervisor of the account that runs it
+(https://code.claude.com/docs/en/agent-view).
+
+Verified with Claude Code 2.1.303 on an ended conversation picked in the
+picker:
+
+- `←` on an empty prompt backgrounds it and opens agent view with the line
+  "Your conversation moved to the background — enter opens it · esc returns
+  to it · ctrl+c twice quits".
+- `Esc` there reopens the conversation (it may first say "Still starting —
+  try again in a moment"); it does **not** leave Claude Code. This differs
+  from `claude attach`, where `←` then `Esc` returns to the caller
+  ([0005](0005-attach-and-detach.md)).
+- `Ctrl+C` twice leaves agent view: the `--resume` child ends and tower takes
+  the terminal back.
+- Backgrounding a resumed conversation starts a **copy under a new session
+  id**: the background process runs with `--session-id <new> --fork-session
+  --resume <transcript>`. The original ended conversation stays where it was.
+- Tower then lists the copy as an ordinary background row under the account
+  whose command ran `--resume`.
 
 ## Decision
 
@@ -44,12 +62,15 @@ terminal settings put back, key pause on a non-zero exit, reclaim) and runs
 `<account command> --resume` in the chosen folder, with no other argument.
 Before handing over it prints one sanitised line: where it runs, and "pick a
 conversation (Ctrl+A shows all projects); then press ← on an empty prompt
-(or /bg) and Esc to return — it keeps running in the background and appears
-in tower".
+and Ctrl+C twice to come back to tower (Esc there reopens the conversation)
+— it keeps running in the background as a copy and appears in tower". The
+resume window's note says the same. `/bg` is left out of both because it is
+untested in this flow.
 
 When the child exits, tower takes the terminal back, reports how it ended
 and polls every account at once. A conversation the user moved to the
-background shows up as an ordinary background row; its owner is found by the
+background shows up as an ordinary background row, under the new session
+id of the copy Claude Code started; its owner is found by the
 usual `/proc` detection ([0003](0003-accounts-and-session-ownership.md),
 [0017](0017-ownership-evidence-rules.md)), since it runs under the account
 whose command ran the picker. If the user leaves without backgrounding,
@@ -65,10 +86,13 @@ Tower waits with `WUNTRACED` and resumes the child's process group with
 conversation comes straight back instead of hanging. A child that stops
 again right after being resumed is resumed at most once every 100 ms, so
 tower never spins on it. `Ctrl+Z` therefore does not return to tower here;
-`←` (or `/bg`) and `Esc`, or `/exit`, do.
+`←` then `Ctrl+C` twice does, and so does `/exit`.
 
 ## Consequences
 
+- The backgrounded conversation is a fork with a new session id; the ended
+  original is not changed. Tower shows only the copy, since only that one is
+  listed.
 - Ended conversations become reachable without tower knowing anything about
   transcripts; the list, search and preview are Claude Code's own.
 - Tower cannot tell in advance which conversations exist, and does not know
@@ -84,8 +108,8 @@ tower never spins on it. `Ctrl+Z` therefore does not return to tower here;
 - The permission mode of a conversation picked in the picker follows
   Claude Code's rules for the picker, not the mode it ended in
   (https://code.claude.com/docs/en/sessions). Tower passes no flag.
-- Users who turned `leftArrowOpensAgents` off use `/bg`; tower changes no
-  setting.
+- Users who turned `leftArrowOpensAgents` off use `/bg` (documented,
+  untested here); tower changes no setting.
 
 ## Alternatives considered
 
@@ -98,10 +122,17 @@ tower never spins on it. `Ctrl+Z` therefore does not return to tower here;
 - **`claude --resume --bg` without the picker.** Needs a session id; see the
   previous item.
 
+## Resolved
+
+- How to return to tower after a resume (verified, Claude Code 2.1.303): `←`
+  on an empty prompt, then `Ctrl+C` twice in agent view ends the `--resume`
+  child and tower is back; its status line starts "back from claude --resume
+  in …". `Esc` there reopens the conversation instead. The backgrounded copy
+  is listed under the account whose command ran `--resume`.
+
 ## Open items
 
-- Verify with the tmux harness ([0015](0015-testing-strategy.md)) that `←`
-  then `Esc` after a resume returns to tower with exit code 0, and that the
-  backgrounded conversation is listed under the expected account.
+- Whether `/bg` in a resumed conversation behaves like `←` (backgrounds a
+  copy under a new id) and how agent view is left afterwards.
 - Whether `Ctrl+Z` in a plain interactive `claude` suspends it at all in the
   Claude Code version in use; tower handles either case.
