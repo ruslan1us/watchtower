@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context

@@ -32,7 +32,7 @@ use ratatui::widgets::ListState;
 
 use crate::actions::{RemoveError, StopError};
 use crate::activity;
-use crate::config::{Account, Config, ConfigSource, UiStyle};
+use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
 use crate::dialog::{Dialog, DialogAction, DialogStatus, Field, ResumeAction, ResumeWindow};
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -845,6 +845,10 @@ pub struct App {
     /// the runtime applies the config's `[ui] style`, as it applies
     /// `NO_COLOR` to [`App::color`].
     pub style: UiStyle,
+    /// The dashboard's colour theme (doc/0021), from the config's
+    /// `[ui] theme`; [`App::set_theme`] switches it live. `NO_COLOR`
+    /// ([`App::color`]) overrides it.
+    pub theme: UiTheme,
     /// The dashboard fell back to the minimal layout on a small terminal
     /// and the status line said so; said once per run.
     style_fallback_noted: bool,
@@ -877,6 +881,7 @@ impl App {
             .collect();
         let canon = CanonCache::for_accounts(&config.accounts, &home);
         let orchestrator_dir = orchestrator::dir(&paths::Dirs::new(home.clone(), None).config_dir);
+        let theme = config.ui_theme;
         App {
             config,
             home,
@@ -921,6 +926,7 @@ impl App {
             list_state: ListState::default(),
             color: true,
             style: UiStyle::Minimal,
+            theme,
             style_fallback_noted: false,
             keyboard_enhanced: false,
         }
@@ -1236,6 +1242,12 @@ impl App {
         if !self.warnings.contains(&text) {
             self.warnings.push(text);
         }
+    }
+
+    /// Switches the dashboard's colour theme; the next frame draws with it
+    /// (doc/0021). For a settings window; no key changes it.
+    pub fn set_theme(&mut self, theme: UiTheme) {
+        self.theme = theme;
     }
 
     /// Called by the renderer when the dashboard falls back to the minimal

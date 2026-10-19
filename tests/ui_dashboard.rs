@@ -1,7 +1,9 @@
 //! The dashboard style (doc/0020) rendered with ratatui's `TestBackend`:
 //! header pills, the sessions panel with its separators, the detail panel
 //! and its strip, the logs panel in its place, the fallback to the minimal
-//! layout on small terminals, and `NO_COLOR`.
+//! layout on small terminals, `NO_COLOR`, and the colour themes
+//! (doc/0021). The layout tests draw with `tokyo-night`, the palette they
+//! were written against.
 
 mod common;
 
@@ -16,7 +18,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
 use serde_json::{Value, json};
 use watchtower::app::{App, LogsTarget};
-use watchtower::config::{Config, UiStyle};
+use watchtower::config::{Config, UiStyle, UiTheme};
 use watchtower::listing::parse_listing;
 use watchtower::logview;
 use watchtower::poller::PollUpdate;
@@ -142,8 +144,13 @@ fn update(account: &str, rows: &[Value]) -> PollUpdate {
 }
 
 /// Accounts `main` (group work) and `alt` (group personal), the dashboard
-/// style, and one poll of each.
+/// style in the `tokyo-night` theme, and one poll of each.
 fn app() -> App {
+    themed(UiTheme::TokyoNight)
+}
+
+/// As [`app`], in `theme`.
+fn themed(theme: UiTheme) -> App {
     let config = Config::parse(
         r#"
 default_account = "main"
@@ -163,6 +170,7 @@ group = "personal"
     )
     .unwrap();
     assert_eq!(config.ui_style, UiStyle::Dashboard);
+    assert_eq!(config.ui_theme, UiTheme::Neutral);
     let mut app = App::new(
         config.clone(),
         HOME.into(),
@@ -170,6 +178,8 @@ group = "personal"
         Box::new(NoEnviron),
     );
     app.style = config.ui_style;
+    assert_eq!(app.theme, UiTheme::Neutral, "from the config");
+    app.set_theme(theme);
     app.apply_poll(update("main", &main_rows()));
     app.apply_poll(update("alt", &alt_rows()));
     app
@@ -650,6 +660,222 @@ fn windows_draw_over_the_dashboard() {
     let l = screen(&mut app, 100, 30);
     assert!(l[0].starts_with("╭ ◆ tower"), "{}", l[0]);
     assert!(line_with(&l, " Keys ").contains('┌'));
+}
+
+/// What a theme paints: ordinary text, the Needs-me pill and the selected
+/// row (doc/0021).
+struct Expect {
+    theme: UiTheme,
+    text: Color,
+    pill: (Color, Color),
+    sel: (Color, Color),
+    /// Pills and the selection in reverse video.
+    reversed: bool,
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+const EXPECT: [Expect; 4] = [
+    Expect {
+        theme: UiTheme::Neutral,
+        text: rgb(235, 235, 235),
+        pill: (rgb(0, 0, 0), rgb(255, 196, 0)),
+        sel: (rgb(255, 255, 255), rgb(58, 58, 58)),
+        reversed: false,
+    },
+    Expect {
+        theme: UiTheme::Warm,
+        text: rgb(236, 230, 221),
+        pill: (rgb(0, 0, 0), rgb(240, 185, 75)),
+        sel: (rgb(255, 250, 244), rgb(62, 52, 44)),
+        reversed: false,
+    },
+    Expect {
+        theme: UiTheme::Terminal,
+        text: Color::Reset,
+        pill: (Color::LightYellow, Color::Reset),
+        sel: (Color::Reset, Color::Reset),
+        reversed: true,
+    },
+    // Today's palette, unchanged (doc/0020).
+    Expect {
+        theme: UiTheme::TokyoNight,
+        text: rgb(192, 202, 245),
+        pill: (rgb(26, 27, 38), rgb(224, 175, 104)),
+        sel: (rgb(192, 202, 245), rgb(45, 63, 118)),
+        reversed: false,
+    },
+];
+
+#[test]
+fn each_theme_paints_text_pills_and_the_selection_in_its_colours() {
+    // One app, switched live between the themes as a settings window
+    // would (doc/0021).
+    let mut app = themed(UiTheme::Neutral);
+    select(&mut app, "pick-colour");
+    for e in &EXPECT {
+        app.set_theme(e.theme);
+        let buf = render(&mut app, 160, 40);
+        let l = lines(&buf);
+        let theme = e.theme.as_str();
+
+        let (x, y) = cell_at(&l, "print-date");
+        let name = &buf[(x, y)];
+        assert_eq!((name.fg, name.bg), (e.text, Color::Reset), "{theme} text");
+
+        let (x, y) = cell_at(&l, "Needs me 2");
+        assert_eq!(y, 1, "{theme}: the header pill");
+        let pill = &buf[(x, y)];
+        assert_eq!((pill.fg, pill.bg), e.pill, "{theme} pill");
+        assert!(pill.modifier.contains(Modifier::BOLD), "{theme}");
+        assert_eq!(
+            pill.modifier.contains(Modifier::REVERSED),
+            e.reversed,
+            "{theme} pill"
+        );
+
+        let (x, y) = cell_at(&l, "▪ pick-colour");
+        let sel = &buf[(x + 2, y)];
+        assert_eq!(sel.symbol(), "p");
+        assert_eq!((sel.fg, sel.bg), e.sel, "{theme} selection");
+        assert_eq!(
+            sel.modifier.contains(Modifier::REVERSED),
+            e.reversed,
+            "{theme} selection"
+        );
+    }
+}
+
+#[test]
+fn the_app_starts_with_the_configured_theme() {
+    let config = Config::parse("[ui]\ntheme = \"warm\"\n", Path::new(HOME)).unwrap();
+    let mut app = App::new(config, HOME.into(), Sidecar::default(), Box::new(NoEnviron));
+    assert_eq!(app.theme, UiTheme::Warm);
+    app.set_theme(UiTheme::Terminal);
+    assert_eq!(app.theme, UiTheme::Terminal);
+}
+
+#[test]
+fn a_forced_selection_colour_keeps_the_bar_and_the_attention_marker() {
+    for (theme, mark, red) in [
+        (UiTheme::Neutral, rgb(255, 255, 255), rgb(255, 100, 100)),
+        (UiTheme::Warm, rgb(232, 135, 95), rgb(245, 105, 95)),
+    ] {
+        let mut app = themed(theme);
+        select(&mut app, "pick-colour");
+        let buf = render(&mut app, 160, 40);
+        let l = lines(&buf);
+        let (x, y) = cell_at(&l, "▌● ▪ pick-colour");
+        assert_eq!(buf[(x, y)].fg, mark, "{theme:?}");
+        assert_eq!(buf[(x + 1, y)].symbol(), "●");
+        assert_eq!(buf[(x + 1, y)].fg, red, "{theme:?}");
+        assert!(buf[(x + 1, y)].modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
+fn the_terminal_theme_uses_only_named_colours() {
+    let mut app = themed(UiTheme::Terminal);
+    select(&mut app, "pick-colour");
+    for (w, h) in [(160, 40), (100, 30), (80, 24)] {
+        let buf = render(&mut app, w, h);
+        for cell in buf.content() {
+            for c in [cell.fg, cell.bg] {
+                assert!(
+                    !matches!(c, Color::Rgb(..) | Color::Indexed(_)),
+                    "{w}x{h}: {:?} in {c:?}",
+                    cell.symbol()
+                );
+            }
+        }
+    }
+    // A group summary and grouping by project too. (The logs panel replays
+    // the session's own output, colours included; that is not the theme.)
+    select(&mut app, "touch-config");
+    app.handle_key(ch('k'));
+    app.handle_key(ch('p'));
+    let buf = render(&mut app, 160, 40);
+    assert!(
+        buf.content()
+            .iter()
+            .all(|c| !matches!(c.fg, Color::Rgb(..)) && !matches!(c.bg, Color::Rgb(..)))
+    );
+}
+
+#[test]
+fn no_colour_overrides_every_theme() {
+    for theme in UiTheme::ALL {
+        let mut app = themed(theme);
+        app.color = false;
+        select(&mut app, "pick-colour");
+        for (w, h) in [(160, 40), (100, 30)] {
+            let buf = render(&mut app, w, h);
+            for cell in buf.content() {
+                assert!(
+                    cell.fg == Color::Reset && cell.bg == Color::Reset,
+                    "{theme:?} {w}x{h}: colour at {:?}",
+                    cell.symbol()
+                );
+            }
+            // Attention stays the marker plus bold; the selection `▶`
+            // plus reversed (doc/0007).
+            let l = lines(&buf);
+            let (x, y) = cell_at(&l, "● ▪ touch-config");
+            assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
+            let (x, y) = cell_at(&l, "▶● ▪ pick-colour");
+            assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED));
+        }
+    }
+}
+
+#[test]
+fn only_the_selection_pills_and_chips_have_a_background() {
+    for theme in UiTheme::ALL {
+        let mut app = themed(theme);
+        select(&mut app, "print-date");
+        let buf = render(&mut app, 160, 40);
+        let l = lines(&buf);
+        let sel = index_of(&l, "▪ print-date") as u16;
+        // The detail panel's headline pill and account chip.
+        let pill = index_of(&l, "╭ print-date") as u16 + 1;
+        assert!(
+            l[usize::from(pill)].contains("  done "),
+            "{}",
+            l[usize::from(pill)]
+        );
+        let account = index_of(&l, "account    main") as u16;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.bg != Color::Reset {
+                    assert!(
+                        [1, sel, pill, account].contains(&y),
+                        "{theme:?}: background {:?} at {x},{y} {:?}\n{}",
+                        cell.bg,
+                        cell.symbol(),
+                        l[usize::from(y)]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_theme_draws_the_same_text() {
+    let base = {
+        let mut app = themed(UiTheme::TokyoNight);
+        select(&mut app, "pick-colour");
+        [(160, 40), (100, 30), (80, 24)].map(|(w, h)| screen(&mut app, w, h))
+    };
+    for theme in UiTheme::ALL {
+        let mut app = themed(theme);
+        select(&mut app, "pick-colour");
+        let screens = [(160, 40), (100, 30), (80, 24)].map(|(w, h)| screen(&mut app, w, h));
+        assert_eq!(screens, base, "{theme:?}");
+    }
 }
 
 #[test]

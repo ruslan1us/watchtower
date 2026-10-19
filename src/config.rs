@@ -48,6 +48,54 @@ impl UiStyle {
     }
 }
 
+/// The dashboard style's colour theme, `[ui] theme` (doc/0021). The
+/// minimal style keeps its own look; `NO_COLOR` overrides every theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiTheme {
+    /// Neutral greys, colour only for states and attention. The default.
+    #[default]
+    Neutral,
+    /// Warm greys with a clay-orange accent.
+    Warm,
+    /// Named ANSI colours only; follows the terminal's own theme.
+    Terminal,
+    /// The original blue-grey palette.
+    TokyoNight,
+}
+
+impl UiTheme {
+    /// Every theme, in the order the docs list them.
+    pub const ALL: [UiTheme; 4] = [
+        UiTheme::Neutral,
+        UiTheme::Warm,
+        UiTheme::Terminal,
+        UiTheme::TokyoNight,
+    ];
+
+    /// The config value: `neutral`, `warm`, `terminal` or `tokyo-night`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiTheme::Neutral => "neutral",
+            UiTheme::Warm => "warm",
+            UiTheme::Terminal => "terminal",
+            UiTheme::TokyoNight => "tokyo-night",
+        }
+    }
+
+    /// Parses a config value; anything else is an error naming the choices.
+    pub fn parse(value: &str) -> Result<UiTheme, ConfigError> {
+        UiTheme::ALL
+            .into_iter()
+            .find(|t| t.as_str() == value)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "[ui] theme `{value}` is not known; use \"neutral\", \"warm\", \
+                     \"terminal\" or \"tokyo-night\""
+                ))
+            })
+    }
+}
+
 /// One Claude Code account (doc/0003).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
@@ -166,6 +214,8 @@ pub struct Config {
     pub allow_cross_group_handoff: bool,
     /// `[ui] style`: the look of the session list (doc/0020).
     pub ui_style: UiStyle,
+    /// `[ui] theme`: the dashboard's colour theme (doc/0021).
+    pub ui_theme: UiTheme,
 }
 
 /// Where the config came from: the file tower looked at and whether it was
@@ -251,6 +301,7 @@ struct RawConfig {
 #[derive(Debug, Default, Deserialize)]
 struct RawUi {
     style: Option<String>,
+    theme: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,9 +407,14 @@ impl Config {
                 "poll_interval_secs must be at least 1".into(),
             ));
         }
-        let ui_style = match raw.ui.and_then(|ui| ui.style) {
+        let ui = raw.ui.unwrap_or_default();
+        let ui_style = match ui.style {
             Some(style) => UiStyle::parse(&style)?,
             None => UiStyle::default(),
+        };
+        let ui_theme = match ui.theme {
+            Some(theme) => UiTheme::parse(&theme)?,
+            None => UiTheme::default(),
         };
         let expand = |v: Vec<String>| -> Vec<PathBuf> {
             v.iter()
@@ -377,6 +433,7 @@ impl Config {
             handoff_prompt: raw.handoff_prompt.unwrap_or_else(|| "continue".into()),
             allow_cross_group_handoff: raw.allow_cross_group_handoff.unwrap_or(false),
             ui_style,
+            ui_theme,
         })
     }
 
@@ -451,8 +508,9 @@ mod tests {
             accounts,
             ui,
         } = raw;
-        let RawUi { style } = ui.expect("[ui] is documented");
+        let RawUi { style, theme } = ui.expect("[ui] is documented");
         assert!(style.is_some());
+        assert!(theme.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(!project_roots.is_empty());

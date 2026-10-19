@@ -190,6 +190,19 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 
   Colours follow `NO_COLOR` in both styles.
 
+- **Themes.** `[ui] theme` picks the dashboard's colours
+  ([0021](doc/0021-dashboard-themes.md)): `"neutral"` (the default, grey text with colour
+  only for states and attention), `"warm"` (warm greys, a clay-orange accent),
+  `"terminal"` (your terminal's own named colours, reverse video for the selection and
+  pills, so it follows light themes too) or `"tokyo-night"` (the original blue-grey
+  palette). The minimal style keeps its own look, and `NO_COLOR` turns colour off under
+  every theme.
+
+  ```toml
+  [ui]
+  theme = "terminal"
+  ```
+
 ## Keys
 
 Session list ([0011](doc/0011-keybindings.md)):

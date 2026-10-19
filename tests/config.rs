@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use watchtower::config::{Account, Config, ConfigError, ConfigSource, UiStyle};
+use watchtower::config::{Account, Config, ConfigError, ConfigSource, UiStyle, UiTheme};
 use watchtower::paths::Dirs;
 
 const HOME: &str = "/home/user";
@@ -375,8 +375,9 @@ fn example_config_is_valid_and_complete() {
         .map(String::as_str)
         .collect();
     ui_keys.sort_unstable();
-    assert_eq!(ui_keys, ["style"]);
+    assert_eq!(ui_keys, ["style", "theme"]);
     assert_eq!(c.ui_style, defaults.ui_style);
+    assert_eq!(c.ui_theme, defaults.ui_theme);
     for account in table["accounts"].as_array().unwrap() {
         let mut keys: Vec<&str> = account
             .as_table()
@@ -455,4 +456,43 @@ fn ui_style_defaults_to_dashboard_and_rejects_unknown_values() {
         Err(ConfigError::Parse { .. })
     ));
     assert_eq!(UiStyle::Minimal.as_str(), "minimal");
+}
+
+/// `[ui] theme` (doc/0021): neutral by default, each named theme on
+/// request, and an unknown value is an error that lists the valid names.
+#[test]
+fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
+    assert_eq!(parse("").unwrap().ui_theme, UiTheme::Neutral);
+    assert_eq!(parse("[ui]\n").unwrap().ui_theme, UiTheme::Neutral);
+    assert_eq!(
+        parse("[ui]\nstyle = \"minimal\"\n").unwrap().ui_theme,
+        UiTheme::Neutral
+    );
+    assert_eq!(Config::defaults(Path::new(HOME)).ui_theme, UiTheme::Neutral);
+    for (name, theme) in [
+        ("neutral", UiTheme::Neutral),
+        ("warm", UiTheme::Warm),
+        ("terminal", UiTheme::Terminal),
+        ("tokyo-night", UiTheme::TokyoNight),
+    ] {
+        let c = parse(&format!("[ui]\ntheme = \"{name}\"\n")).unwrap();
+        assert_eq!(c.ui_theme, theme, "{name}");
+        assert_eq!(c.ui_style, UiStyle::Dashboard, "{name}");
+        assert_eq!(theme.as_str(), name);
+    }
+    assert_eq!(UiTheme::ALL.len(), 4);
+    for bad in ["tokyo_night", "Neutral", "light", ""] {
+        let err = parse(&format!("[ui]\ntheme = \"{bad}\"\n")).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
+        let text = err.to_string();
+        assert!(text.contains(&format!("[ui] theme `{bad}`")), "{text}");
+        assert!(
+            text.contains("\"neutral\", \"warm\", \"terminal\" or \"tokyo-night\""),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        parse("[ui]\ntheme = true\n"),
+        Err(ConfigError::Parse { .. })
+    ));
 }

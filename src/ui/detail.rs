@@ -9,8 +9,7 @@ use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
 
 use super::dashboard::{account_chip, panel, put, row, spinner};
-use super::theme::Lb;
-use super::theme::{BASE, BLUE, LINE, MUTED, TEXT, Theme, group_color, key_color};
+use super::theme::{Lb, Theme};
 use super::{MARKER, age_column};
 use crate::app::{App, Entry};
 use crate::config::Account;
@@ -74,13 +73,13 @@ fn owner<'a>(app: &'a App, m: &MergedSession) -> Option<&'a Account> {
 /// its state on a pill in the group's colour.
 fn headline(app: &App, m: &MergedSession, th: Theme) -> Lb {
     let detail = groups::detail(&m.session);
-    let gc = group_color(groups::classify(&m.session));
+    let gc = th.group_color(groups::classify(&m.session));
     let mut l = Lb::new();
     if app.is_highlighted(m) {
         l.push(format!(" {MARKER} needs you: {detail}"), th.attention());
     } else {
         l.push(" ", Style::new());
-        l.push(format!(" {detail} "), th.bold(BASE).patch(th.on(BASE, gc)));
+        l.push(format!(" {detail} "), th.pill(gc));
     }
     l
 }
@@ -204,15 +203,12 @@ fn group_lines(app: &App, key: &GroupKey, count: usize, lit: usize, th: Theme) -
     let mut lines = vec![{
         let mut l = Lb::new();
         l.push(" ", Style::new());
-        l.push(
-            format!(" {} ", key.title()),
-            th.bold(BASE).patch(th.on(BASE, key_color(key))),
-        );
+        l.push(format!(" {} ", key.title()), th.pill(th.key_color(key)));
         l
     }];
     lines.push(Lb::new());
     let noun = if count == 1 { "session" } else { "sessions" };
-    lines.push(kv("sessions", format!("{count} {noun}"), th.fg(TEXT), th));
+    lines.push(kv("sessions", format!("{count} {noun}"), th.text(), th));
     if lit > 0 {
         lines.push(kv(
             "attention",
@@ -231,7 +227,7 @@ fn group_lines(app: &App, key: &GroupKey, count: usize, lit: usize, th: Theme) -
     }
     if !accounts.is_empty() {
         let text: Vec<String> = accounts.iter().map(|(a, n)| format!("{a} {n}")).collect();
-        lines.push(kv("accounts", text.join(" · "), th.fg(TEXT), th));
+        lines.push(kv("accounts", text.join(" · "), th.text(), th));
     }
     if matches!(key, GroupKey::Project(_)) {
         let mut states: Vec<(Group, usize)> = Vec::new();
@@ -247,7 +243,7 @@ fn group_lines(app: &App, key: &GroupKey, count: usize, lit: usize, th: Theme) -
             .iter()
             .map(|(g, n)| format!("{} {n}", g.title()))
             .collect();
-        lines.push(kv("states", text.join(" · "), th.fg(TEXT), th));
+        lines.push(kv("states", text.join(" · "), th.text(), th));
     }
     lines
 }
@@ -262,11 +258,11 @@ fn session_lines(app: &App, m: &MergedSession, now_ms: i64, th: Theme) -> Vec<Lb
     if s.status == Some(Status::Busy) && !s.is_interactive() {
         status = format!("{} {status}", spinner(now_ms));
     }
-    let text = th.fg(TEXT);
+    let text = th.text();
     vec![
         headline(app, m, th),
         Lb::new(),
-        kv("group", group.title(), th.bold(group_color(group)), th),
+        kv("group", group.title(), th.bold(th.group_color(group)), th),
         kv("state", state, text, th),
         kv("status", status, text, th),
         kv("changed", changed_text(app, m, now_ms), text, th),
@@ -281,23 +277,26 @@ fn session_lines(app: &App, m: &MergedSession, now_ms: i64, th: Theme) -> Vec<Lb
 }
 
 /// The panel's title and border colour.
-fn frame_of(subject: &Subject) -> (String, ratatui::style::Color) {
+fn frame_of(subject: &Subject, th: Theme) -> (String, ratatui::style::Color) {
     match subject {
         Subject::Session(m) => (
             format!(" {} ", m.session.display_name()),
-            group_color(groups::classify(&m.session)),
+            th.detail_border(th.group_color(groups::classify(&m.session))),
         ),
-        Subject::Group { key, .. } => (format!(" {} ", key.title()), key_color(key)),
-        Subject::Nothing => (" details ".to_owned(), LINE),
+        Subject::Group { key, .. } => (
+            format!(" {} ", key.title()),
+            th.detail_border(th.key_color(key)),
+        ),
+        Subject::Nothing => (" details ".to_owned(), th.p.line),
     }
 }
 
 /// The detail panel right of the list.
 pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Theme) {
     let subject = subject(app);
-    let (title, border) = frame_of(&subject);
+    let (title, border) = frame_of(&subject, th);
     let block = panel(th, border)
-        .title(Line::styled(title, th.bold(TEXT)))
+        .title(Line::styled(title, th.bold(th.p.title)))
         .title_bottom(Line::styled(" selected ", th.muted()).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -337,7 +336,7 @@ pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Them
             if l.w + item > usize::from(inner.width) {
                 break;
             }
-            l.push(key, th.bold(BLUE))
+            l.push(key, th.bold(th.p.key))
                 .push(format!(" {what}  "), th.muted());
         }
         if !matches!(subject, Subject::Nothing) && l.w == 1 {
@@ -350,8 +349,8 @@ pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Them
 /// The detail strip under the list: three lines in two halves.
 pub fn draw_strip(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Theme) {
     let subject = subject(app);
-    let (title, border) = frame_of(&subject);
-    let block = panel(th, border).title(Line::styled(title, th.bold(TEXT)));
+    let (title, border) = frame_of(&subject, th);
+    let block = panel(th, border).title(Line::styled(title, th.bold(th.p.title)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -377,13 +376,13 @@ pub fn draw_strip(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: The
                         .map_or_else(|| status_text(m), ToString::to_string),
                     changed_text(app, m, now_ms)
                 ),
-                th.fg(TEXT),
+                th.text(),
             );
             let mut l3 = Lb::new();
-            l3.push(format!(" id {id} · {kind}"), th.fg(MUTED));
+            l3.push(format!(" id {id} · {kind}"), th.muted());
             let folder = paths::shorten_home(&m.session.cwd, app.home());
             vec![
-                (headline(app, m, th), kv("folder", folder, th.fg(TEXT), th)),
+                (headline(app, m, th), kv("folder", folder, th.text(), th)),
                 (l2, account_line(app, m, "account", th)),
                 (l3, kv("hand-off", handoff_text(app, m), th.muted(), th)),
             ]

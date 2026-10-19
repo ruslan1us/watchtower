@@ -17,11 +17,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::Lb;
-use super::theme::{
-    AMBER, BASE, BLUE, LINE, SEL, SURF3, TEXT, Theme, account_color, group_color, key_color, rfit,
-    tint,
-};
+use super::theme::{Lb, Theme, rfit};
 use super::{DETACH_HINT, FOOTER_HELP, FOOTER_KEYS, MARKER, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -82,7 +78,7 @@ pub(super) fn spinner(now_ms: i64) -> &'static str {
 /// filter's input line, status line and footer.
 pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let area = frame.area();
-    let th = Theme { color: app.color };
+    let th = Theme::new(app.theme, app.color);
     let tall = area.height >= TALL;
     let input_h = u16::from(app.filter_editing());
     let [header, body, input, status, footer] = Layout::vertical([
@@ -133,8 +129,8 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
 
 /// The logs panel in the dashboard's look (doc/0009).
 fn draw_logs(frame: &mut Frame, app: &App, logs: &LogsPanel, area: Rect, th: Theme) {
-    let block = panel(th, BLUE)
-        .title(Line::styled(super::logs_title(logs), th.bold(TEXT)))
+    let block = panel(th, th.p.logs_border)
+        .title(Line::styled(super::logs_title(logs), th.bold(th.p.title)))
         .title_bottom(Line::styled(" Space/Esc close ", th.muted()).right_aligned());
     super::draw_logs_in(frame, app, logs, area, block);
 }
@@ -210,15 +206,13 @@ pub(super) fn account_group_index(app: &App, group: &str) -> usize {
     seen.iter().position(|g| *g == group).unwrap_or(0)
 }
 
-/// An account chip: the name on a tint of its group's colour.
+/// An account chip: the name in its group's colour, painted as the theme
+/// paints chips.
 pub(super) fn account_chip(app: &App, name: &str, th: Theme) -> (String, Style) {
     match app.config().account(name) {
         Some(a) => {
-            let c = account_color(account_group_index(app, &a.group));
-            (
-                format!(" {name} "),
-                th.bold(c).patch(th.on(c, tint(c, 0.3))),
-            )
+            let c = th.account_color(account_group_index(app, &a.group));
+            (format!(" {name} "), th.chip(c))
         }
         None => (format!(" {name} "), th.muted()),
     }
@@ -229,8 +223,8 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
         Grouping::State => " by state ",
         Grouping::Project => " by project ",
     };
-    let block = panel(th, LINE)
-        .title(Line::styled(" ◆ tower ", th.bold(BLUE)))
+    let block = panel(th, th.p.line)
+        .title(Line::styled(" ◆ tower ", th.bold(th.p.logo)))
         .title_top(Line::styled(mode, th.muted()).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -244,23 +238,23 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
     // highlighted rows (doc/0007).
     let pills = |short: bool, all: bool| {
         let mut l = Lb::new();
-        l.push(" ", th.fg(TEXT));
+        l.push(" ", th.text());
         for &(g, n) in &counts {
             if !all && matches!(g, Group::Stopped | Group::Interactive) {
                 continue;
             }
             let label = if short { short_title(g) } else { g.title() };
             let style = if g == Group::Interactive {
-                th.bold(TEXT).patch(th.on(TEXT, SURF3))
+                th.interactive_pill()
             } else {
-                th.bold(BASE).patch(th.on(BASE, group_color(g)))
+                th.pill(th.group_color(g))
             };
             l.push(format!(" {label} {n} "), style);
             let lit = app.highlighted_in(g);
             if lit > 0 {
                 l.push(format!(" {MARKER} {lit}"), th.attention());
             }
-            l.push(" ", th.fg(TEXT));
+            l.push(" ", th.text());
         }
         if counts.is_empty() {
             l.push("no sessions", th.muted());
@@ -322,7 +316,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
     if tall && inner.height >= 2 && th.color && total > 0 {
         let bw = iw.saturating_sub(2);
         let mut l = Lb::new();
-        l.push(" ", th.fg(TEXT));
+        l.push(" ", th.text());
         let mut used = 0;
         for (k, &(g, n)) in counts.iter().enumerate() {
             let cells = if k + 1 == counts.len() {
@@ -332,9 +326,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
             };
             used += cells;
             let c = if g == Group::Interactive {
-                SURF3
+                th.p.surface
             } else {
-                group_color(g)
+                th.group_color(g)
             };
             l.push("━".repeat(cells), th.fg(c));
         }
@@ -448,16 +442,6 @@ fn widths(app: &App, w: usize) -> Widths {
     ws
 }
 
-/// The style of the selected line: a background with colour, reversed
-/// without (doc/0007: readable without colour).
-pub(super) fn selected_style(th: Theme) -> Style {
-    if th.color {
-        Style::new().bg(SEL)
-    } else {
-        Style::new().add_modifier(Modifier::REVERSED)
-    }
-}
-
 /// The scroll offset that keeps `selected` in view of `h` lines.
 fn scroll(offset: usize, selected: Option<usize>, h: usize, len: usize) -> usize {
     let mut offset = offset.min(len.saturating_sub(h));
@@ -486,8 +470,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
     } else {
         format!(" {total} sessions ")
     };
-    let block = panel(th, LINE)
-        .title(Line::styled(" Sessions ", th.bold(TEXT)))
+    let block = panel(th, th.p.line)
+        .title(Line::styled(" Sessions ", th.bold(th.p.title)))
         .title_top(Line::styled(count, th.muted()).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -549,7 +533,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
                 let connect = y > 0;
                 // The selection bar of rows, else the rule joining the border.
                 let lead = match (is_sel, th.color) {
-                    (true, true) => ("▌", th.fg(BLUE)),
+                    (true, true) => ("▌", th.fg(th.p.mark)),
                     (true, false) => ("▶", Style::new()),
                     (false, _) if connect => ("─", th.line()),
                     (false, _) => (" ", th.line()),
@@ -568,7 +552,19 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
             }
         }
         if is_sel {
-            frame.buffer_mut().set_style(r, selected_style(th));
+            frame.buffer_mut().set_style(r, th.selected());
+            // A theme that forces the text colour on the selection bar
+            // keeps the bar's mark and the attention marker in theirs.
+            if th.color && th.p.sel_fg.is_some() {
+                let buf = frame.buffer_mut();
+                buf[(r.x, r.y)].set_fg(th.p.mark);
+                if let Entry::Row(i) = entry
+                    && app.is_highlighted(&app.sessions()[*i])
+                    && r.width > 1
+                {
+                    buf[(r.x + 1, r.y)].set_fg(th.p.red);
+                }
+            }
         }
     }
 }
@@ -587,7 +583,7 @@ fn separator(
     let title_st = if group.is_interactive() {
         th.faint().add_modifier(Modifier::BOLD)
     } else {
-        th.bold(key_color(group))
+        th.bold(th.key_color(group))
     };
     let mut l = Lb::new();
     l.push(lead.0, lead.1)
@@ -620,14 +616,14 @@ fn session_row(
     let lit = app.is_highlighted(m);
     let dim = m.session.is_interactive();
     let group = groups::classify(&m.session);
-    let gc = group_color(group);
+    let gc = th.group_color(group);
     let busy = !dim && m.session.status == Some(Status::Busy);
-    let text = if dim { th.faint() } else { th.fg(TEXT) };
+    let text = if dim { th.faint() } else { th.text() };
     let soft = if dim { th.faint() } else { th.muted() };
 
     let mut l = Lb::new();
     match (selected, th.color) {
-        (true, true) => l.push("▌", th.fg(BLUE)),
+        (true, true) => l.push("▌", th.fg(th.p.mark)),
         (true, false) => l.push("▶", Style::new()),
         (false, _) => l.push(" ", text),
     };
@@ -640,7 +636,7 @@ fn session_row(
         th.attention(),
     );
     if busy {
-        l.push(format!("{spin} "), th.bold(BLUE));
+        l.push(format!("{spin} "), th.bold(th.group_color(Group::Working)));
     } else {
         l.push("▪ ", if dim { th.faint() } else { th.fg(gc) });
     }
@@ -660,14 +656,14 @@ fn session_row(
     let age_st = if dim {
         th.faint()
     } else if age == "now" {
-        th.fg(TEXT)
+        th.text()
     } else {
         th.muted()
     };
     l.push(rfit(&age, 4), age_st).push("  ", text);
     let account_st = match app.config().account(&t.account) {
         _ if dim => th.faint(),
-        Some(a) => th.bold(account_color(account_group_index(app, &a.group))),
+        Some(a) => th.bold(th.account_color(account_group_index(app, &a.group))),
         None => th.muted(),
     };
     l.push(fit(&t.account, ws.account), account_st);
@@ -694,8 +690,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
             l.push("  ·  ", th.faint());
         }
         let style = match (seg.severity, th.color) {
-            (Severity::Info, _) => th.fg(TEXT),
-            (Severity::Warning, true) => th.fg(AMBER),
+            (Severity::Info, _) => th.text(),
+            (Severity::Warning, true) => th.fg(th.p.amber),
             (Severity::Error, true) => th.attention(),
             (_, false) => Style::new().add_modifier(Modifier::BOLD),
         };
@@ -708,7 +704,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
 /// `? help`, and the detach hint on the right, which is kept longest.
 fn draw_footer(frame: &mut Frame, area: Rect, th: Theme) {
     let w = usize::from(area.width);
-    let key_st = th.bold(BLUE);
+    let key_st = th.bold(th.p.key);
     let label_st = th.muted();
     let mut right = Lb::new();
     let (before, after) = DETACH_HINT
@@ -716,7 +712,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, th: Theme) {
         .unwrap_or((DETACH_HINT, ""));
     right
         .push(before, label_st)
-        .push("Ctrl+Z", th.bold(AMBER))
+        .push("Ctrl+Z", th.bold(th.p.key_hot))
         .push(format!("{after} "), label_st);
     if w < right.w + 1 {
         put(frame, area, Line::styled(fit(DETACH_HINT, w), label_st));
