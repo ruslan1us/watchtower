@@ -282,3 +282,15 @@ pub fn visible_rows(app: &App) -> Vec<String> {
         })
         .collect()
 }
+
+/// Applies `logs_follow_secs = 0` to `app`, as a reload or a save would
+/// (doc/0031), and checks that the follower is told to stop its background
+/// fetches.
+pub fn follow_off(app: &mut watchtower::app::App) {
+    let mut off = app.config().clone();
+    off.logs_follow_secs = 0;
+    assert_eq!(
+        app.apply_config(off),
+        [watchtower::app::Effect::SetLogsFollow(None)]
+    );
+}

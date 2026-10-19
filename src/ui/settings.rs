@@ -369,7 +369,7 @@ fn kind_style(kind: NoticeKind, look: Look) -> Style {
 /// The key hint at the right of the selected row.
 fn row_hint(kind: &SettingKind) -> &'static str {
     match kind {
-        SettingKind::Choice { .. } => "Enter pick   ←→ change ",
+        SettingKind::Choice { .. } | SettingKind::Steps { .. } => "Enter pick   ←→ change ",
         SettingKind::Bool => "Enter toggle ",
         SettingKind::Int { .. } | SettingKind::Text => "Enter edit ",
         SettingKind::Paths => "Enter open list ",
@@ -462,9 +462,9 @@ fn draw_setting(
     };
     let room = w.saturating_sub(l.w + 14);
     match (&setting.kind, value) {
-        (SettingKind::Choice { .. }, _) if selected => {
+        (SettingKind::Choice { .. } | SettingKind::Steps { .. }, _) if selected => {
             l.push("‹ ", bar(look.hint()))
-                .push(value.display(), plain.add_modifier(Modifier::BOLD))
+                .push(shown_value(key, value), plain.add_modifier(Modifier::BOLD))
                 .push(" ›", bar(look.hint()));
         }
         (SettingKind::Paths, SettingValue::Paths(paths)) => {
@@ -626,7 +626,7 @@ fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
             kv(&mut lines, "applies", key.applies(), look.secondary());
             lines.push(Line::raw(""));
             let keys: &[(&str, &str)] = match setting.kind {
-                SettingKind::Choice { .. } => {
+                SettingKind::Choice { .. } | SettingKind::Steps { .. } => {
                     &[("Enter", "pick"), ("←→", "change"), ("Del", "default")]
                 }
                 SettingKind::Bool => &[("Enter", "toggle"), ("Del", "default")],
@@ -675,6 +675,16 @@ fn values_text(kind: &SettingKind) -> String {
         }
         SettingKind::Bool => "on · off".to_owned(),
         SettingKind::Int { min, max } => format!("{min} to {max} seconds"),
+        SettingKind::Steps { values, min, max } => {
+            let steps: Vec<String> = values
+                .iter()
+                .map(|v| match v {
+                    0 => "off".to_owned(),
+                    v => format!("{v} s"),
+                })
+                .collect();
+            format!("{} (file: 0, or {min} to {max})", steps.join(" · "))
+        }
         SettingKind::Text => "any text, not empty".to_owned(),
         SettingKind::Paths => "folders; ~ is expanded".to_owned(),
     }
@@ -829,6 +839,7 @@ fn choice_note(key: SettingKey, value: &str) -> &'static str {
         (SettingKey::UiTheme, "terminal") => "your terminal's 16 colours",
         (SettingKey::UiTheme, "tokyo-night") => "tower 0.2's blue-grey palette",
         (SettingKey::DefaultModel, OTHER) => "type a full model name",
+        (SettingKey::LogsFollowSecs, "off") => "no background fetches",
         _ => "",
     }
 }
@@ -876,8 +887,11 @@ fn draw_pick(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let iw = usize::from(inner.width);
-    let saved = win.session.saved(pick.key).map(|v| v.display());
-    let default = win.session.default_value(pick.key).display();
+    let saved = win
+        .session
+        .saved(pick.key)
+        .map(|v| shown_value(pick.key, &v));
+    let default = shown_value(pick.key, &win.session.default_value(pick.key));
     let rows = usize::from(inner.height.saturating_sub(2));
     let offset = pick.cursor.saturating_sub(rows.saturating_sub(1));
     for (i, value) in pick.items.iter().enumerate().skip(offset).take(rows) {

@@ -661,3 +661,41 @@ fn the_editor_gets_a_created_file_and_its_result_is_validated() {
     let err = edit(&fail, &path).unwrap_err();
     assert!(err.contains("code 3"), "{err}");
 }
+
+/// `logs_follow_secs` (doc/0031): stepped through off and 5 to 30 s; any
+/// value the parser accepts can be set, others are refused with the range.
+#[test]
+fn the_logs_follow_interval_is_off_or_five_to_thirty_seconds() {
+    let (_dir, path) = config_file("");
+    let mut session = EditSession::open(&path, home()).unwrap();
+    let key = SettingKey::LogsFollowSecs;
+    assert_eq!(key.toml_key(), "logs_follow_secs");
+    assert_eq!(
+        session.kind(key),
+        SettingKind::Steps {
+            values: vec![0, 5, 10, 15, 20, 30],
+            min: 5,
+            max: 30
+        }
+    );
+    assert_eq!(session.offered(key), ["0", "5", "10", "15", "20", "30"]);
+    assert_eq!(session.default_value(key), SettingValue::Int(10));
+    for ok in [0, 5, 7, 30] {
+        assert_eq!(session.check(key, &SettingValue::Int(ok)), Ok(()), "{ok}");
+    }
+    for bad in [-1, 4, 31] {
+        assert_eq!(
+            session.set(key, SettingValue::Int(bad)),
+            Err("must be off (0) or 5 to 30 seconds".to_owned()),
+            "{bad}"
+        );
+    }
+    assert!(session.set(key, text("off")).is_err());
+    session.set(key, SettingValue::Int(0)).unwrap();
+    session.save(false).unwrap();
+    assert_eq!(read(&path), "logs_follow_secs = 0\n");
+    assert_eq!(
+        Config::parse(&read(&path), home()).unwrap().logs_follow(),
+        None
+    );
+}

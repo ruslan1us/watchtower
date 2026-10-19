@@ -481,7 +481,10 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     let follower = Follower::start(
         Arc::new(CliRunner::new()),
         Arc::new(ProcEnviron),
-        FollowSettings::default(),
+        FollowSettings {
+            cadence: config.logs_follow(),
+            ..FollowSettings::default()
+        },
     );
     let mut rt = Runtime {
         terminal: &mut terminal,
@@ -751,6 +754,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 }
             }
             Effect::SetPollInterval(interval) => rt.poller.set_interval(interval),
+            Effect::SetLogsFollow(cadence) => rt.follower.set_cadence(cadence),
             Effect::SaveConfig(job) => rt.jobs.config_save(job),
             Effect::EditConfig(path) => {
                 let termination = rt.termination;

@@ -23,6 +23,17 @@ default_account = "main"
 # Default: 2
 poll_interval_secs = 2
 
+# Seconds between background `<command> logs <id>` fetches of every working
+# session, and of the session tower is attached to, so the logs panel keeps
+# the whole screen however long a session works (doc/0030). 0 turns these
+# fetches off: the open logs panel still fetches on every poll, and tower
+# still fetches once right after it starts a session or an attach returns.
+# 0, or 5 to 30. A capture covers only about the last 40 seconds of a
+# working session, so a longer interval would lose the overlap between
+# captures and the screen would break up again (doc/0031).
+# Default: 10
+logs_follow_secs = 10
+
 # Folders scanned (one level deep) for git clones in the new-session dialog
 # (doc/0008).
 # Default: [] (none)

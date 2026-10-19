@@ -9,7 +9,7 @@ mod synthetic;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{app_single, app_two, ch, key, poll, select_name};
+use common::{app_single, app_two, ch, follow_off, key, poll, select_name};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
@@ -232,7 +232,7 @@ fn a_paused_panel_stays_while_its_stream_is_fed_and_end_shows_it() {
         source.clone(),
         Arc::new(ProcEnviron),
         FollowSettings {
-            cadence: Duration::from_millis(30),
+            cadence: Some(Duration::from_millis(30)),
             ..FollowSettings::default()
         },
     );
@@ -293,6 +293,77 @@ fn a_paused_panel_stays_while_its_stream_is_fed_and_end_shows_it() {
     assert!(!app.logs().unwrap().paused());
     let text = screen_text(&app);
     assert!(text.contains("a later message"), "{text}");
+    assert!(text.contains("Example Code"), "{text}");
+    assert!(!app.logs().unwrap().partial());
+    let LogsView::Screen(screen) = &app.logs().unwrap().view else {
+        unreachable!()
+    };
+    let reference = trimmed(&source.session.lock().unwrap().reference());
+    assert_eq!(trimmed(&screen.plain_lines()), reference);
+}
+
+// ---- background follows off (doc/0031) --------------------------------------
+
+#[test]
+fn turning_the_follow_on_again_gives_its_interval() {
+    let mut app = app_single();
+    follow_off(&mut app);
+    assert_eq!(app.config().logs_follow(), None);
+    let mut on = app.config().clone();
+    on.logs_follow_secs = 5;
+    assert_eq!(
+        app.apply_config(on),
+        [Effect::SetLogsFollow(Some(Duration::from_secs(5)))]
+    );
+    // Nothing changed: nothing to tell the follower.
+    let same = app.config().clone();
+    assert!(app.apply_config(same).is_empty());
+}
+
+#[test]
+fn with_follows_off_the_open_panel_still_fetches_every_poll_and_keeps_its_stream() {
+    let source = Arc::new(OneSession {
+        session: Mutex::new(Session::start(30, 100, 40)),
+        step: 20,
+        calls: Mutex::new(0),
+    });
+    let follower = Follower::start(
+        source.clone(),
+        Arc::new(ProcEnviron),
+        FollowSettings {
+            cadence: None,
+            ..FollowSettings::default()
+        },
+    );
+    let mut app = app_single();
+    follow_off(&mut app);
+    app.apply_poll(poll("main", "mixed-states.json"));
+    select_name(&mut app, "run-test-suite");
+    let effects = app.handle_key(ch(' '));
+    run_fetches(&mut app, &follower, effects);
+    // The row works, but nothing is fetched in the background.
+    follower.set_plan(app.follow_plan());
+    assert!(app.follow_plan()[0].working);
+    let until = Instant::now() + PATIENCE;
+    while follower.streams().iter().any(|s| s.busy) {
+        assert!(Instant::now() < until, "the panel's fetch");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*source.calls.lock().unwrap(), 1);
+
+    // Every poll of the owner fetches for the open panel; 20 frames a
+    // fetch push the start's repaint out of the captures from the third on, but
+    // the stitched stream keeps the whole screen.
+    for n in 2..=5 {
+        let effects = app.apply_poll(poll("main", "mixed-states.json"));
+        assert!(
+            effects.iter().any(|e| matches!(e, Effect::FetchLogs(_))),
+            "{effects:?}"
+        );
+        run_fetches(&mut app, &follower, effects);
+        assert_eq!(*source.calls.lock().unwrap(), n, "one fetch per poll");
+    }
+    let text = screen_text(&app);
     assert!(text.contains("Example Code"), "{text}");
     assert!(!app.logs().unwrap().partial());
     let LogsView::Screen(screen) = &app.logs().unwrap().view else {

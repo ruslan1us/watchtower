@@ -166,7 +166,7 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 Press `c` in tower to change settings: the Settings window
 ([0024](doc/0024-settings-window.md)) edits the style and theme (previewed as you
 browse), the new-session defaults, the project folders, the hand-off prompt and guard,
-the poll interval and subagent tracking; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
+the poll interval, the background logs follow and subagent tracking; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
 and keeps your comments and formatting; resetting a setting to its default removes the
@@ -245,6 +245,19 @@ does not parse is not applied; the status line shows the error until it is fixed
   ```toml
   [ui]
   theme = "terminal"
+  ```
+
+- **Background logs follow.** Tower fetches `claude logs` of every working session, and
+  of the session you are attached to, every `logs_follow_secs` seconds (default `10`), so
+  the logs panel keeps the whole screen however long a session works
+  ([0030](doc/0030-continuous-logs-stream.md)). It may be `5` to `30`: a capture covers
+  only about the last 40 seconds of a working session, so a longer interval loses the
+  overlap and the screen breaks up again. `0` turns these fetches off; the open logs
+  panel still fetches on every poll, and tower still fetches once right after it starts a
+  session or an attach returns ([0031](doc/0031-logs-follow-interval.md)).
+
+  ```toml
+  logs_follow_secs = 0
   ```
 
 ## Keys

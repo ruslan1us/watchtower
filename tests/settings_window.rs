@@ -810,3 +810,104 @@ fn edits_are_saved_to_the_file_keeping_its_comments() {
         SettingValue::Int(7)
     );
 }
+
+// ---- the logs-follow interval (doc/0031) -------------------------------------
+
+fn follow_value(app: &App) -> SettingValue {
+    value(app, SettingKey::LogsFollowSecs)
+}
+
+#[test]
+fn the_logs_follow_row_steps_through_off_and_the_intervals() {
+    let (_env, mut app) = opened();
+    select(&mut app, "follow logs in background");
+    assert_eq!(
+        win(&app).selected_row().section(),
+        Section::General,
+        "next to the poll interval"
+    );
+    assert_eq!(follow_value(&app), SettingValue::Int(10), "the default");
+    // → steps up and wraps to off; ← steps back.
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        press(&mut app, key(KeyCode::Right));
+        seen.push(follow_value(&app));
+    }
+    let ints = |v: &[i64]| v.iter().map(|n| SettingValue::Int(*n)).collect::<Vec<_>>();
+    assert_eq!(seen, ints(&[15, 20, 30, 0, 5, 10]));
+    press(&mut app, key(KeyCode::Left));
+    press(&mut app, key(KeyCode::Left));
+    assert_eq!(follow_value(&app), SettingValue::Int(0));
+    let s = screen(&mut app, 160, 40);
+    line_with(&s, "│▌*  follow logs in background    ‹ off ›");
+
+    // The pick list shows the steps as the row does and keeps the one
+    // picked.
+    press(&mut app, key(KeyCode::Enter));
+    let Mode::Pick(pick) = &win(&app).mode else {
+        panic!("no pick list: {:?}", win(&app).mode);
+    };
+    assert_eq!(pick.items, ["off", "5 s", "10 s", "15 s", "20 s", "30 s"]);
+    assert_eq!(pick.value(), Some("off"), "on the current value");
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(follow_value(&app), SettingValue::Int(15));
+    let s = screen(&mut app, 160, 40);
+    line_with(&s, "│▌*  follow logs in background    ‹ 15 s ›");
+}
+
+#[test]
+fn a_hand_edited_interval_steps_to_the_next_one() {
+    for (code, want) in [(KeyCode::Right, 10), (KeyCode::Left, 5)] {
+        let env = env(Some(&format!("logs_follow_secs = 7\n{CONFIG}")));
+        let mut app = app_for(&env);
+        open(&mut app);
+        select(&mut app, "follow logs in background");
+        assert_eq!(follow_value(&app), SettingValue::Int(7));
+        press(&mut app, key(code));
+        assert_eq!(follow_value(&app), SettingValue::Int(want), "{code:?}");
+    }
+}
+
+#[test]
+fn saving_the_logs_follow_row_writes_only_its_line_and_applies_it() {
+    let (env, mut app) = opened();
+    select(&mut app, "follow logs in background");
+    press(&mut app, key(KeyCode::Left));
+    press(&mut app, key(KeyCode::Left));
+    assert_eq!(follow_value(&app), SettingValue::Int(0));
+    let effects = save(&mut app);
+    // The running follower is told at once (doc/0031).
+    assert_eq!(effects, [Effect::SetLogsFollow(None)]);
+    assert_eq!(app.config().logs_follow_secs, 0);
+    let after = file(&env);
+    let added: Vec<&str> = after.lines().filter(|l| !CONFIG.contains(l)).collect();
+    assert_eq!(added, ["logs_follow_secs = 0"]);
+    assert_eq!(after.lines().count(), CONFIG.lines().count() + 1, "{after}");
+    let bak = config_edit::backup_path(&env.path);
+    assert_eq!(
+        fs::read_to_string(&bak).unwrap(),
+        CONFIG,
+        "the one-time backup"
+    );
+
+    // Back on, then reset to the default: the line goes again.
+    press(&mut app, key(KeyCode::Right));
+    assert_eq!(
+        save(&mut app),
+        [Effect::SetLogsFollow(Some(std::time::Duration::from_secs(
+            5
+        )))]
+    );
+    assert!(file(&env).contains("logs_follow_secs = 5"));
+    press(&mut app, key(KeyCode::Delete));
+    assert_eq!(
+        save(&mut app),
+        [Effect::SetLogsFollow(Some(std::time::Duration::from_secs(
+            10
+        )))]
+    );
+    assert_eq!(file(&env), CONFIG);
+}

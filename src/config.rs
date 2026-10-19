@@ -16,6 +16,15 @@ use crate::paths::Dirs;
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 2;
 /// The allowed `poll_interval_secs` range, in seconds (doc/0022).
 pub const POLL_INTERVAL_RANGE: std::ops::RangeInclusive<u64> = 1..=60;
+/// Default `logs_follow_secs` (doc/0030, doc/0031).
+pub const DEFAULT_LOGS_FOLLOW_SECS: u64 = 10;
+/// The allowed `logs_follow_secs` other than 0 (off), in seconds (doc/0031).
+/// A `claude logs` capture covers only about 40 seconds of a working
+/// session, so a longer interval loses the overlap between captures.
+pub const LOGS_FOLLOW_RANGE: std::ops::RangeInclusive<u64> = 5..=30;
+/// The `logs_follow_secs` values the Settings window steps through; 0 is
+/// off (doc/0031).
+pub const LOGS_FOLLOW_STEPS: [u64; 6] = [0, 5, 10, 15, 20, 30];
 /// Default account config dir when `config_dir` is unset (doc/0003).
 pub const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude";
 
@@ -197,6 +206,10 @@ pub struct Config {
     pub default_account: String,
     /// Seconds between polls; 1 to 60 ([`POLL_INTERVAL_RANGE`]).
     pub poll_interval_secs: u64,
+    /// Seconds between background `claude logs` fetches of working and
+    /// attached sessions (doc/0030); 0 turns them off, else 5 to 30
+    /// ([`LOGS_FOLLOW_RANGE`], doc/0031).
+    pub logs_follow_secs: u64,
     /// Configured accounts, in file order; never empty, names are unique.
     pub accounts: Vec<Account>,
     /// Folders scanned for git clones in the new-session dialog (doc/0008),
@@ -291,6 +304,7 @@ pub enum ConfigError {
 struct RawConfig {
     default_account: Option<String>,
     poll_interval_secs: Option<u64>,
+    logs_follow_secs: Option<u64>,
     #[serde(default)]
     project_roots: Vec<String>,
     #[serde(default)]
@@ -424,6 +438,14 @@ impl Config {
                 POLL_INTERVAL_RANGE.end()
             )));
         }
+        let logs_follow_secs = raw.logs_follow_secs.unwrap_or(DEFAULT_LOGS_FOLLOW_SECS);
+        if logs_follow_secs != 0 && !LOGS_FOLLOW_RANGE.contains(&logs_follow_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "logs_follow_secs must be 0 (off) or {} to {} seconds, not {logs_follow_secs}",
+                LOGS_FOLLOW_RANGE.start(),
+                LOGS_FOLLOW_RANGE.end()
+            )));
+        }
         let ui = raw.ui.unwrap_or_default();
         let ui_style = match ui.style {
             Some(style) => UiStyle::parse(&style)?,
@@ -441,6 +463,7 @@ impl Config {
         Ok(Config {
             default_account,
             poll_interval_secs,
+            logs_follow_secs,
             accounts,
             project_roots: expand(raw.project_roots),
             extra_projects: expand(raw.extra_projects),
@@ -469,6 +492,12 @@ impl Config {
     /// The poll interval as a `Duration`.
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.poll_interval_secs)
+    }
+
+    /// The background logs-follow interval (doc/0030); `None` when
+    /// `logs_follow_secs = 0` turns it off (doc/0031).
+    pub fn logs_follow(&self) -> Option<std::time::Duration> {
+        (self.logs_follow_secs > 0).then(|| std::time::Duration::from_secs(self.logs_follow_secs))
     }
 }
 
@@ -516,6 +545,7 @@ mod tests {
         let RawConfig {
             default_account,
             poll_interval_secs,
+            logs_follow_secs,
             project_roots,
             extra_projects,
             default_model,
@@ -534,6 +564,7 @@ mod tests {
         assert!(theme.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
+        assert!(logs_follow_secs.is_some());
         assert!(!project_roots.is_empty());
         assert!(!extra_projects.is_empty());
         assert!(default_model.is_some());

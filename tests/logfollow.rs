@@ -132,7 +132,7 @@ fn spec(id: &str, working: bool) -> FollowSpec {
 
 fn settings(cadence_ms: u64) -> FollowSettings {
     FollowSettings {
-        cadence: Duration::from_millis(cadence_ms),
+        cadence: Some(Duration::from_millis(cadence_ms)),
         ..FollowSettings::default()
     }
 }
@@ -300,7 +300,7 @@ fn streams_are_bounded_and_dropped_when_their_rows_go() {
     let follower = start(
         &source,
         FollowSettings {
-            cadence: Duration::from_secs(60),
+            cadence: Some(Duration::from_secs(60)),
             max_streams: 4,
             grace: Duration::from_millis(200),
             ..FollowSettings::default()
@@ -381,4 +381,64 @@ fn background_follows_run_the_owning_account_command() {
         assert_eq!(claude.argv_of(n), ["logs", "7b4d9f02"], "call {n}");
     }
     std::fs::remove_file(&capture).unwrap();
+}
+
+/// `logs_follow_secs` applied while the follower runs (doc/0031): a new
+/// cadence counts at once from each session's last fetch, off stops the
+/// background fetches of working rows and of the attached session while
+/// requests still run and feed the stream, and turning it on again resumes.
+#[test]
+fn the_cadence_changes_live_and_off_stops_background_fetches() {
+    let source = Source::new(&["adad0001"], 1, Duration::ZERO);
+    // Far longer than the test: only the first fetch, due at once.
+    let follower = start(
+        &source,
+        FollowSettings {
+            cadence: Some(Duration::from_secs(600)),
+            ..FollowSettings::default()
+        },
+    );
+    follower.set_plan(vec![spec("adad0001", true)]);
+    wait_for("the first fetch", || source.calls_of("adad0001") == 1);
+    settle(&follower);
+
+    // A shorter cadence applies at once, counted from the last fetch.
+    let short = Duration::from_millis(50);
+    follower.set_cadence(Some(short));
+    wait_for("fetches at the new cadence", || {
+        source.calls_of("adad0001") >= 4
+    });
+    for pair in source.starts_of("adad0001").windows(2) {
+        let gap = pair[1] - pair[0];
+        assert!(gap >= short, "fetches {gap:?} apart at a 50 ms cadence");
+    }
+
+    // Off: once the follower has it and its last fetch is back, nothing
+    // starts for many cadences, whether the row works or is attached.
+    follower.set_cadence(None);
+    settle(&follower);
+    let off = source.calls_of("adad0001");
+    std::thread::sleep(short * 4);
+    follower.attached(Some(spec("adad0001", false)));
+    settle(&follower);
+    std::thread::sleep(short * 4);
+    assert_eq!(source.calls_of("adad0001"), off, "no background fetch");
+
+    // Requests still run and feed the stream.
+    follower.fetch(spec("adad0001", true), true);
+    let (_, result) = answer(&follower);
+    assert!(!result.unwrap().partial(), "the stream kept its base");
+    assert_eq!(source.calls_of("adad0001"), off + 1);
+    follower.fetch(spec("adad0001", true), false);
+    wait_for("the fetch without a snapshot", || {
+        source.calls_of("adad0001") == off + 2
+    });
+    settle(&follower);
+    std::thread::sleep(short * 4);
+    assert_eq!(source.calls_of("adad0001"), off + 2, "still no background");
+    assert_eq!(follower.streams()[0].has_base, Some(true));
+
+    // On again: the background fetches resume.
+    follower.set_cadence(Some(short));
+    wait_for("fetches again", || source.calls_of("adad0001") >= off + 4);
 }

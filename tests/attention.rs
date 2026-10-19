@@ -7,7 +7,7 @@ mod common;
 use std::path::Path;
 use std::time::Instant;
 
-use common::{HOME, NO_STATE_FILE, NoEnviron, ch, key, run_sidecar_check};
+use common::{HOME, NO_STATE_FILE, NoEnviron, ch, follow_off, key, run_sidecar_check};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -363,6 +363,28 @@ fn enter_and_refresh(app: &mut App, rows: &[Value]) -> Vec<Effect> {
         "{out:?}"
     );
     out
+}
+
+/// With background follows off (doc/0031) the session is still fetched
+/// once right after the attach returns, so its repaint on attach is caught.
+#[test]
+fn with_follows_off_an_attach_still_fetches_its_session_once() {
+    let mut app = app();
+    follow_off(&mut app);
+    let rows = [working("bbbb0001", "b")];
+    app.apply_poll(update(1, &rows));
+    select(&mut app, "b");
+    enter_and_refresh(&mut app, &rows);
+    let effects = app.attach_finished(AttachOutcome {
+        name: "b".into(),
+        account: "main".into(),
+        result: Ok(Some(0)),
+    });
+    let follow = Effect::FollowLogs(LogsTarget {
+        account: app.config().accounts[0].clone(),
+        id: "bbbb0001".into(),
+    });
+    assert_eq!(effects, [follow, Effect::PollNow]);
 }
 
 #[test]

@@ -39,15 +39,16 @@ This directory records the design decisions behind it, one file per decision.
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted |
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
-| 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029) |
+| 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
-| 0024 | [Settings window](0024-settings-window.md) | Accepted |
+| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031) |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 | 0027 | [Rename a session](0027-rename-sessions.md) | Accepted |
 | 0028 | [Scrolling the logs panel](0028-scrolling-the-logs-panel.md) | Accepted (paused panel amended by 0030) |
 | 0029 | [Tracking the subagents of sessions tower starts](0029-tracking-subagents.md) | Accepted |
-| 0030 | [Following the logs stream across fetches](0030-continuous-logs-stream.md) | Accepted |
+| 0030 | [Following the logs stream across fetches](0030-continuous-logs-stream.md) | Accepted (interval and off switch amended by 0031) |
+| 0031 | [The background logs-follow interval](0031-logs-follow-interval.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

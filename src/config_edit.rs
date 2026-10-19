@@ -37,7 +37,8 @@ use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
 use crate::attach::{self, Foreground, Handover, Spawner, Termination};
 use crate::cli::CommandLine;
 use crate::config::{
-    Account, Config, ConfigError, DEFAULT_POLL_INTERVAL_SECS, POLL_INTERVAL_RANGE, UiStyle, UiTheme,
+    Account, Config, ConfigError, DEFAULT_LOGS_FOLLOW_SECS, DEFAULT_POLL_INTERVAL_SECS,
+    LOGS_FOLLOW_RANGE, LOGS_FOLLOW_STEPS, POLL_INTERVAL_RANGE, UiStyle, UiTheme,
 };
 use crate::dispatch::{
     BYPASS_PERMISSIONS, DEFAULT_CHOICE, DEFAULT_PERMISSION_MODE, EFFORT_CHOICES, MODEL_CHOICES,
@@ -69,7 +70,7 @@ pub enum Section {
     Projects,
     /// The hand-off prompt and guard.
     Handoff,
-    /// The poll interval.
+    /// The poll interval, the logs-follow interval and subagent tracking.
     General,
     /// The configured accounts; read-only.
     Accounts,
@@ -114,11 +115,12 @@ pub enum SettingKey {
     AllowCrossGroupHandoff,
     PollIntervalSecs,
     TrackSubagents,
+    LogsFollowSecs,
 }
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 12] = [
+    pub const ALL: [SettingKey; 13] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
         SettingKey::DefaultAccount,
@@ -130,6 +132,7 @@ impl SettingKey {
         SettingKey::HandoffPrompt,
         SettingKey::AllowCrossGroupHandoff,
         SettingKey::PollIntervalSecs,
+        SettingKey::LogsFollowSecs,
         SettingKey::TrackSubagents,
     ];
 
@@ -147,6 +150,7 @@ impl SettingKey {
             SettingKey::HandoffPrompt => &["handoff_prompt"],
             SettingKey::AllowCrossGroupHandoff => &["allow_cross_group_handoff"],
             SettingKey::PollIntervalSecs => &["poll_interval_secs"],
+            SettingKey::LogsFollowSecs => &["logs_follow_secs"],
             SettingKey::TrackSubagents => &["sessions", "track_subagents"],
         }
     }
@@ -169,7 +173,9 @@ impl SettingKey {
             | SettingKey::DefaultPermissionMode => Section::NewSessions,
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Section::Projects,
             SettingKey::HandoffPrompt | SettingKey::AllowCrossGroupHandoff => Section::Handoff,
-            SettingKey::PollIntervalSecs | SettingKey::TrackSubagents => Section::General,
+            SettingKey::PollIntervalSecs
+            | SettingKey::LogsFollowSecs
+            | SettingKey::TrackSubagents => Section::General,
         }
     }
 
@@ -187,6 +193,7 @@ impl SettingKey {
             SettingKey::HandoffPrompt => "hand-off prompt",
             SettingKey::AllowCrossGroupHandoff => "allow cross-group hand-off",
             SettingKey::PollIntervalSecs => "poll interval",
+            SettingKey::LogsFollowSecs => "follow logs in background",
             SettingKey::TrackSubagents => "track subagents",
         }
     }
@@ -231,6 +238,11 @@ impl SettingKey {
                  account's terms."
             }
             SettingKey::PollIntervalSecs => "Seconds between polls of every account's list.",
+            SettingKey::LogsFollowSecs => {
+                "How often working and attached sessions' logs are fetched in the background, so \
+                 the logs panel keeps the whole screen. At most 30 s: a capture covers only ~40 s. \
+                 Off: only the open panel's polls and one fetch after a start or attach."
+            }
             SettingKey::TrackSubagents => {
                 "List the subagents of sessions tower starts, through observe-only hooks passed \
                  with --settings."
@@ -253,6 +265,7 @@ impl SettingKey {
             }
             SettingKey::HandoffPrompt | SettingKey::AllowCrossGroupHandoff => "the next hand-off",
             SettingKey::PollIntervalSecs => "from the next poll",
+            SettingKey::LogsFollowSecs => "at once",
             SettingKey::TrackSubagents => {
                 "sessions started from now on; the list from the next poll"
             }
@@ -264,7 +277,7 @@ impl SettingKey {
         match self {
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Shape::Paths,
             SettingKey::AllowCrossGroupHandoff | SettingKey::TrackSubagents => Shape::Bool,
-            SettingKey::PollIntervalSecs => Shape::Int,
+            SettingKey::PollIntervalSecs | SettingKey::LogsFollowSecs => Shape::Int,
             _ => Shape::Text,
         }
     }
@@ -291,6 +304,14 @@ pub enum SettingKind {
     Bool,
     /// A whole number from `min` to `max`.
     Int { min: i64, max: i64 },
+    /// A number of seconds stepped through `values` like a choice; 0 is
+    /// off, any other value is `min` to `max` (a hand-edited file may hold
+    /// one that is not a step).
+    Steps {
+        values: Vec<i64>,
+        min: i64,
+        max: i64,
+    },
     /// Text that is not blank.
     Text,
     /// A list of folders, `~` allowed; entries not blank and not repeated.
@@ -605,16 +626,22 @@ impl EditSession {
                 min: *POLL_INTERVAL_RANGE.start() as i64,
                 max: *POLL_INTERVAL_RANGE.end() as i64,
             },
+            SettingKey::LogsFollowSecs => SettingKind::Steps {
+                values: LOGS_FOLLOW_STEPS.iter().map(|s| *s as i64).collect(),
+                min: *LOGS_FOLLOW_RANGE.start() as i64,
+                max: *LOGS_FOLLOW_RANGE.end() as i64,
+            },
         }
     }
 
-    /// The values the UI may offer for `key`: a choice's list, `false` and
-    /// `true` for a bool, nothing for the other kinds. A value the file
+    /// The values the UI may offer for `key`: a choice's list, the steps'
+    /// numbers, `false` and `true` for a bool, nothing for the other kinds. A value the file
     /// already holds but that is not offered (e.g. `bypassPermissions`)
     /// stays until changed; [`EditSession::revert`] brings it back.
     pub fn offered(&self, key: SettingKey) -> Vec<String> {
         match self.kind(key) {
             SettingKind::Choice { values, .. } => values,
+            SettingKind::Steps { values, .. } => values.iter().map(i64::to_string).collect(),
             SettingKind::Bool => vec!["false".to_owned(), "true".to_owned()],
             _ => Vec::new(),
         }
@@ -634,6 +661,7 @@ impl EditSession {
             SettingKey::HandoffPrompt => text("continue"),
             SettingKey::AllowCrossGroupHandoff => SettingValue::Bool(false),
             SettingKey::PollIntervalSecs => SettingValue::Int(DEFAULT_POLL_INTERVAL_SECS as i64),
+            SettingKey::LogsFollowSecs => SettingValue::Int(DEFAULT_LOGS_FOLLOW_SECS as i64),
             SettingKey::TrackSubagents => SettingValue::Bool(true),
         }
     }
@@ -720,6 +748,13 @@ impl EditSession {
                     Ok(())
                 } else {
                     Err(format!("must be {min} to {max} seconds"))
+                }
+            }
+            (SettingKind::Steps { min, max, .. }, SettingValue::Int(n)) => {
+                if *n == 0 || (min..=max).contains(n) {
+                    Ok(())
+                } else {
+                    Err(format!("must be off (0) or {min} to {max} seconds"))
                 }
             }
             (SettingKind::Text, SettingValue::Text(v)) => {

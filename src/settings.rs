@@ -325,12 +325,16 @@ pub fn toml_text(value: &SettingValue) -> String {
     }
 }
 
-/// A value as a row shows it: `on`/`off`, `2 s`, the paths joined.
+/// A value as a row shows it: `on`/`off`, `2 s`, the paths joined; a
+/// logs-follow interval of 0 is `off`.
 pub fn shown_value(key: SettingKey, value: &SettingValue) -> String {
     match (key, value) {
         (_, SettingValue::Bool(true)) => "on".to_owned(),
         (_, SettingValue::Bool(false)) => "off".to_owned(),
-        (SettingKey::PollIntervalSecs, SettingValue::Int(n)) => format!("{n} s"),
+        (SettingKey::LogsFollowSecs, SettingValue::Int(0)) => "off".to_owned(),
+        (SettingKey::PollIntervalSecs | SettingKey::LogsFollowSecs, SettingValue::Int(n)) => {
+            format!("{n} s")
+        }
         (SettingKey::HandoffPrompt, SettingValue::Text(s)) => format!("\"{s}\""),
         (_, v) => v.display(),
     }
@@ -752,6 +756,18 @@ impl SettingsWindow {
                     cursor,
                 });
             }
+            SettingKind::Steps { values, .. } => {
+                let current = self.session.value(key);
+                let items: Vec<String> = values
+                    .iter()
+                    .map(|v| shown_value(key, &SettingValue::Int(*v)))
+                    .collect();
+                let cursor = match current {
+                    SettingValue::Int(n) => values.iter().position(|v| *v >= n).unwrap_or(0),
+                    _ => 0,
+                };
+                self.mode = Mode::Pick(Pick { key, items, cursor });
+            }
             SettingKind::Bool => self.toggle(key),
             SettingKind::Int { .. } | SettingKind::Text => self.start_input(key, None),
             SettingKind::Paths => {
@@ -823,6 +839,22 @@ impl SettingsWindow {
                     None => n - 1,
                 };
                 self.set(key, SettingValue::Text(values[next].clone()));
+            }
+            SettingKind::Steps { values, .. } if !values.is_empty() => {
+                let n = match self.session.value(key) {
+                    SettingValue::Int(n) => n,
+                    _ => 0,
+                };
+                // The next step up or down, wrapping around; a hand-edited
+                // value between two steps goes to the nearer one that way.
+                let next = if forward {
+                    values.iter().find(|v| **v > n).or(values.first())
+                } else {
+                    values.iter().rev().find(|v| **v < n).or(values.last())
+                };
+                if let Some(next) = next {
+                    self.set(key, SettingValue::Int(*next));
+                }
             }
             SettingKind::Bool => self.toggle(key),
             _ => self.info("Enter edits this setting"),
@@ -940,7 +972,8 @@ impl SettingsWindow {
                 self.mode = Mode::Browse;
                 match pick.value() {
                     Some(v) => {
-                        self.set(pick.key, SettingValue::Text(v.to_owned()));
+                        let value = self.picked(pick.key, v);
+                        self.set(pick.key, value);
                     }
                     None => {
                         let current = self.session.value(pick.key).display();
@@ -958,6 +991,19 @@ impl SettingsWindow {
         }
         self.mode = Mode::Pick(pick);
         SettingsAction::None
+    }
+
+    /// The value of the pick list's entry `label` for `key`: the step a
+    /// label like `off` or `5 s` stands for, else the text itself.
+    fn picked(&self, key: SettingKey, label: &str) -> SettingValue {
+        if let SettingKind::Steps { values, .. } = self.session.kind(key)
+            && let Some(v) = values
+                .iter()
+                .find(|v| shown_value(key, &SettingValue::Int(**v)) == label)
+        {
+            return SettingValue::Int(*v);
+        }
+        SettingValue::Text(label.to_owned())
     }
 
     fn input_key(&mut self, key: KeyEvent, mut input: Input) -> SettingsAction {

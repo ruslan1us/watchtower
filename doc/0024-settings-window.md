@@ -1,6 +1,6 @@
 # 0024. Settings window
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · the logs-follow row added by [0031](0031-logs-follow-interval.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md)
 
 ## Context
@@ -42,7 +42,10 @@ values `config_edit::EditSession::offered` gives: choices (style, theme,
 default account, model with "other…" for a full name, effort, permission
 mode without `bypassPermissions`), a bool (cross-group hand-off), a number
 (poll interval, 1 to 60), text (hand-off prompt) and folder lists (project
-roots, extra projects). `[[accounts]]` are shown read-only with the note
+roots, extra projects). *Amended by [0031](0031-logs-follow-interval.md):*
+also a stepped number, `follow logs in background` (`logs_follow_secs`)
+in General after the poll interval: `off`, `5 s`, `10 s`, `15 s`, `20 s`,
+`30 s`, changed like a choice (`←` / `→`, `Enter` for the pick list). `[[accounts]]` are shown read-only with the note
 that a wrong command or config dir can wake sessions under the wrong
 account; `e` is the way to edit them.
 

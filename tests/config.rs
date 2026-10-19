@@ -302,6 +302,7 @@ fn example_config_is_valid_and_complete() {
 
     assert_eq!(c.default_account, "main");
     assert_eq!(c.poll_interval_secs, defaults.poll_interval_secs);
+    assert_eq!(c.logs_follow_secs, defaults.logs_follow_secs);
     assert_eq!(c.default_model, defaults.default_model);
     assert_eq!(c.default_effort, defaults.default_effort);
     assert_eq!(c.default_permission_mode, defaults.default_permission_mode);
@@ -363,6 +364,7 @@ fn example_config_is_valid_and_complete() {
             "default_permission_mode",
             "extra_projects",
             "handoff_prompt",
+            "logs_follow_secs",
             "poll_interval_secs",
             "project_roots",
             "sessions",
@@ -517,4 +519,32 @@ fn track_subagents_defaults_to_true() {
             .track_subagents
     );
     assert!(parse("[sessions]\ntrack_subagents = \"no\"\n").is_err());
+}
+
+/// `logs_follow_secs` (doc/0031): 0 is off, else 5 to 30; missing is 10.
+#[test]
+fn logs_follow_secs_is_off_or_five_to_thirty() {
+    use std::time::Duration;
+    let defaults = Config::defaults(Path::new(HOME));
+    assert_eq!(defaults.logs_follow_secs, 10);
+    assert_eq!(defaults.logs_follow(), Some(Duration::from_secs(10)));
+    assert_eq!(parse("").unwrap().logs_follow_secs, 10);
+    let off = parse("logs_follow_secs = 0\n").unwrap();
+    assert_eq!(off.logs_follow_secs, 0);
+    assert_eq!(off.logs_follow(), None);
+    for ok in [5, 30] {
+        let c = parse(&format!("logs_follow_secs = {ok}\n")).unwrap();
+        assert_eq!(c.logs_follow(), Some(Duration::from_secs(ok)));
+    }
+    for bad in [4, 31] {
+        let msg = invalid(&format!("logs_follow_secs = {bad}\n"));
+        assert!(
+            msg.contains(&format!(
+                "logs_follow_secs must be 0 (off) or 5 to 30 seconds, not {bad}"
+            )),
+            "{msg}"
+        );
+    }
+    assert!(parse("logs_follow_secs = -1\n").is_err());
+    assert!(parse("logs_follow_secs = \"off\"\n").is_err());
 }

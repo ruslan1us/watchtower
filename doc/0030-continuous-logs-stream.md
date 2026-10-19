@@ -1,6 +1,6 @@
 # 0030. Following the logs stream across fetches
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · the interval made a setting with an off switch by [0031](0031-logs-follow-interval.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0025](0025-session-terminal-size-for-logs.md), [reference](reference/claude-code-cli.md#claude-logs-output)
 - Amends: the logs panel of [0009](0009-stop-remove-and-logs.md) (which rows are fetched, how often, and how the stream is replayed) and the paused panel of [0028](0028-scrolling-the-logs-panel.md)
 
@@ -63,6 +63,11 @@ on a short-lived worker thread:
   [0006](0006-session-states-and-grouping.md)), then the rest; at most 16.
   Working rows are fetched every **10 seconds**, whatever the poll interval;
   the others keep their stream but are not fetched in the background.
+  *Amended by [0031](0031-logs-follow-interval.md):* the interval is
+  `logs_follow_secs` (default 10; 5 to 30, or 0 for off, applied live).
+  Off stops the background fetches of working rows and of the attached
+  session; the panel's refresh and the fetches right after a dispatch,
+  the orchestrator's start and an attach stay.
 - The panel's own refresh stays as it was: on every poll of the owner, at
   once on another row and on `End`; it feeds the same stream and gets the
   screen back.

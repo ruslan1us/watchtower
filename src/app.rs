@@ -156,6 +156,11 @@ pub enum Effect {
     /// A reloaded config changed `poll_interval_secs`: the poller ticks at
     /// this interval from now on (doc/0022).
     SetPollInterval(Duration),
+    /// A reloaded or saved config changed `logs_follow_secs`: the log
+    /// follower fetches working and attached sessions at this interval from
+    /// now on, or not at all with `None` ([`crate::logfollow::Follower::set_cadence`],
+    /// doc/0031).
+    SetLogsFollow(Option<Duration>),
     /// Save the Settings window's changes to `config.toml` on a worker
     /// thread ([`config_edit::SaveJob::run`]), then call
     /// [`App::config_saved`] (doc/0022).
@@ -4268,7 +4273,8 @@ impl App {
     /// theme redraw at once; the dialog defaults, project roots and extras
     /// (rescanned when the dialog next opens), the hand-off prompt and
     /// guard apply from their next use; a changed poll interval gives
-    /// [`Effect::SetPollInterval`]. Accounts are not applied live: while
+    /// [`Effect::SetPollInterval`], a changed logs-follow interval
+    /// [`Effect::SetLogsFollow`]. Accounts are not applied live: while
     /// the new config's accounts differ from tower's, tower keeps its own
     /// (and its `default_account` when the new one names none of them) and
     /// the status line shows [`RESTART_NOTE`].
@@ -4285,6 +4291,9 @@ impl App {
         let mut effects = Vec::new();
         if live.poll_interval_secs != self.config.poll_interval_secs {
             effects.push(Effect::SetPollInterval(live.poll_interval()));
+        }
+        if live.logs_follow_secs != self.config.logs_follow_secs {
+            effects.push(Effect::SetLogsFollow(live.logs_follow()));
         }
         self.style = live.ui_style;
         self.set_theme(live.ui_theme);

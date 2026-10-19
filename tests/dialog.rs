@@ -6,7 +6,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{HOME, app_single, app_two, ch, ctrl, key, project_list, status_text, type_text};
+use common::{
+    HOME, app_single, app_two, ch, ctrl, follow_off, key, project_list, status_text, type_text,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use watchtower::app::{App, DispatchJob, Effect, LogsTarget};
 use watchtower::cli::CliError;
@@ -356,6 +358,28 @@ fn dispatch_effect_carries_the_request() {
     assert!(app.handle_key(ctrl('s')).is_empty(), "no second dispatch");
     assert!(app.dialog().is_some());
     assert_eq!(app.dialog().unwrap().task.text(), "fix the flaky test");
+}
+
+/// With background follows off (doc/0031) a new session is still fetched
+/// once at once, so its start's full repaint is caught.
+#[test]
+fn with_follows_off_a_dispatch_still_fetches_its_session_once() {
+    let mut app = app_two();
+    follow_off(&mut app);
+    let (mut app, _root) = open(app);
+    let job = start(&mut app, ctrl('s'));
+    let effects = app.dispatch_finished(
+        job,
+        Ok(Dispatched {
+            id: "3e9a1c07".into(),
+            name: Some("fix-flaky".into()),
+        }),
+    );
+    let follow = Effect::FollowLogs(LogsTarget {
+        account: app.config().accounts[0].clone(),
+        id: "3e9a1c07".into(),
+    });
+    assert_eq!(effects, [Effect::SaveSidecar, follow, Effect::PollNow]);
 }
 
 #[test]

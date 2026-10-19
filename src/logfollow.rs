@@ -23,6 +23,12 @@
 //!   so its full repaint on attach is caught however long the attach lasts.
 //!   The follower runs on its own thread, so background follows go on
 //!   during any hand-over of the terminal.
+//! - **Cadence.** `logs_follow_secs` sets it (doc/0031), and
+//!   [`Follower::set_cadence`] changes it while the follower runs: the
+//!   next fetch of each session is due one new cadence after its last one.
+//!   `None` turns the periodic fetches off, for the plan's working rows and
+//!   the attached session alike; requests still run, and streams are kept
+//!   and fed by them as before.
 //!
 //! Bounds: at most [`MAX_PARALLEL`] background fetches run at a time, the
 //! longest due first so none starves when fetches are slow (requests are
@@ -58,11 +64,12 @@ use crate::logstream::LogStream;
 use crate::logview::{self, LogScreen, LogsError};
 use crate::ptysize::{self, TerminalReader, TtyProbe};
 
-/// How often a working session is fetched in the background. A capture
-/// covers about 40 seconds of a working session's output, so a fetch every
-/// 10 seconds always overlaps the previous one, even when frames come
-/// several times faster than the spinner's.
-pub const CADENCE: Duration = Duration::from_secs(10);
+/// How often a working session is fetched in the background by default
+/// (`logs_follow_secs`, doc/0031). A capture covers about 40 seconds of a
+/// working session's output, so a fetch every 10 seconds always overlaps
+/// the previous one, even when frames come several times faster than the
+/// spinner's.
+pub const CADENCE: Duration = Duration::from_secs(crate::config::DEFAULT_LOGS_FOLLOW_SECS);
 
 /// Most background fetches running at the same time.
 pub const MAX_PARALLEL: usize = 3;
@@ -97,7 +104,7 @@ pub struct FollowSpec {
     /// (doc/0025), when the pid-reuse guard accepted the process.
     pub probe: Option<TtyProbe>,
     /// Whether the session is working (`state: working` or `status: busy`):
-    /// only those are fetched at the [`CADENCE`].
+    /// only those are fetched at the cadence.
     pub working: bool,
 }
 
@@ -105,8 +112,9 @@ pub struct FollowSpec {
 /// ones in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FollowSettings {
-    /// See [`CADENCE`].
-    pub cadence: Duration,
+    /// How often working and attached sessions are fetched ([`CADENCE`]
+    /// by default); `None`: never in the background (doc/0031).
+    pub cadence: Option<Duration>,
     /// See [`MAX_PARALLEL`].
     pub max_parallel: usize,
     /// See [`MAX_STREAMS`].
@@ -118,7 +126,7 @@ pub struct FollowSettings {
 impl Default for FollowSettings {
     fn default() -> Self {
         FollowSettings {
-            cadence: CADENCE,
+            cadence: Some(CADENCE),
             max_parallel: MAX_PARALLEL,
             max_streams: MAX_STREAMS,
             grace: GRACE,
@@ -151,6 +159,7 @@ enum Msg {
     Plan(Vec<FollowSpec>),
     Fetch(FollowSpec, bool),
     Attached(Option<FollowSpec>),
+    Cadence(Option<Duration>),
     /// A fetch finished: the stream to keep and, for a request with a
     /// snapshot, its result, published once the stream is back
     /// (see the module docs).
@@ -226,6 +235,14 @@ impl Follower {
     /// its state; `None` once the attach returned.
     pub fn attached(&self, spec: Option<FollowSpec>) {
         let _ = self.tx.send(Msg::Attached(spec));
+    }
+
+    /// Changes the cadence while the follower runs (doc/0031): each
+    /// session's next background fetch is due one new cadence after its
+    /// last fetch; `None` stops the background fetches until a cadence is
+    /// set again. Requests ([`Follower::fetch`]) are not affected.
+    pub fn set_cadence(&self, cadence: Option<Duration>) {
+        let _ = self.tx.send(Msg::Cadence(cadence));
     }
 
     /// A finished request with a snapshot, if any, without blocking.
@@ -326,6 +343,7 @@ impl State {
         match msg {
             Msg::Plan(plan) => self.plan = plan,
             Msg::Attached(spec) => self.attached = spec,
+            Msg::Cadence(cadence) => self.settings.cadence = cadence,
             Msg::Fetch(spec, snapshot) => {
                 let slot = self.slot(&spec.target, now);
                 slot.touched = now;
@@ -398,15 +416,18 @@ impl State {
     }
 
     /// Starts the due background fetches, the longest due first, within
-    /// `max_parallel`; returns how long to wait for the next one.
+    /// `max_parallel`; returns how long to wait for the next one. Nothing
+    /// is due while the cadence is off.
     fn schedule(&mut self, now: Instant) -> Duration {
-        let cadence = self.settings.cadence;
+        let mut next = Duration::from_secs(1);
+        let Some(cadence) = self.settings.cadence else {
+            return next;
+        };
         let running = self
             .slots
             .values()
             .filter(|s| s.busy && s.background)
             .count();
-        let mut next = Duration::from_secs(1);
         let mut due: Vec<(Option<Instant>, FollowSpec)> = Vec::new();
         for spec in self.cadence_specs() {
             let slot = self.slot(&spec.target, now);

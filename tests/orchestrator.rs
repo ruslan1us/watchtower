@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use common::{HOME, NoEnviron, ch, ctrl, key, status_text};
+use common::{HOME, NoEnviron, ch, ctrl, follow_off, key, status_text};
 use fake_claude::{Fake, cat, cat_err, lock};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -374,6 +374,27 @@ fn a_haiku_default_model_passes_no_model() {
     let job = start_of(&app.handle_key(ch('o')));
     assert_eq!(job.request.model_arg(), None);
     assert_eq!(job.request.effort_arg(), None);
+}
+
+/// With background follows off (doc/0031) the orchestrator is still
+/// fetched once right after its start.
+#[test]
+fn with_follows_off_the_orchestrator_start_still_fetches_it_once() {
+    let mut app = app_two();
+    follow_off(&mut app);
+    listed_under(&mut app, "main", &[]);
+    let job = start_of(&app.handle_key(ch('o')));
+    let started = Dispatched {
+        id: "0d0d0d0d".into(),
+        name: Some("orchestrator".into()),
+    };
+    let effects = app.orchestrator_finished(job, Ok(started));
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, Effect::FollowLogs(t) if t.id == "0d0d0d0d" && t.account.name == "main")
+        ),
+        "{effects:?}"
+    );
 }
 
 #[test]
