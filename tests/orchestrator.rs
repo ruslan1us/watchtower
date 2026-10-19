@@ -386,8 +386,12 @@ fn a_successful_start_records_the_owner_and_attaches() {
         name: Some("orchestrator".into()),
     };
     let effects = app.orchestrator_finished(job, Ok(started));
-    assert_eq!(effects.len(), 2, "{effects:?}");
+    assert_eq!(effects.len(), 3, "{effects:?}");
     assert_eq!(effects[0], Effect::SaveSidecar);
+    assert!(
+        matches!(&effects[1], Effect::FollowLogs(t) if t.id == "0d0d0d0d" && t.account.name == "main"),
+        "{effects:?}"
+    );
     let attach = attach_of(&effects);
     assert_eq!(
         (attach.account.name.as_str(), attach.id.as_str()),

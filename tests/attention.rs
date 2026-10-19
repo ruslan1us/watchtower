@@ -14,7 +14,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
 use serde_json::{Value, json};
-use watchtower::app::{App, AttachOutcome, Effect};
+use watchtower::app::{App, AttachOutcome, Effect, LogsTarget};
 use watchtower::config::Config;
 use watchtower::groups::Group;
 use watchtower::listing::{State, Status, WaitingFor, parse_listing};
@@ -380,7 +380,12 @@ fn a_successful_attach_acknowledges() {
         account: "main".into(),
         result: Ok(Some(1)),
     });
-    assert_eq!(effects, [Effect::PollNow]);
+    // The session's logs are fetched into its stream at once (doc/0030).
+    let follow = Effect::FollowLogs(LogsTarget {
+        account: app.config().accounts[0].clone(),
+        id: "aaaa0001".into(),
+    });
+    assert_eq!(effects, [follow.clone(), Effect::PollNow]);
     assert!(lit(&app, "a"));
 
     enter_and_refresh(&mut app, &rows);
@@ -389,7 +394,7 @@ fn a_successful_attach_acknowledges() {
         account: "main".into(),
         result: Ok(Some(0)),
     });
-    assert_eq!(effects, [Effect::SaveSidecar, Effect::PollNow]);
+    assert_eq!(effects, [follow, Effect::SaveSidecar, Effect::PollNow]);
     assert!(!lit(&app, "a"));
     assert_eq!(app.attention_count(), 0);
     assert_eq!(
@@ -404,7 +409,11 @@ fn a_successful_attach_acknowledges() {
         account: "main".into(),
         result: Ok(Some(0)),
     });
-    assert_eq!(effects, [Effect::PollNow]);
+    let follow = Effect::FollowLogs(LogsTarget {
+        account: app.config().accounts[0].clone(),
+        id: "bbbb0001".into(),
+    });
+    assert_eq!(effects, [follow, Effect::PollNow]);
     assert_eq!(app.sidecar.sessions[&sid("bbbb0001")].acknowledged, None);
 }
 

@@ -411,7 +411,7 @@ fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_type(border)
         .title(Line::styled(logs_title(panel, area.width), title))
         .title_bottom(Line::styled(
-            logs_hint(panel),
+            logs_hint(panel, area.width),
             Style::new().add_modifier(Modifier::DIM),
         ));
     draw_logs_in(frame, app, panel, area, block);
@@ -422,37 +422,64 @@ pub(crate) fn logs_text_height(area: Rect) -> usize {
     usize::from(area.height.saturating_sub(2))
 }
 
+/// The note for a screen rebuilt without a full repaint (doc/0030).
+pub const PARTIAL_NOTE: &str = "partial output · attach once for a full screen";
+/// [`PARTIAL_NOTE`] for narrow panels.
+const PARTIAL_SHORT: &str = "partial output";
+
 /// The logs panel's title in a panel `width` columns wide:
-/// `logs · <name> (<account>)`, and while paused (doc/0028) where it is,
-/// e.g. `paused · line 120–160 of 900 · End follows`; the name goes first
-/// when it does not fit.
+/// `logs · <name> (<account>)`, then [`PARTIAL_NOTE`] when the screen is
+/// partial (doc/0030), and while paused (doc/0028) where it is, e.g.
+/// `paused · line 120–160 of 900 · End follows`. When it does not fit,
+/// the name goes first, then the note gets shorter.
 pub(crate) fn logs_title(panel: &LogsPanel, width: u16) -> String {
     let room = usize::from(width.saturating_sub(2));
     let paused = panel
         .position()
         .map(|(first, last, len)| format!("paused · line {first}–{last} of {len} · End follows"));
-    let mut parts = vec!["logs"];
-    if !panel.title.is_empty() {
-        parts.push(&panel.title);
+    let partial = panel.partial();
+    let build = |name: bool, note: Option<&str>| {
+        let mut parts = vec!["logs"];
+        if name && !panel.title.is_empty() {
+            parts.push(&panel.title);
+        }
+        parts.extend(note);
+        parts.extend(paused.as_deref());
+        format!(" {} ", parts.join(" · "))
+    };
+    let mut tries = vec![build(true, partial.then_some(PARTIAL_NOTE))];
+    if paused.is_some() || partial {
+        tries.push(build(false, partial.then_some(PARTIAL_NOTE)));
     }
-    if let Some(p) = &paused {
-        parts.push(p);
+    if partial {
+        tries.push(build(false, Some(PARTIAL_SHORT)));
     }
-    let title = format!(" {} ", parts.join(" · "));
-    match &paused {
-        Some(p) if title.width() > room => format!(" logs · {p} "),
-        _ => title,
-    }
+    let last = tries.len() - 1;
+    tries
+        .into_iter()
+        .enumerate()
+        .find(|(i, t)| t.width() <= room || *i == last)
+        .map(|(_, t)| t)
+        .unwrap_or_default()
 }
 
-/// The hint on the logs panel's bottom border: how to scroll it from the
-/// list, or the panel's own keys while it has the focus (doc/0028).
-pub(crate) fn logs_hint(panel: &LogsPanel) -> &'static str {
-    match (panel.focused(), panel.full_screen()) {
+/// The hint on the logs panel's bottom border of a panel `width` columns
+/// wide: how to scroll it from the list, or the panel's own keys while it
+/// has the focus (doc/0028); led by [`PARTIAL_NOTE`] for a partial screen
+/// when that fits (doc/0030).
+pub(crate) fn logs_hint(panel: &LogsPanel, width: u16) -> String {
+    let keys = match (panel.focused(), panel.full_screen()) {
         (false, _) => " → scroll · Space/Esc close ",
         (true, false) => " ↑↓ PgUp/PgDn g/G · f full screen · ← list · Space close ",
         (true, true) => " ↑↓ PgUp/PgDn g/G · f/← back · Space close ",
+    };
+    if panel.partial() {
+        let with_note = format!(" {PARTIAL_NOTE} ·{keys}");
+        if with_note.width() <= usize::from(width.saturating_sub(2)) {
+            return with_note;
+        }
     }
+    keys.to_owned()
 }
 
 /// The logs panel's content inside `block`, which either style draws in

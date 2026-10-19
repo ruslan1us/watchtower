@@ -1,6 +1,6 @@
 //! Background jobs: the CLI calls behind the app's [`Effect`]s that can take
 //! a while — dispatch (`claude --bg`, which may first start a supervisor),
-//! the orchestrator's start, `stop`, `rm`, `logs`, the hand-off sequence
+//! the orchestrator's start, `stop`, `rm`, the hand-off sequence
 //! and the rename of a stopped session — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
 //! reloads, the project scan — each run on its own short-lived worker
@@ -15,8 +15,9 @@
 //!
 //! Every job reports back exactly once (doc/0001): a job that panics, or
 //! whose thread cannot be started, yields an error result of its own kind
-//! ([`CliError::Worker`]), so no dialog, hand-off or logs fetch waits
-//! forever. The panic hook (`tui`) restores the terminal only on the main
+//! ([`CliError::Worker`]), so no dialog or hand-off waits forever. The
+//! logs panel's fetches run in the log follower ([`crate::logfollow`],
+//! doc/0030). The panic hook (`tui`) restores the terminal only on the main
 //! thread; on any other thread it only records the message here
 //! ([`record_panic`]): a job worker's goes into its error result, any other
 //! thread's waits for the status line ([`take_stray_panic`]).
@@ -35,19 +36,16 @@ use std::time::Duration;
 
 use crate::actions::{self, RemoveError, StopError};
 use crate::app::{
-    App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, LogsTarget, OrchestratorJob, ProjectScan,
-    RenameJob, SessionAction, SidecarJob,
+    App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, OrchestratorJob, ProjectScan, RenameJob,
+    SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::config::ConfigError;
 use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
-use crate::logview::{self, LogScreen, LogsError};
-use crate::merge::ProcEnviron;
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
-use crate::ptysize::{self, TerminalReader, TtyProbe};
 use crate::rename::{self, RenameError, RenameStep, RenameTiming, Renamed};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
@@ -64,8 +62,6 @@ pub enum JobResult {
     Stop(SessionAction, Result<(), StopError>),
     /// `rm <id>`.
     Remove(SessionAction, Result<(), RemoveError>),
-    /// `logs <id>`, already replayed into a screen.
-    Logs(LogsTarget, Result<LogScreen, LogsError>),
     /// A step of a running hand-off has started.
     HandoffStep(Step),
     /// A finished hand-off (doc/0004). The job is boxed to keep the enum
@@ -100,7 +96,6 @@ impl JobResult {
             JobResult::Orchestrator(job, result) => app.orchestrator_finished(job, result),
             JobResult::Stop(action, result) => app.stop_finished(action, result),
             JobResult::Remove(action, result) => app.remove_finished(action, result),
-            JobResult::Logs(target, result) => app.logs_fetched(target, result),
             JobResult::HandoffStep(step) => {
                 app.handoff_step(step);
                 Vec::new()
@@ -140,8 +135,6 @@ pub struct Jobs {
     /// The sidecar file a hand-off checks before waking (doc/0017).
     state_file: Option<PathBuf>,
     spawner: ThreadSpawner,
-    /// Reads a session terminal's size for the logs replay (doc/0025).
-    terminal: Arc<dyn TerminalReader>,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
 }
@@ -156,17 +149,9 @@ impl Jobs {
             rename_timing: RenameTiming::default(),
             state_file: None,
             spawner: spawn_thread,
-            terminal: Arc::new(ProcEnviron),
             tx,
             rx,
         }
-    }
-
-    /// Reads session terminal sizes with `terminal` instead of `/proc` and
-    /// `/dev/pts` (tests).
-    pub fn with_terminal(mut self, terminal: Arc<dyn TerminalReader>) -> Jobs {
-        self.terminal = terminal;
-        self
     }
 
     /// Uses `timing` for the stop wait of hand-offs (tests).
@@ -393,25 +378,6 @@ impl Jobs {
         });
     }
 
-    /// Runs `<account command> logs <id>` and replays the stream (doc/0009).
-    /// With a `probe` ([`App::logs_probe`]), the session terminal's real
-    /// size is read right after the fetch returns, so the two are as close
-    /// in time as possible, and the replay uses it; without one, or when it
-    /// cannot be read, the size is inferred (doc/0025).
-    ///
-    /// [`App::logs_probe`]: crate::app::App::logs_probe
-    pub fn logs(&self, target: LogsTarget, probe: Option<TtyProbe>) {
-        let fail = |target, err: CliError| JobResult::Logs(target, Err(err.into()));
-        let terminal = Arc::clone(&self.terminal);
-        self.launch("logs", target, fail, move |runner, _, target| {
-            let result = logview::fetch(runner, &target.account, &target.id).map(|bytes| {
-                let size = probe.and_then(|p| ptysize::session_size(terminal.as_ref(), p));
-                logview::render_sized(&bytes, size)
-            });
-            JobResult::Logs(target, result)
-        });
-    }
-
     /// A finished job, if any, without blocking.
     pub fn try_recv(&self) -> Option<JobResult> {
         self.rx.try_recv().ok()
@@ -557,10 +523,11 @@ mod tests {
     use super::*;
     use crate::config::Account;
 
-    fn target() -> LogsTarget {
-        LogsTarget {
+    fn action() -> SessionAction {
+        SessionAction {
             account: Account::new("main", "claude", None, Path::new("/home/user")).unwrap(),
             id: "a1b2c3d4".to_owned(),
+            name: "demo".to_owned(),
         }
     }
 
@@ -572,16 +539,16 @@ mod tests {
     #[test]
     fn a_panicking_job_yields_an_error_result_of_its_kind() {
         let jobs = Jobs::new(CliRunner::new());
-        let fail = |target, err: CliError| JobResult::Logs(target, Err(err.into()));
-        jobs.launch("logs", target(), fail, |_, _, _| panic!("replay broke"));
-        let JobResult::Logs(got, Err(LogsError::Cli(CliError::Worker { job, message }))) =
+        let fail = |action, err: CliError| JobResult::Stop(action, Err(err.into()));
+        jobs.launch("stop", action(), fail, |_, _, _| panic!("stop broke"));
+        let JobResult::Stop(got, Err(StopError::Cli(CliError::Worker { job, message }))) =
             result(&jobs)
         else {
-            panic!("expected a logs worker error");
+            panic!("expected a stop worker error");
         };
-        assert_eq!(got, target());
-        assert_eq!(job, "logs");
-        assert!(message.contains("replay broke"), "{message}");
+        assert_eq!(got, action());
+        assert_eq!(job, "stop");
+        assert!(message.contains("stop broke"), "{message}");
         assert!(jobs.try_recv().is_none(), "exactly one result");
     }
 
@@ -605,31 +572,20 @@ mod tests {
     fn a_thread_that_cannot_start_yields_an_error_result() {
         let mut jobs = Jobs::new(CliRunner::new());
         jobs.spawner = |_, _| Err(io::Error::other("Resource temporarily unavailable"));
-        jobs.logs(target(), None);
-        let JobResult::Logs(got, Err(err)) = result(&jobs) else {
-            panic!("expected a logs error");
+        jobs.stop(action());
+        let JobResult::Stop(got, Err(err)) = result(&jobs) else {
+            panic!("expected a stop error");
         };
-        assert_eq!(got, target());
+        assert_eq!(got, action());
         assert!(
-            matches!(&err, LogsError::Cli(CliError::Worker { job, .. }) if job == "logs"),
+            matches!(&err, StopError::Cli(CliError::Worker { job, .. }) if job == "stop"),
             "{err:?}"
         );
         assert!(err.to_string().contains("cannot start its thread"), "{err}");
-
-        let action = SessionAction {
-            account: target().account,
-            id: "a1b2c3d4".to_owned(),
-            name: "demo".to_owned(),
-        };
-        jobs.stop(action.clone());
+        jobs.remove(action());
         assert!(matches!(
             result(&jobs),
-            JobResult::Stop(a, Err(StopError::Cli(CliError::Worker { .. }))) if a == action
-        ));
-        jobs.remove(action.clone());
-        assert!(matches!(
-            result(&jobs),
-            JobResult::Remove(a, Err(RemoveError::Cli(CliError::Worker { .. }))) if a == action
+            JobResult::Remove(a, Err(RemoveError::Cli(CliError::Worker { .. }))) if a == action()
         ));
     }
 }

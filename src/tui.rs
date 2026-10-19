@@ -3,7 +3,9 @@
 //! [`App`], and carries out the [`Effect`]s it returns (doc/0004, doc/0005,
 //! doc/0008, doc/0009, doc/0014 milestones 1–3). Slow CLI calls, including
 //! the hand-off sequence, and file work (sidecar saves and reloads, the
-//! project scan) run on worker threads ([`Jobs`]); attach, the task
+//! project scan) run on worker threads ([`Jobs`]), and `claude logs` in the
+//! log follower ([`Follower`], doc/0030), which keeps following working
+//! sessions during every hand-over of the terminal; attach, the task
 //! editor, the trust flow and Claude Code's picker of past conversations
 //! (`R`, doc/0019) take over the terminal through the same hand-over
 //! ([`attach::run_foreground`]).
@@ -52,13 +54,14 @@ use ratatui::crossterm::terminal::{
     supports_keyboard_enhancement,
 };
 
-use crate::app::{App, Effect, Severity};
+use crate::app::{App, Effect, LogsTarget, Severity};
 use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
 use crate::cli::{CliError, CliRunner};
 use crate::config::{Config, ConfigSource};
 use crate::config_edit;
 use crate::dispatch::DispatchError;
 use crate::jobs::{self, JobResult, Jobs};
+use crate::logfollow::{FollowSettings, Follower};
 use crate::merge::ProcEnviron;
 use crate::orchestrator::StartError;
 use crate::paths::{self, Dirs};
@@ -459,10 +462,16 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
         config.poll_interval(),
     );
     let jobs = Jobs::new(CliRunner::new()).with_state_file(state_file.clone());
+    let follower = Follower::start(
+        Arc::new(CliRunner::new()),
+        Arc::new(ProcEnviron),
+        FollowSettings::default(),
+    );
     let mut rt = Runtime {
         terminal: &mut terminal,
         poller: &poller,
         jobs: &jobs,
+        follower: &follower,
         state_file: &state_file,
         termination: &termination,
         enhanced,
@@ -509,6 +518,8 @@ struct Runtime<'a> {
     terminal: &'a mut Term,
     poller: &'a Poller,
     jobs: &'a Jobs,
+    /// Fetches `claude logs` into each session's followed stream (doc/0030).
+    follower: &'a Follower,
     state_file: &'a Path,
     termination: &'a Termination,
     /// Whether the terminal supports keyboard enhancement (re-pushed after
@@ -575,12 +586,17 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
             // (doc/0017 section 8), and changes to config.toml (doc/0022).
             effects.push(Effect::CheckSidecar);
             effects.push(Effect::CheckConfig);
+            // The sessions to follow in the background (doc/0030).
+            rt.follower.set_plan(app.follow_plan());
         }
         while let Some(message) = rt.poller.try_restart() {
             app.set_message(
                 format!("polling stopped unexpectedly and was restarted: {message}"),
                 Severity::Warning,
             );
+        }
+        while let Some((target, result)) = rt.follower.try_recv() {
+            effects.extend(app.logs_fetched(target, result));
         }
         while let Some(done) = rt.jobs.try_recv() {
             if polls_after(&done) {
@@ -626,8 +642,16 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             }
             Effect::Attach(req) => {
                 let termination = rt.termination;
+                // Followed at the cadence while attached, so the repaint on
+                // attach is caught however long the attach lasts (doc/0030).
+                let target = LogsTarget {
+                    account: req.account.clone(),
+                    id: req.id.clone(),
+                };
+                rt.follower.attached(Some(app.follow_spec(&target)));
                 let outcome =
                     attach::attach(&mut rt.handover(), &mut InheritSpawner, &req, termination);
+                rt.follower.attached(None);
                 if termination.pending().is_some() {
                     return Ok(false);
                 }
@@ -696,10 +720,8 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             }
             Effect::Stop(action) => rt.jobs.stop(action),
             Effect::Remove(action) => rt.jobs.remove(action),
-            Effect::FetchLogs(target) => {
-                let probe = app.logs_probe(&target);
-                rt.jobs.logs(target, probe);
-            }
+            Effect::FetchLogs(target) => rt.follower.fetch(app.follow_spec(&target), true),
+            Effect::FollowLogs(target) => rt.follower.fetch(app.follow_spec(&target), false),
             Effect::CheckConfig => {
                 if let Some(job) = app.start_config_check() {
                     rt.jobs.config_check(job);

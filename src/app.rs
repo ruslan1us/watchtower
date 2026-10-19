@@ -45,7 +45,8 @@ use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
 use crate::layout;
-use crate::listing::Session;
+use crate::listing::{Session, State, Status};
+use crate::logfollow::{FollowSpec, MAX_STREAMS};
 use crate::logview::{LogScreen, LogsError};
 use crate::merge::{
     AccountListing, CanonCache, EnvironReader, KnownProcesses, MergedSession, Ownership, Resolver,
@@ -118,9 +119,15 @@ pub enum Effect {
     /// Run `<owning account command> rm <id>` on a worker thread, then call
     /// [`App::remove_finished`] (doc/0009).
     Remove(SessionAction),
-    /// Run `<owning account command> logs <id>` and replay it on a worker
-    /// thread, then call [`App::logs_fetched`] (doc/0009).
+    /// Fetch `<owning account command> logs <id>` into the session's
+    /// followed stream ([`crate::logfollow`]) and call [`App::logs_fetched`]
+    /// with its screen (doc/0009, doc/0030).
     FetchLogs(LogsTarget),
+    /// Fetch the session's logs into its followed stream now, with no
+    /// screen for the panel: right after a dispatch, the orchestrator's
+    /// start or an attach, so the full repaint at the session's start or
+    /// on attach is caught (doc/0030).
+    FollowLogs(LogsTarget),
     /// Run the hand-off sequence ([`handoff::run`]) on a worker thread,
     /// reporting steps to [`App::handoff_step`], then call
     /// [`App::handoff_finished`] (doc/0004).
@@ -796,6 +803,13 @@ impl LogsPanel {
         self.scroll.is_some()
     }
 
+    /// Whether the panel shows a screen rebuilt without a full repaint
+    /// since the stream started, which may lack parts of the screen
+    /// ([`LogScreen::partial`], doc/0030).
+    pub fn partial(&self) -> bool {
+        matches!(&self.view, LogsView::Screen(screen) if screen.partial())
+    }
+
     /// Text rows inside the panel, as last drawn.
     pub fn height(&self) -> usize {
         self.height
@@ -823,6 +837,13 @@ enum Scroll {
     Down(usize),
     Top,
     Bottom,
+}
+
+/// Whether a row is working: a live process with `state: working` or
+/// `status: busy` (doc/0006). The log follower fetches those at its cadence
+/// (doc/0030).
+pub fn is_working(s: &Session) -> bool {
+    s.has_live_process() && (s.state == Some(State::Working) || s.status == Some(Status::Busy))
 }
 
 /// The note for a row without a live process (doc/0009).
@@ -2036,9 +2057,18 @@ impl App {
     /// Reports how an attach ended and asks for an immediate poll. A
     /// successful attach (exit code 0) acknowledges the session's highlight
     /// with the tuple it had (doc/0007). An open logs panel follows the
-    /// output again, so the poll refreshes it (doc/0028).
+    /// output again, so the poll refreshes it (doc/0028). The session's
+    /// logs are fetched into its followed stream at once (doc/0030).
     pub fn attach_finished(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
         let mut effects = Vec::new();
+        if let Some(id) = self.attached_id.clone()
+            && let Some(account) = self.config.account(&outcome.account)
+        {
+            effects.push(Effect::FollowLogs(LogsTarget {
+                account: account.clone(),
+                id,
+            }));
+        }
         // A rename through this attach (doc/0027): after a clean return the
         // name is compared once a poll started now has listed it.
         let intent = self.rename_attach.take().filter(|i| {
@@ -2152,6 +2182,10 @@ impl App {
                     format!("started {name} ({}) under {}", started.id, account.name),
                     Severity::Info,
                 );
+                effects.push(Effect::FollowLogs(LogsTarget {
+                    account: account.clone(),
+                    id: started.id.clone(),
+                }));
                 if job.attach {
                     // attach_finished polls once tower is back.
                     effects.push(self.attach_effect(AttachRequest {
@@ -2326,7 +2360,8 @@ impl App {
     /// Takes a finished logs fetch (doc/0009). A result for a row the panel
     /// no longer shows is dropped, and the current row is fetched instead.
     /// While the panel is paused (scrolled up) it keeps its snapshot and the
-    /// result is dropped too (doc/0028).
+    /// result is dropped too (doc/0028); the session's stream took the
+    /// fetch in all the same (doc/0030).
     pub fn logs_fetched(
         &mut self,
         target: LogsTarget,
@@ -3597,6 +3632,10 @@ impl App {
                     id: started.id.clone(),
                     misses: 0,
                 });
+                effects.push(Effect::FollowLogs(LogsTarget {
+                    account: account.clone(),
+                    id: started.id.clone(),
+                }));
                 let what = format!(
                     "started the orchestrator ({}) under {}",
                     started.id, account.name
@@ -5031,13 +5070,87 @@ impl App {
     /// the replay then infers the size. The job re-reads the ticks, so a
     /// pid reused meanwhile gives no size either.
     pub fn logs_probe(&self, target: &LogsTarget) -> Option<TtyProbe> {
-        let m = self.sessions.iter().find(|m| {
-            m.session.id.as_deref() == Some(target.id.as_str())
-                && m.owner.account() == Some(target.account.name.as_str())
-        })?;
+        let m = self.row_of(target)?;
         let pid = m.session.pid?;
         let start_ticks = self.known.get(m.session.key()?, pid)?;
         Some(TtyProbe { pid, start_ticks })
+    }
+
+    /// The sessions the log follower keeps a stream for (doc/0030): every
+    /// live background row with a short id whose owning account is known
+    /// and configured, the logs panel's row first, then the working ones
+    /// ([`is_working`]), then the rest in list order; at most
+    /// [`MAX_STREAMS`].
+    pub fn follow_plan(&self) -> Vec<FollowSpec> {
+        let panel = self.logs.as_ref().and_then(|p| p.target.as_ref());
+        let mut specs: Vec<(u8, FollowSpec)> = self
+            .sessions
+            .iter()
+            .filter_map(|m| {
+                let target = self.follow_target(m)?;
+                let rank = if panel == Some(&target) {
+                    0
+                } else if is_working(&m.session) {
+                    1
+                } else {
+                    2
+                };
+                Some((rank, self.spec_for(m, target)))
+            })
+            .collect();
+        specs.sort_by_key(|(rank, _)| *rank);
+        specs
+            .into_iter()
+            .map(|(_, spec)| spec)
+            .take(MAX_STREAMS)
+            .collect()
+    }
+
+    /// What the log follower needs to fetch `target`'s session: its pid,
+    /// the size probe ([`App::logs_probe`]) and whether it works. A target
+    /// without a listed row gets neither pid nor probe.
+    pub fn follow_spec(&self, target: &LogsTarget) -> FollowSpec {
+        match self.row_of(target) {
+            Some(m) => self.spec_for(m, target.clone()),
+            None => FollowSpec {
+                target: target.clone(),
+                pid: None,
+                probe: None,
+                working: false,
+            },
+        }
+    }
+
+    fn spec_for(&self, m: &MergedSession, target: LogsTarget) -> FollowSpec {
+        FollowSpec {
+            pid: m.session.pid,
+            probe: self.logs_probe(&target),
+            working: is_working(&m.session),
+            target,
+        }
+    }
+
+    /// The row `target` names: its short id, owned by its account.
+    fn row_of(&self, target: &LogsTarget) -> Option<&MergedSession> {
+        self.sessions.iter().find(|m| {
+            m.session.id.as_deref() == Some(target.id.as_str())
+                && m.owner.account() == Some(target.account.name.as_str())
+        })
+    }
+
+    /// The logs target of a live background row whose owner is known and
+    /// configured (doc/0003, doc/0009).
+    fn follow_target(&self, m: &MergedSession) -> Option<LogsTarget> {
+        let s = &m.session;
+        if s.is_interactive() || !s.has_live_process() {
+            return None;
+        }
+        let id = s.id.clone()?;
+        let account = self.config.account(m.owner.account()?)?;
+        Some(LogsTarget {
+            account: account.clone(),
+            id,
+        })
     }
 
     /// Points the open logs panel at the selected row: a note for rows

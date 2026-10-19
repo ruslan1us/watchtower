@@ -1,8 +1,8 @@
 //! The milestone 2 runtime against fake `claude` executables (doc/0015):
 //! the app's effects carried out by [`Jobs`] on worker threads — dispatch
-//! argv and working directory, stop and remove with the owning account,
-//! logs fetched with the owning account — plus the task editor and the
-//! trust flow's foreground hand-over.
+//! argv and working directory, stop and remove with the owning account —
+//! and logs fetched by the [`Follower`] with the owning account, plus the
+//! task editor and the trust flow's foreground hand-over.
 
 mod common;
 #[path = "support/fake_claude.rs"]
@@ -24,6 +24,7 @@ use watchtower::dispatch;
 use watchtower::editor;
 use watchtower::jobs::{JobResult, Jobs};
 use watchtower::listing::parse_listing;
+use watchtower::logfollow::{FollowSettings, Follower};
 use watchtower::poller::PollUpdate;
 use watchtower::sidecar::{AccountSource, Sidecar};
 
@@ -74,13 +75,21 @@ fn select(app: &mut App, name: &str) {
     common::select_name(app, name);
 }
 
-/// Carries out the background effects with `jobs` and feeds every result
+/// The runtime's workers: jobs and the log follower.
+struct Rt {
+    jobs: Jobs,
+    follower: Follower,
+}
+
+/// Carries out the background effects with `rt` and feeds every result
 /// back, until no job is outstanding. Returns the other effects.
-fn drive(app: &mut App, jobs: &Jobs, effects: Vec<Effect>) -> Vec<Effect> {
+fn drive(app: &mut App, rt: &Rt, effects: Vec<Effect>) -> Vec<Effect> {
+    let jobs = &rt.jobs;
     let mut rest = Vec::new();
     let mut outstanding = 0;
     let mut queue = effects;
     loop {
+        let mut logs = Vec::new();
         for effect in queue.drain(..) {
             match effect {
                 Effect::Dispatch(job) => {
@@ -96,13 +105,20 @@ fn drive(app: &mut App, jobs: &Jobs, effects: Vec<Effect>) -> Vec<Effect> {
                     outstanding += 1;
                 }
                 Effect::FetchLogs(t) => {
-                    // As the runtime does (doc/0025).
-                    let probe = app.logs_probe(&t);
-                    jobs.logs(t, probe);
-                    outstanding += 1;
+                    // As the runtime does (doc/0025, doc/0030).
+                    rt.follower.fetch(app.follow_spec(&t), true);
+                    let (t, result) = rt
+                        .follower
+                        .recv_timeout(Duration::from_secs(20))
+                        .expect("logs fetched");
+                    logs.extend(app.logs_fetched(t, result));
                 }
                 other => rest.push(other),
             }
+        }
+        if !logs.is_empty() {
+            queue = logs;
+            continue;
         }
         if outstanding == 0 {
             return rest;
@@ -115,8 +131,16 @@ fn drive(app: &mut App, jobs: &Jobs, effects: Vec<Effect>) -> Vec<Effect> {
     }
 }
 
-fn jobs() -> Jobs {
-    Jobs::new(CliRunner::new().with_timeout(Duration::from_secs(20)))
+fn jobs() -> Rt {
+    let runner = CliRunner::new().with_timeout(Duration::from_secs(20));
+    Rt {
+        jobs: Jobs::new(runner.clone()),
+        follower: Follower::start(
+            std::sync::Arc::new(runner),
+            std::sync::Arc::new(watchtower::merge::ProcEnviron),
+            FollowSettings::default(),
+        ),
+    }
 }
 
 // ---- dispatch ----------------------------------------------------------------
@@ -145,7 +169,10 @@ fn dispatch_runs_the_chosen_account_in_the_project() {
     let effects = app.handle_key(ctrl('s'));
     let rest = drive(&mut app, &jobs(), effects);
 
-    assert_eq!(rest, [Effect::SaveSidecar, Effect::PollNow]);
+    assert!(
+        matches!(&rest[..], [Effect::SaveSidecar, Effect::FollowLogs(t), Effect::PollNow] if t.account.name == "alt"),
+        "{rest:?}"
+    );
     assert_eq!(
         alt.argv(),
         [

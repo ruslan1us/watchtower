@@ -1,6 +1,7 @@
 //! The session terminal's real size for the logs replay (doc/0025):
 //! `tty_nr` decoding and the `/dev/pts` mapping, which size source wins,
-//! the app's process evidence for it, and the logs job using it.
+//! the app's process evidence for it, and the log follower's fetch using
+//! it.
 
 mod common;
 #[path = "support/fake_claude.rs"]
@@ -17,7 +18,7 @@ use fake_claude::{Fake, lock};
 use watchtower::app::{App, LogsTarget};
 use watchtower::cli::CliRunner;
 use watchtower::config::Config;
-use watchtower::jobs::{JobResult, Jobs};
+use watchtower::logfollow::{FollowSettings, FollowSpec, Follower};
 use watchtower::logview::{self, DEFAULT_COLS, DEFAULT_ROWS, MAX_COLS, MAX_ROWS};
 use watchtower::merge::EnvironReader;
 use watchtower::ptysize::{
@@ -281,20 +282,29 @@ fn no_probe_when_the_guard_did_not_accept_the_process() {
     assert_eq!(app.logs_probe(&target(&app, "7b4d9f02")), None);
 }
 
-// ---- the logs job --------------------------------------------------------------
+// ---- the log follower's fetch ---------------------------------------------------
 
 fn fetch_with(terminal: FakeTerminal, probe: Option<TtyProbe>) -> (u16, u16) {
     let _g = lock();
     // Addresses only row 1, column 1: the inference gives the default.
     let claude = Fake::new("claude", "printf '\\033[2J\\033[Hhello'");
-    let jobs = Jobs::new(CliRunner::new().with_timeout(Duration::from_secs(20)))
-        .with_terminal(Arc::new(terminal));
+    let follower = Follower::start(
+        Arc::new(CliRunner::new().with_timeout(Duration::from_secs(20))),
+        Arc::new(terminal),
+        FollowSettings::default(),
+    );
     let target = LogsTarget {
         account: claude.account(),
         id: "7b4d9f02".into(),
     };
-    jobs.logs(target, probe);
-    let Some(JobResult::Logs(_, Ok(screen))) = jobs.recv_timeout(Duration::from_secs(20)) else {
+    let spec = FollowSpec {
+        target,
+        pid: probe.map(|p| p.pid),
+        probe,
+        working: false,
+    };
+    follower.fetch(spec, true);
+    let Some((_, Ok(screen))) = follower.recv_timeout(Duration::from_secs(20)) else {
         panic!("expected a replayed screen");
     };
     assert_eq!(screen.plain_lines(), ["hello"]);
@@ -302,13 +312,13 @@ fn fetch_with(terminal: FakeTerminal, probe: Option<TtyProbe>) -> (u16, u16) {
 }
 
 #[test]
-fn the_logs_job_replays_at_the_real_size() {
+fn the_fetch_replays_at_the_real_size() {
     let t = FakeTerminal::new(Some(stat_line(4290, 34819, 123_456)), Ok((57, 231)));
     assert_eq!(fetch_with(t, Some(PROBE)), (57, 231));
 }
 
 #[test]
-fn the_logs_job_falls_back_to_the_inference() {
+fn the_fetch_falls_back_to_the_inference() {
     let size = (DEFAULT_ROWS, DEFAULT_COLS);
     let unreadable = || FakeTerminal::new(None, Ok((57, 231)));
     assert_eq!(fetch_with(unreadable(), Some(PROBE)), size);

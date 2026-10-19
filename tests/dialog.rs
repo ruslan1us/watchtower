@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use common::{HOME, app_single, app_two, ch, ctrl, key, project_list, status_text, type_text};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use watchtower::app::{App, DispatchJob, Effect};
+use watchtower::app::{App, DispatchJob, Effect, LogsTarget};
 use watchtower::cli::CliError;
 use watchtower::config::Config;
 use watchtower::dialog::{DialogPrompt, DialogStatus, Field};
@@ -369,7 +369,13 @@ fn success_records_closes_and_polls() {
             name: Some("fix-flaky".into()),
         }),
     );
-    assert_eq!(effects, [Effect::SaveSidecar, Effect::PollNow]);
+    // The new session's logs are fetched at once, so its start's full
+    // repaint is caught (doc/0030).
+    let follow = Effect::FollowLogs(LogsTarget {
+        account: app.config().accounts[0].clone(),
+        id: "3e9a1c07".into(),
+    });
+    assert_eq!(effects, [Effect::SaveSidecar, follow, Effect::PollNow]);
     assert!(app.dialog().is_none());
     assert!(
         status_text(&app).contains("started fix-flaky (3e9a1c07) under main"),

@@ -7,7 +7,9 @@
 //! [`fetch`] runs the call with the owning account's command; [`render`]
 //! replays the bytes into a fresh [`vt100::Parser`] and converts the final
 //! screen, and the lines that scrolled off its top, into ratatui [`Line`]s
-//! and plain strings. The conversion is done here rather than with
+//! and plain strings. The panel keeps one emulator per session across
+//! fetches instead ([`crate::logstream`], doc/0030), built from the same
+//! pieces; [`LogScreen::partial`] says when no full clear was replayed. The conversion is done here rather than with
 //! `tui-term`, so the panel can trim blank rows, keep only the rows that
 //! fit, scroll, and fall back to plain text.
 //!
@@ -177,12 +179,22 @@ pub struct LogScreen {
     rows: Vec<Row>,
     /// Index of screen row 0 in `rows`: the number of scrollback lines.
     screen_start: usize,
+    /// No full clear was replayed: the screen may lack the parts Claude
+    /// Code drew only once (doc/0030).
+    partial: bool,
 }
 
 impl LogScreen {
     /// The emulator size used for the replay, as `(rows, cols)`.
     pub fn size(&self) -> (u16, u16) {
         self.size
+    }
+
+    /// True when the screen has text but no full clear (`ESC[2J` or
+    /// `ESC c`) was replayed into it, so the parts of the screen Claude
+    /// Code drew only in its last full repaint may be missing (doc/0030).
+    pub fn partial(&self) -> bool {
+        self.partial && !self.is_empty()
     }
 
     fn screen(&self) -> &[Row] {
@@ -402,9 +414,26 @@ pub fn render(bytes: &[u8]) -> LogScreen {
 pub fn render_sized(bytes: &[u8], real: Option<(u16, u16)>) -> LogScreen {
     let bytes = replay_window(bytes);
     let (rows, cols) = emulator_size(bytes, real);
-    let bytes = bound_counts(bytes, rows, cols);
-    let mut parser = vt100::Parser::new(rows, cols, scrollback_len(cols));
-    parser.process(&bytes);
+    let mut parser = new_parser(rows, cols);
+    parser.process(&bound_counts(bytes, rows, cols));
+    snapshot(&mut parser, !has_clear(bytes))
+}
+
+/// An emulator of `rows` × `cols` with the scrollback of doc/0028.
+pub(crate) fn new_parser(rows: u16, cols: u16) -> vt100::Parser {
+    vt100::Parser::new(rows, cols, scrollback_len(cols))
+}
+
+/// Whether `bytes` hold a full clear: `ESC[2J` or a reset (`ESC c`).
+pub fn has_clear(bytes: &[u8]) -> bool {
+    bytes.windows(4).any(|w| w == b"\x1b[2J") || bytes.windows(2).any(|w| w == b"\x1bc")
+}
+
+/// The emulator's screen and the lines that scrolled off its top, as a
+/// [`LogScreen`]; `partial` as [`LogScreen::partial`]. Leaves the
+/// emulator's view at the bottom.
+pub(crate) fn snapshot(parser: &mut vt100::Parser, partial: bool) -> LogScreen {
+    let (rows, cols) = parser.screen().size();
     let screen = parser.screen_mut();
 
     // The scrollback, oldest line first: scrolled back by `kept - first`
@@ -426,11 +455,12 @@ pub fn render_sized(bytes: &[u8], real: Option<(u16, u16)>) -> LogScreen {
         size: (rows, cols),
         rows: out,
         screen_start: kept,
+        partial,
     }
 }
 
 /// The part of `bytes` that is replayed (see the module docs).
-fn replay_window(bytes: &[u8]) -> &[u8] {
+pub(crate) fn replay_window(bytes: &[u8]) -> &[u8] {
     if bytes.len() <= MAX_INPUT_BYTES {
         return bytes;
     }
@@ -546,7 +576,7 @@ fn is_line_feed(b: u8) -> bool {
 /// inside a sequence are carried out before it, so a rewritten or dropped
 /// sequence leaves them in its place (line feeds among them are charged
 /// like any other, and dropped together once the budget is spent).
-fn bound_counts(bytes: &[u8], rows: u16, cols: u16) -> Cow<'_, [u8]> {
+pub(crate) fn bound_counts(bytes: &[u8], rows: u16, cols: u16) -> Cow<'_, [u8]> {
     let mut budget = Budget::new(rows, cols);
     let mut out: Option<Vec<u8>> = None;
     let mut copied = 0;

@@ -143,9 +143,10 @@ Observed oddities (verified):
 Verified:
 
 - Output is the **raw terminal byte stream** of the session's recent output, not text lines.
-- It starts with a clear-screen and full redraw (`ESC 7 ESC 8 ESC[2J ESC[H`), followed by
-  incremental updates: absolute and relative cursor moves (`ESC[64;1H`, `ESC[57B`), 24-bit
-  colour SGR (`ESC[38;2;r;g;bm`) and every spinner frame.
+- While the session's start or last attach is recent, it starts with a clear-screen and
+  full redraw (`ESC 7 ESC 8 ESC[2J ESC[H`), followed by incremental updates: absolute and
+  relative cursor moves (`ESC[64;1H`, `ESC[57B`), colour SGR and every spinner frame.
+  Later captures hold only incremental updates (see the capture window below).
 - Printed to a terminal it looks like a screenshot of the current screen. Plain ANSI-to-text
   conversion does not work because of cursor addressing; it needs a terminal emulator.
 - The PTY size is not reported, and `claude logs` has no option for it
@@ -169,6 +170,33 @@ Session terminal size, verified with Claude Code 2.1.303 on Linux:
 - `claude attach` resizes the PTY to the attaching terminal (tested at 57 × 231), and the
   PTY **keeps that size after detaching** (`Ctrl+Z`).
 
+Capture window and repaints, verified with Claude Code 2.1.303 on Linux (a background
+session running one four- or five-minute shell command, captured every ~9 seconds, and
+attached once from tmux):
+
+- `claude logs` returns the **last ~450 writes** of the session's output, dropped whole:
+  32–38 KB, about 40 seconds of a working session (~11 frames a second, ~780 bytes a
+  second). A capture always starts at a write boundary.
+- Claude Code repaints the whole screen (`ESC[2J ESC[H`, then every row) **only when the
+  session starts and when a terminal attaches**, also at the same size. Turn end, new
+  messages, tool start and end, and timers are differential frames only. The stream has no
+  `ESC[3J` and no alternate screen.
+- A differential frame is `ESC[H\r`, relative moves to the changed cells
+  (`ESC[<n>B`, `ESC[<n>C`, `\r`) with their new text, and a park sequence
+  (`ESC[<rows>;1H ESC[<rows-2>;3H`, the cursor in the prompt box).
+- So after about 40 seconds of work no capture holds the last repaint, and replaying one
+  capture on its own shows only the cells changed since: spinner, footer fragments and the
+  newest message lines, without the header, prompt box or static footer. A finished turn
+  looks complete only when its last reply rewrote every visible row.
+- Captures ~9 seconds apart overlap by ~25 KB; while the session is idle consecutive
+  captures are byte-identical. Appending each capture's bytes after the overlap to the
+  previous ones and replaying the result gives the right screen across a whole turn and an
+  attach. The overlap is gone when more than ~450 writes pass between two captures.
+- The colour depth follows the attached client: 256-colour SGR (`ESC[38;5;<n>m`) while
+  attached from tmux, 24-bit (`ESC[38;2;r;g;bm`) otherwise.
+- One `claude logs` call on a working session took ~0.65 s wall time, ~0.17 s CPU and
+  ~150 MB peak memory (an unknown id: ~0.18 s, ~0.13 s CPU).
+
 Scrolling, verified with Claude Code 2.1.303 on Linux (a background session asked to
 print 300 numbered lines, its terminal 50 × 200, never attached), and on every captured
 fixture under `tests/fixtures/logs/`:
@@ -184,7 +212,9 @@ fixture under `tests/fixtures/logs/`:
 
 How Watchtower uses it: [0009](../0009-stop-remove-and-logs.md),
 [0025](../0025-session-terminal-size-for-logs.md) (the replay uses the PTY's real size),
-[0028](../0028-scrolling-the-logs-panel.md) (scrolling the replayed screen).
+[0028](../0028-scrolling-the-logs-panel.md) (scrolling the replayed screen),
+[0030](../0030-continuous-logs-stream.md) (one stream per session, stitched across
+captures and followed in the background).
 
 ## Attach and detach keys
 

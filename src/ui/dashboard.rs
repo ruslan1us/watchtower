@@ -148,7 +148,7 @@ fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect, th: Theme) {
             super::logs_title(logs, area.width),
             th.bold(th.p.title),
         ))
-        .title_bottom(Line::styled(super::logs_hint(logs), th.muted()).right_aligned());
+        .title_bottom(Line::styled(super::logs_hint(logs, area.width), th.muted()).right_aligned());
     super::draw_logs_in(frame, app, logs, area, block);
 }
 

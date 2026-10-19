@@ -1,6 +1,6 @@
 # 0009. Stop, remove and the logs panel
 
-- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md) · scrollback, scrolling and the line-feed budget amended by [0028](0028-scrolling-the-logs-panel.md)
+- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md) · scrollback, scrolling and the line-feed budget amended by [0028](0028-scrolling-the-logs-panel.md) · rows fetched, cadence and the replay across fetches amended by [0030](0030-continuous-logs-stream.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -45,6 +45,9 @@ list from 130 columns, below it on narrower terminals, half the space either way
   `Session <id> · <name>` banner arrives on another stream and is ignored.
 - Feed the bytes into a fresh `vt100::Parser` and convert its screen cells to ratatui
   lines (tower's own conversion, not `tui-term`, so rows can be trimmed and fitted).
+  *Amended by [0030](0030-continuous-logs-stream.md):* the parser is kept per session
+  and each capture's new bytes are stitched onto it; a fresh replay happens only when
+  captures do not overlap, the real size or the pid changes.
   Colours and bold/dim/italic/underline/reverse are kept; trailing spaces and blank rows at
   the top and bottom are trimmed. When the panel is too short, runs of blank rows collapse
   to one and the bottom rows are kept (prompt box or dialog and footer included).
@@ -71,6 +74,9 @@ list from 130 columns, below it on narrower terminals, half the space either way
   1 000 000 cells) above the screen.
 - Refresh on every poll, only for the selected row and only while the panel is open.
   Changing the selection fetches the new row immediately.
+  *Amended by [0030](0030-continuous-logs-stream.md):* in addition, every working row
+  is fetched in the background every 10 seconds, and a session right after its
+  dispatch and after an attach, so the panel keeps the full screen of long turns.
   *Amended by [0028](0028-scrolling-the-logs-panel.md):* `→` / `l` give the panel the
   keys to scroll it and `f` shows it full screen; while scrolled up it is paused on its
   snapshot and not refreshed until `End` or the last page.
@@ -83,7 +89,8 @@ list from 130 columns, below it on narrower terminals, half the space either way
 ## Consequences
 
 - One extra `logs` process per poll while the panel is open and the selected row has a live
-  process; nothing otherwise.
+  process; nothing otherwise. *Amended by [0030](0030-continuous-logs-stream.md):* plus one
+  every 10 seconds per working session.
 - A row whose owning account is unknown ("?") cannot show logs until the account is known;
   the panel says so.
 - Removing a session with unfinished work in its worktree is always a manual step outside

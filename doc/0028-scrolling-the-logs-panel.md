@@ -1,6 +1,6 @@
 # 0028. Scrolling the logs panel
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · paused panel and the scrollback across fetches amended by [0030](0030-continuous-logs-stream.md)
 - Related: [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0025](0025-session-terminal-size-for-logs.md), [reference](reference/claude-code-cli.md#claude-logs-output)
 - Amends: the logs panel of [0009](0009-stop-remove-and-logs.md) and the key table of [0011](0011-keybindings.md)
 
@@ -28,6 +28,9 @@ worker thread and only during the replay; the panel keeps the converted lines (t
 spans of the trimmed rows), and draws share them instead of copying. The history is the
 scrollback, oldest line first, then the screen, without blank rows at its top and bottom.
 For Claude Code's streams it is the screen.
+*Amended by [0030](0030-continuous-logs-stream.md):* the emulator is kept across
+fetches, so the scrollback gathers the lines that scroll off over all of them, within
+the same cap.
 
 **Bounded replay work.** A scroll costs a new row and a shift of all rows (and with the
 scrollback keeps the old row), for one byte. Line feeds (LF, VT, FF) and reverse index
@@ -69,7 +72,10 @@ to one. Following, it shows the last page, which is what the panel showed before
 
 **Following and paused.** At the bottom the panel follows the output: it refreshes on
 every poll, as before. Moving up from the bottom pauses it on the snapshot it shows:
-polls fetch nothing for it, and a fetch already running when it paused is dropped. The
+polls fetch nothing for it, and a fetch already running when it paused is dropped.
+*Amended by [0030](0030-continuous-logs-stream.md):* the snapshot stays, but the
+session's stream is still fed by the background follow while it works, and `End`
+shows the stream as it is then. The
 title says where it is: `logs · <name> (<account>) · paused · line 120–160 of 900 · End
 follows`, dropping the name when the panel is too narrow. `End` / `G`, or scrolling back
 down to the last page, follows again and fetches at once. Selecting another row (or a
@@ -87,7 +93,9 @@ text selection away.
   terminal's width. For Claude Code that is the current screen, not the conversation's
   history; the history needs `Enter` (attach).
 - A paused panel can be stale; the title says so and `End` refreshes.
-- One fewer `logs` process per poll while paused.
+- One fewer `logs` process per poll while paused (the background follow of
+  [0030](0030-continuous-logs-stream.md) still fetches a working session every 10
+  seconds).
 - `←` gets a meaning in tower, but only inside the logs panel, where it means "back",
   as in Claude Code; the session list still leaves it alone
   ([0011](0011-keybindings.md)).

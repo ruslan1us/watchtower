@@ -22,6 +22,8 @@
 //!   logs panel (doc/0009).
 //! - [`ptysize`]: the real terminal size of a session, for that replay
 //!   (doc/0025).
+//! - [`logstream`]: one session's logs stitched across captures, so the
+//!   screen keeps what the last full repaint drew (doc/0030).
 //!
 //! Actions (milestone 2, no UI):
 //!
@@ -44,8 +46,10 @@
 //! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
-//! - [`jobs`]: runs dispatch, stop, remove, hand-off, rename and logs on worker
+//! - [`jobs`]: runs dispatch, stop, remove, hand-off and rename on worker
 //!   threads.
+//! - [`logfollow`]: fetches `claude logs` for the panel and follows working
+//!   sessions in the background on its own thread (doc/0030).
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
 //!   also used for the editor and the trust flow.
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
@@ -73,6 +77,8 @@ pub mod handoff;
 pub mod jobs;
 pub mod layout;
 pub mod listing;
+pub mod logfollow;
+pub mod logstream;
 pub mod logview;
 pub mod merge;
 pub mod orchestrator;
