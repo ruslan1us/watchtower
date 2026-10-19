@@ -314,9 +314,14 @@ config_dir = "~/.claude-spare"
 }
 
 fn render(app: &mut App, w: u16, h: u16) -> (Buffer, (u16, u16)) {
+    render_at(app, w, h, Instant::now())
+}
+
+/// As [`render`], drawn as at `at`.
+fn render_at(app: &mut App, w: u16, h: u16, at: Instant) -> (Buffer, (u16, u16)) {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     terminal
-        .draw(|f| watchtower::ui::draw_at(f, app, Instant::now(), NOW_MS))
+        .draw(|f| watchtower::ui::draw_at(f, app, at, NOW_MS))
         .unwrap();
     let pos = terminal.get_cursor_position().unwrap();
     (terminal.backend().buffer().clone(), (pos.x, pos.y))
@@ -609,13 +614,17 @@ fn without_colour_no_window_has_colour() {
 
 #[test]
 fn every_theme_draws_the_same_windows() {
+    // Every scenario is drawn as at one instant taken before any of them is
+    // built, so the times the screen shows ("refreshed 0s ago", messages
+    // still on) are the same for every theme however slow the machine is.
+    let at = Instant::now();
     let text = |theme: UiTheme| -> Vec<Vec<String>> {
         let (all, _dir) = scenarios();
         all.into_iter()
             .map(|(_, mut app)| {
                 app.style = UiStyle::Dashboard;
                 app.set_theme(theme);
-                lines(&render(&mut app, W, H).0)
+                lines(&render_at(&mut app, W, H, at).0)
             })
             .collect()
     };

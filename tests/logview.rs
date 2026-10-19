@@ -302,6 +302,26 @@ fn huge_input_replays_only_the_tail() {
     assert!(!screen.is_empty());
 }
 
+/// Runs `f` and returns its result with the CPU time this thread spent in
+/// it. The budgets below are on CPU time, not wall-clock time, so a loaded
+/// machine (other processes, other tests) does not count against them;
+/// only the work of the render does.
+fn cpu_time<T>(f: impl FnOnce() -> T) -> (T, std::time::Duration) {
+    let now = || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid, writable timespec for the call.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        assert_eq!(rc, 0, "clock_gettime");
+        std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    };
+    let start = now();
+    let out = f();
+    (out, now().saturating_sub(start))
+}
+
 #[test]
 fn huge_counts_render_quickly_and_as_a_terminal_would() {
     // vt100 runs these in time proportional to the count: unclamped, one
@@ -326,10 +346,9 @@ fn huge_counts_render_quickly_and_as_a_terminal_would() {
         }
     }
     bytes.extend_from_slice(b"\x1b[2;1Hstill here");
-    let started = std::time::Instant::now();
-    let screen = logview::render(&bytes);
-    let took = started.elapsed();
-    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+    // About 0.15 s of CPU in a debug build; unclamped, minutes.
+    let (screen, took) = cpu_time(|| logview::render(&bytes));
+    assert!(took < std::time::Duration::from_secs(5), "took {took:?}");
     assert_eq!(screen.size(), (MAX_ROWS, MAX_COLS));
     assert_eq!(
         screen.plain_lines().get(1).map(String::as_str),
@@ -357,10 +376,9 @@ fn a_stream_of_nothing_but_expensive_sequences_is_bounded() {
             b"\x1b[600@\x1b[300L\x1b[300T\x1b[12800b\x1b[?2J\x1b[J\x1b[?1049h\x1b[?1049l\x1bc",
         );
     }
-    let started = std::time::Instant::now();
-    let _ = logview::render(&bytes);
-    let took = started.elapsed();
-    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+    // About 1 s of CPU in a debug build, 0.3 s in a release one.
+    let (_, took) = cpu_time(|| logview::render(&bytes));
+    assert!(took < std::time::Duration::from_secs(15), "took {took:?}");
 }
 
 // ---- history (doc/0028) --------------------------------------------------
@@ -469,8 +487,11 @@ fn line_feed_floods_replay_quickly() {
     // One byte per scroll: unbounded, 2 MiB of line feeds on the largest
     // screen took about two seconds in a release build, longer with the
     // scrollback. The scroll budget bounds them (about 0.3 s in a release
-    // build, 1.5 s in a debug one); text after the flood still lands.
-    let limit = std::time::Duration::from_secs(if cfg!(debug_assertions) { 6 } else { 1 });
+    // build, 1.5 s in a debug one, of CPU); text after the flood still
+    // lands. Unbounded is only a few times slower, so the budgets stay
+    // close: under the unbounded release time, and a few times the bounded
+    // debug one.
+    let limit = std::time::Duration::from_secs(if cfg!(debug_assertions) { 8 } else { 1 });
     let flood = |unit: &[u8]| {
         let mut bytes = b"\x1b[300;600Hx".to_vec();
         while bytes.len() < MAX_INPUT_BYTES - 64 {
@@ -481,9 +502,7 @@ fn line_feed_floods_replay_quickly() {
     };
     for unit in [&b"\n"[..], b"x\n", b"\x1bM", b"\x1b[\n5A"] {
         let bytes = flood(unit);
-        let started = std::time::Instant::now();
-        let screen = logview::render(&bytes);
-        let took = started.elapsed();
+        let (screen, took) = cpu_time(|| logview::render(&bytes));
         assert!(took < limit, "{unit:?} took {took:?}");
         assert_eq!(screen.size(), (MAX_ROWS, MAX_COLS));
         assert!(

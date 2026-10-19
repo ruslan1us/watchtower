@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::{HOME, NoEnviron, ch, ctrl, key, project_list, type_text};
@@ -33,6 +34,17 @@ use watchtower::subagents::{
 const SID: &str = "1a2b3c4d-0000-4000-8000-000000000000";
 const SID2: &str = "5e6f7a8b-0000-4000-8000-000000000000";
 const TOWER: &str = env!("CARGO_BIN_EXE_tower");
+
+/// Serializes the tests that start processes with the one that needs the
+/// lock file free: a child holds a copy of every open descriptor from its
+/// fork until its exec, the lock's among them, and on a loaded machine that
+/// is long enough for `prune` (which skips a held lock) to find it taken.
+static SPAWNS: Mutex<()> = Mutex::new(());
+
+/// Takes [`SPAWNS`].
+fn spawns() -> MutexGuard<'static, ()> {
+    SPAWNS.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ---- payloads ----------------------------------------------------------------
 
@@ -399,6 +411,7 @@ fn assert_silent_success(out: &Output) {
 
 #[test]
 fn the_hook_binary_records_silently() {
+    let _s = spawns();
     let dir = tempfile::tempdir().unwrap();
     for v in [
         start("a1", "general-purpose"),
@@ -422,6 +435,7 @@ fn the_hook_binary_records_silently() {
 
 #[test]
 fn the_hook_is_silent_and_exits_0_on_every_error() {
+    let _s = spawns();
     let dir = tempfile::tempdir().unwrap();
     let sub = dir.path().join("subagents");
     let mut oversized = bytes(&start("a1", "general-purpose"));
@@ -472,6 +486,7 @@ fn the_hook_is_silent_and_exits_0_on_every_error() {
 
 #[test]
 fn without_dir_the_hook_uses_the_usual_config_dir() {
+    let _s = spawns();
     let home = tempfile::tempdir().unwrap();
     let payload = bytes(&start("a1", "general-purpose"));
     assert_silent_success(&hook_args(home.path(), &["hook"], &payload));
@@ -481,6 +496,7 @@ fn without_dir_the_hook_uses_the_usual_config_dir() {
 
 #[test]
 fn concurrent_hooks_do_not_lose_or_interleave_writes() {
+    let _s = spawns();
     let dir = tempfile::tempdir().unwrap();
     let n = 16;
     let children: Vec<_> = (0..n)
@@ -592,6 +608,7 @@ fn ensure_settings_writes_only_on_change() {
 /// path needs quoting.
 #[test]
 fn the_settings_command_runs_through_a_shell() {
+    let _s = spawns();
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path().join("it's a dir");
     let settings = config_dir.join("claude-settings.json");
@@ -628,6 +645,7 @@ fn runner() -> CliRunner {
 #[test]
 fn dispatch_passes_settings_and_writes_the_file() {
     let _g = lock();
+    let _s = spawns();
     let fake = Fake::new("claude", &cat("cli-output/bg-success.stdout"));
     let project = tempfile::tempdir().unwrap();
     let config = tempfile::tempdir().unwrap();
@@ -860,6 +878,7 @@ const HOUR: Duration = Duration::from_secs(3600);
 
 #[test]
 fn pruning_follows_the_sidecar_rules() {
+    let _s = spawns();
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let listed_sid = "aaaaaaaa-0000-4000-8000-000000000000";
