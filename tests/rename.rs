@@ -27,7 +27,20 @@ fn strings(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-fn fast() -> RenameTiming {
+/// For a rename that should be confirmed: the wait ends as soon as the new
+/// name is listed, so a generous limit costs nothing when it works, and a
+/// loaded machine (the fake command is a shell script, slow to spawn on a
+/// busy CI runner) has time for the listings before it.
+fn until_confirmed() -> RenameTiming {
+    RenameTiming {
+        confirm_timeout: Duration::from_secs(30),
+        poll_interval: Duration::from_millis(20),
+    }
+}
+
+/// For a name that never shows: the test waits the whole limit, so it is
+/// short.
+fn gives_up_soon() -> RenameTiming {
     RenameTiming {
         confirm_timeout: Duration::from_millis(600),
         poll_interval: Duration::from_millis(20),
@@ -138,12 +151,15 @@ fn request(cwd: &Path, owner: Account) -> RenameRequest {
     }
 }
 
-fn run(req: &RenameRequest) -> (Result<rename::Renamed, RenameError>, Vec<RenameStep>) {
+fn run(
+    req: &RenameRequest,
+    timing: &RenameTiming,
+) -> (Result<rename::Renamed, RenameError>, Vec<RenameStep>) {
     let mut steps = Vec::new();
     let result = rename::run(
         &CliRunner::new(),
         req,
-        &fast(),
+        timing,
         &mut |s| steps.push(s),
         &mut || Ok(()),
     );
@@ -180,7 +196,7 @@ fn a_stopped_session_is_woken_renamed_confirmed_and_stopped_again() {
     let world = World::new();
     let fake = Fake::new("claude", &world.owner_body("woke", 2));
     let req = request(&world.project(), fake.account());
-    let (result, steps) = run(&req);
+    let (result, steps) = run(&req, &until_confirmed());
     let renamed = result.expect("renamed");
     assert_eq!(
         renamed.notes,
@@ -220,7 +236,10 @@ fn a_copy_is_reported_and_nothing_is_stopped() {
     let _l = lock();
     let world = World::new();
     let fake = Fake::new("claude", &world.owner_body("copy", 0));
-    let (result, steps) = run(&request(&world.project(), fake.account()));
+    let (result, steps) = run(
+        &request(&world.project(), fake.account()),
+        &until_confirmed(),
+    );
     match result {
         Err(RenameError::Copied { new_id, notes }) => {
             assert_eq!(new_id, COPY);
@@ -237,7 +256,7 @@ fn a_name_that_never_shows_is_not_confirmed_and_the_session_is_left_running() {
     let _l = lock();
     let world = World::new();
     let fake = Fake::new("claude", &world.owner_body("woke", u32::MAX));
-    let (result, _) = run(&request(&world.project(), fake.account()));
+    let (result, _) = run(&request(&world.project(), fake.account()), &gives_up_soon());
     match result {
         Err(err @ RenameError::NotConfirmed { .. }) => {
             assert!(err.left_running());
@@ -259,7 +278,10 @@ fn an_untrusted_folder_wakes_nothing() {
     let _l = lock();
     let world = World::new();
     let fake = Fake::new("claude", &world.owner_body("untrusted", 0));
-    let (result, _) = run(&request(&world.project(), fake.account()));
+    let (result, _) = run(
+        &request(&world.project(), fake.account()),
+        &until_confirmed(),
+    );
     match result {
         Err(RenameError::Untrusted { dir, message }) => {
             assert_eq!(dir, world.project());
@@ -275,7 +297,10 @@ fn a_missing_folder_or_a_bad_name_runs_nothing() {
     let _l = lock();
     let world = World::new();
     let fake = Fake::new("claude", &world.owner_body("woke", 0));
-    let (result, steps) = run(&request(Path::new("/nonexistent/demo-app"), fake.account()));
+    let (result, steps) = run(
+        &request(Path::new("/nonexistent/demo-app"), fake.account()),
+        &until_confirmed(),
+    );
     assert!(
         matches!(result, Err(RenameError::CwdMissing(_))),
         "{result:?}"
@@ -283,9 +308,15 @@ fn a_missing_folder_or_a_bad_name_runs_nothing() {
     assert!(steps.is_empty());
     let mut req = request(&world.project(), fake.account());
     req.new_name = "touch-config".into();
-    assert!(matches!(run(&req).0, Err(RenameError::Invalid(_))));
+    assert!(matches!(
+        run(&req, &until_confirmed()).0,
+        Err(RenameError::Invalid(_))
+    ));
     req.new_name = "a\nb".into();
-    assert!(matches!(run(&req).0, Err(RenameError::Invalid(_))));
+    assert!(matches!(
+        run(&req, &until_confirmed()).0,
+        Err(RenameError::Invalid(_))
+    ));
     assert_eq!(fake.calls(), 0);
 }
 
@@ -304,7 +335,7 @@ fn jobs_report_steps_and_honour_another_towers_record() {
     mine.save(&path).unwrap();
     let recorded = Sidecar::load(&path).sidecar.base_owner(SID);
     let jobs = Jobs::new(CliRunner::new())
-        .with_rename_timing(fast())
+        .with_rename_timing(until_confirmed())
         .with_state_file(path.clone());
     let req = request(&world.project(), fake.account());
     let run = |recorded| {

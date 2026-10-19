@@ -59,9 +59,14 @@ fn strings(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-fn fast() -> HandoffTiming {
+/// For a stop wait that should end in a stop: the wait ends as soon as the
+/// row is listed stopped, so a generous limit costs nothing when it works,
+/// and a loaded machine (the fake command is a shell script, slow to spawn
+/// on a busy CI runner) has time for the listings before it. The tests of
+/// the timeout itself set a short one.
+fn until_stopped() -> HandoffTiming {
     HandoffTiming {
-        stop_timeout: Duration::from_secs(5),
+        stop_timeout: Duration::from_secs(30),
         poll_interval: Duration::from_millis(20),
     }
 }
@@ -342,7 +347,7 @@ fn stops_with_owner_waits_then_resumes_with_target_in_cwd() {
     let alt = alt_fake.account_named("alt", Some("~/.claude-alt"));
     let req = request(&world.project(), Some(main), alt, true);
 
-    let (result, steps) = run(&req, &fast());
+    let (result, steps) = run(&req, &until_stopped());
     let r = result.unwrap();
     assert_eq!(r.outcome, Outcome::Continued);
     assert_eq!(
@@ -388,7 +393,7 @@ fn no_live_process_skips_the_stop() {
         alt_fake.account_named("alt", None),
         false,
     );
-    let (result, steps) = run(&req, &fast());
+    let (result, steps) = run(&req, &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(
         steps,
@@ -423,7 +428,7 @@ fn unknown_owner_is_stopped_with_the_target_command() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, steps) = run(&req, &fast());
+    let (result, steps) = run(&req, &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(
         steps[0],
@@ -461,11 +466,18 @@ fn still_running_after_the_timeout_is_not_resumed() {
         Err(e @ HandoffError::StillRunning { .. }) => {
             assert!(e.to_string().contains("still runs"), "{e}");
             assert!(e.after_stop());
+            // It kept listing until the timeout, not giving up on the first
+            // live row. How many listings fit in it depends on how fast the
+            // fake spawns, so only the wait is checked.
+            let HandoffError::StillRunning { waited, .. } = e else {
+                unreachable!()
+            };
+            assert!(waited >= timing.stop_timeout, "{waited:?}");
         }
         other => panic!("{other:?}"),
     }
     assert_eq!(alt_fake.calls(), 0, "never resumed");
-    assert!(main_fake.calls() >= 3, "kept listing");
+    assert!(main_fake.calls() >= 2, "stopped, then listed");
 }
 
 #[test]
@@ -491,7 +503,7 @@ esac"#,
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, _) = run(&req, &fast());
+    let (result, _) = run(&req, &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(main_fake.calls(), 3);
 }
@@ -622,7 +634,7 @@ fn one_listing_without_the_row_is_not_enough_two_in_a_row_are() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, _) = run(&req, &fast());
+    let (result, _) = run(&req, &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(main_fake.calls(), 1 + 4, "stop + four listings");
     assert_eq!(alt_fake.calls(), 1);
@@ -642,7 +654,7 @@ fn one_listing_without_the_row_is_not_enough_two_in_a_row_are() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, _) = run(&req, &fast());
+    let (result, _) = run(&req, &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(main_fake.calls(), 1 + 4, "ended by the stopped row");
 }
@@ -662,7 +674,7 @@ fn a_failed_stop_aborts_before_the_resume() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, steps) = run(&req, &fast());
+    let (result, steps) = run(&req, &until_stopped());
     match result {
         Err(e @ HandoffError::Stop(StopError::UnknownId { .. })) => assert!(!e.after_stop()),
         other => panic!("{other:?}"),
@@ -691,14 +703,14 @@ fn untrusted_resume_then_retry_without_a_second_stop() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let (result, _) = run(&req, &fast());
+    let (result, _) = run(&req, &until_stopped());
     match result {
         Err(HandoffError::Untrusted { dir, .. }) => assert_eq!(dir, world.project()),
         other => panic!("{other:?}"),
     }
     assert_eq!(main_fake.calls(), 2, "stop + one listing");
 
-    let (result, steps) = run(&req.after_stop(), &fast());
+    let (result, steps) = run(&req.after_stop(), &until_stopped());
     assert_eq!(result.unwrap().outcome, Outcome::Continued);
     assert_eq!(steps.len(), 1, "{steps:?}");
     assert_eq!(main_fake.calls(), 2, "not stopped again");
@@ -725,27 +737,27 @@ fn preconditions_are_checked_before_anything_runs() {
         true,
     );
     assert!(matches!(
-        run(&missing, &fast()).0,
+        run(&missing, &until_stopped()).0,
         Err(HandoffError::CwdMissing(_))
     ));
     for prompt in ["", "   ", "-p"] {
         let mut req = request(&world.project(), Some(main.clone()), alt.clone(), true);
         req.prompt = prompt.into();
         assert!(
-            matches!(run(&req, &fast()).0, Err(HandoffError::Invalid(_))),
+            matches!(run(&req, &until_stopped()).0, Err(HandoffError::Invalid(_))),
             "{prompt:?}"
         );
     }
     let mut req = request(&world.project(), Some(main.clone()), alt.clone(), true);
     req.id = "say-ok please".into();
     assert!(matches!(
-        run(&req, &fast()).0,
+        run(&req, &until_stopped()).0,
         Err(HandoffError::Invalid(_))
     ));
     let mut req = request(&world.project(), Some(main), alt, true);
     req.session_id = "--all".into();
     assert!(matches!(
-        run(&req, &fast()).0,
+        run(&req, &until_stopped()).0,
         Err(HandoffError::Invalid(_))
     ));
     assert_eq!(main_fake.calls() + alt_fake.calls(), 0);
@@ -833,7 +845,7 @@ fn jobs_report_each_step_then_the_result() {
         alt_fake.account_named("alt", None),
         true,
     );
-    let jobs = Jobs::new(CliRunner::new()).with_handoff_timing(fast());
+    let jobs = Jobs::new(CliRunner::new()).with_handoff_timing(until_stopped());
     jobs.handoff(HandoffJob {
         request: req.clone(),
         after_trust: false,
@@ -898,7 +910,7 @@ fn a_record_changed_by_another_tower_stops_the_handoff_before_waking() {
         true,
     );
     let jobs = Jobs::new(CliRunner::new())
-        .with_handoff_timing(fast())
+        .with_handoff_timing(until_stopped())
         .with_state_file(path.clone());
     let run = |recorded| {
         jobs.handoff(HandoffJob {
