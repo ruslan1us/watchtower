@@ -108,6 +108,9 @@ tower update --check            # only report; exit 0 up to date, 10 newer relea
 tower update --version v0.2.1   # install that release (reinstall or downgrade)
 ```
 
+It finds the latest version from the redirect of the `releases/latest` page, falling back
+to the GitHub API (which allows only about 60 requests an hour per address), and
+`--version` skips that lookup ([0026](doc/0026-latest-release-from-the-web-redirect.md)).
 It downloads the binary and its checksum with the system `curl` into a temp dir next to
 the installed file, verifies the SHA-256, checks that the new binary runs and reports the
 expected version, and only then swaps it in with one atomic rename, keeping the file's

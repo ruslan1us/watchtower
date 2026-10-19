@@ -11,8 +11,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use watchtower::args::{self, Command as Cli};
 use watchtower::update::{
-    ASSET, Check, EXIT_UPDATE_AVAILABLE, LATEST_API, Outcome, Request, Updater, Version,
-    looks_like_dev_build, platform_supported, sha256_hex,
+    ASSET, Check, EXIT_UPDATE_AVAILABLE, LATEST_API, LATEST_PAGE, Outcome, RELEASE_TAG_PREFIX,
+    RELEASES_PAGE, Request, Updater, Version, looks_like_dev_build, parse_latest_redirect,
+    platform_supported, sha256_hex,
 };
 
 /// Writing an executable while another thread forks can make the exec fail
@@ -33,8 +34,11 @@ fn write_exe(path: &Path, text: &str, mode: u32) {
 }
 
 /// A fake `curl`: records each call's arguments (NUL-separated) as
-/// `args.<n>.bin`, then serves `served/<url with every other byte as _>` to
-/// `-o <file>` or stdout, or fails like `curl -f` on a 404.
+/// `args.<n>.bin`. For `<key>` (the URL with every other byte as `_`) it
+/// fails like `curl -f` with the status in `status/<key>`; with `-w` it
+/// prints `redirect/<key>` (the redirect target, like `%{redirect_url}`);
+/// otherwise it serves `served/<key>` to `-o <file>` or stdout. Anything
+/// missing fails like `curl -f` on a 404.
 struct FakeCurl {
     dir: tempfile::TempDir,
 }
@@ -43,21 +47,33 @@ impl FakeCurl {
     fn new() -> FakeCurl {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("bin")).unwrap();
-        std::fs::create_dir(dir.path().join("served")).unwrap();
+        for sub in ["served", "redirect", "status"] {
+            std::fs::create_dir(dir.path().join(sub)).unwrap();
+        }
         let script = format!(
             r#"#!/bin/sh
 D='{dir}'
 echo call >> "$D/calls.txt"
 n=$(wc -l < "$D/calls.txt" | tr -d ' ')
 printf '%s\0' "$@" > "$D/args.$n.bin"
-out=""; url=""
+out=""; url=""; w=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    -w) w="$2"; shift 2 ;;
     *) url="$1"; shift ;;
   esac
 done
 key=$(printf '%s' "$url" | tr -c 'A-Za-z0-9.-' '_')
+if [ -f "$D/status/$key" ]; then
+  echo "curl: (22) The requested URL returned error: $(cat "$D/status/$key")" >&2
+  exit 22
+fi
+if [ -n "$w" ]; then
+  if [ -f "$D/redirect/$key" ]; then cat "$D/redirect/$key"; exit 0; fi
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
 f="$D/served/$key"
 if [ ! -f "$f" ]; then
   echo "curl: (22) The requested URL returned error: 404" >&2
@@ -87,8 +103,24 @@ if [ -n "$out" ]; then cp "$f" "$out"; else cat "$f"; fi
         std::fs::write(self.dir.path().join("served").join(Self::key(url)), body).unwrap();
     }
 
-    /// Serves the API answer naming `tag` as the latest release.
+    /// Makes `url` answer with a redirect to `to`.
+    fn redirect(&self, url: &str, to: &str) {
+        std::fs::write(self.dir.path().join("redirect").join(Self::key(url)), to).unwrap();
+    }
+
+    /// Makes `url` fail with HTTP `status`.
+    fn fail(&self, url: &str, status: u16) {
+        let file = self.dir.path().join("status").join(Self::key(url));
+        std::fs::write(file, status.to_string()).unwrap();
+    }
+
+    /// Makes the releases page redirect to `tag` as the latest release.
     fn serve_latest(&self, tag: &str) {
+        self.redirect(LATEST_PAGE, &format!("{RELEASE_TAG_PREFIX}{tag}"));
+    }
+
+    /// Serves the API answer naming `tag` as the latest release.
+    fn serve_latest_api(&self, tag: &str) {
         let body = serde_json::json!({ "tag_name": tag, "name": tag, "draft": false });
         self.serve(LATEST_API, body.to_string().as_bytes());
     }
@@ -306,16 +338,26 @@ fn check_reports_up_to_date_and_available() {
     assert_eq!(ahead.exit_code(), 0);
     assert!(ahead.line().starts_with("up to date (v0.4.0"));
 
-    // Every call: HTTPS only, curlrc ignored, the exact API URL, to stdout.
-    for call in curl.calls() {
-        assert_eq!(call[0], "-q", "{call:?}");
-        assert!(call.contains(&"-fsSL".to_owned()));
-        assert!(call.windows(2).any(|w| w == ["--proto", "=https"]));
-        assert!(call.windows(2).any(|w| w == ["--proto-redir", "=https"]));
-        assert!(call.contains(&"--tlsv1.2".to_owned()));
-        assert!(call.windows(2).any(|w| w == ["--max-time", "120"]));
-        assert!(!call.contains(&"-o".to_owned()));
-        assert_eq!(call.last().unwrap(), LATEST_API);
+    // Every call reads only the redirect of the releases page: curlrc
+    // ignored, HTTPS only, no -L, the body dropped, the API never asked.
+    let lookup = [
+        "-q",
+        "-fsS",
+        "--proto",
+        "=https",
+        "--tlsv1.2",
+        "--max-time",
+        "120",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{redirect_url}",
+        LATEST_PAGE,
+    ];
+    let calls = curl.calls();
+    assert_eq!(calls.len(), 3);
+    for call in calls {
+        assert_eq!(call, lookup);
     }
 }
 
@@ -324,12 +366,25 @@ fn check_network_error_and_bad_answer() {
     let _guard = lock();
     let curl = FakeCurl::new();
     let err = curl.updater("0.2.1").check().unwrap_err().to_string();
-    assert!(err.contains("cannot look up the latest release"), "{err}");
+    assert!(
+        err.starts_with("cannot look up the latest release: releases page: "),
+        "{err}"
+    );
+    assert!(err.contains("; GitHub API: "), "{err}");
     assert!(err.contains("404"), "{err}");
+    assert!(
+        err.ends_with("; `tower update --version vX.Y.Z` skips the lookup"),
+        "{err}"
+    );
+    assert!(!err.contains('\n'), "one line: {err}");
+    assert_eq!(curl.urls(), [LATEST_PAGE, LATEST_API]);
 
-    curl.serve(LATEST_API, b"{\"message\": \"rate limited\"}");
+    curl.serve(LATEST_API, b"{\"message\": \"Not Found\"}");
     let err = curl.updater("0.2.1").check().unwrap_err().to_string();
-    assert!(err.contains("no tag_name"), "{err}");
+    assert!(
+        err.contains("GitHub API: the answer has no tag_name"),
+        "{err}"
+    );
 
     let missing = Updater {
         current: v("0.2.1"),
@@ -338,10 +393,163 @@ fn check_network_error_and_bad_answer() {
     };
     let err = missing.check().unwrap_err().to_string();
     assert!(err.contains("`curl` is not installed"), "{err}");
+    assert_eq!(err.matches("not installed").count(), 1, "{err}");
     assert!(
         err.contains("releases/latest/download/tower-x86_64-linux-musl"),
         "{err}"
     );
+}
+
+// ---- finding the latest release -------------------------------------------
+
+#[test]
+fn latest_redirect_is_parsed_strictly() {
+    let ok = |url: &str| parse_latest_redirect(url);
+    assert_eq!(ok(&format!("{RELEASE_TAG_PREFIX}v0.3.1")), Ok(v("0.3.1")));
+    assert_eq!(ok(&format!("{RELEASE_TAG_PREFIX}v0.3.1\n")), Ok(v("0.3.1")));
+    assert_eq!(
+        ok(&format!("{RELEASE_TAG_PREFIX}v1.0.0-rc.1")),
+        Ok(v("1.0.0-rc.1"))
+    );
+
+    // No release yet: GitHub redirects to the releases list.
+    for url in [RELEASES_PAGE.to_owned(), format!("{RELEASES_PAGE}/")] {
+        assert_eq!(ok(&url), Err("no release found".to_owned()), "{url}");
+    }
+    // No redirect at all.
+    let err = ok("").unwrap_err();
+    assert!(err.contains("did not redirect to a release"), "{err}");
+
+    // Another repository, scheme or host, or a near miss of the prefix.
+    for url in [
+        "https://github.com/someone/watchtower/releases/tag/v0.3.1",
+        "http://github.com/ruslan1us/watchtower/releases/tag/v0.3.1",
+        "https://github.com.example/ruslan1us/watchtower/releases/tag/v0.3.1",
+        "https://github.com/ruslan1us/watchtower/releases/tags/v0.3.1",
+        "https://github.com/ruslan1us/watchtower-x/releases/tag/v0.3.1",
+        "https://github.com/login",
+    ] {
+        let err = ok(url).unwrap_err();
+        assert!(err.contains("unexpected URL"), "{url}: {err}");
+    }
+    // The right prefix, but not a `vX.Y.Z` tag.
+    for tag in [
+        "",
+        "latest",
+        "0.3.1",
+        "v0.3",
+        "v0.3.1/extra",
+        "v0.3.1?x=1",
+        "v0.3.1+build",
+        "v0.3.1%0a",
+        "v0.3.1 v0.3.2",
+    ] {
+        let err = ok(&format!("{RELEASE_TAG_PREFIX}{tag}")).unwrap_err();
+        assert!(err.contains("is not a version"), "{tag}: {err}");
+    }
+}
+
+#[test]
+fn latest_uses_the_releases_page_before_the_api() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    curl.serve_latest("v0.3.1");
+    curl.serve_latest_api("v0.2.0");
+    assert_eq!(curl.updater("0.3.2").latest(), Ok(v("0.3.1")));
+    assert_eq!(curl.urls(), [LATEST_PAGE], "the API is not asked");
+}
+
+#[test]
+fn latest_falls_back_to_the_api() {
+    let _guard = lock();
+
+    // The page fails (rate limit or outage): the API answers.
+    let curl = FakeCurl::new();
+    curl.fail(LATEST_PAGE, 429);
+    curl.serve_latest_api("v0.3.1");
+    assert_eq!(curl.updater("0.3.2").latest(), Ok(v("0.3.1")));
+    assert_eq!(curl.urls(), [LATEST_PAGE, LATEST_API]);
+    let api_call = &curl.calls()[1];
+    assert!(api_call.contains(&"-fsSL".to_owned()), "{api_call:?}");
+    assert!(!api_call.contains(&"-w".to_owned()), "{api_call:?}");
+
+    // A redirect somewhere unexpected is not trusted: the API answers.
+    let curl = FakeCurl::new();
+    curl.redirect(
+        LATEST_PAGE,
+        "https://github.com/someone/else/releases/tag/v9.9.9",
+    );
+    curl.serve_latest_api("v0.3.1");
+    assert_eq!(curl.updater("0.3.2").latest(), Ok(v("0.3.1")));
+    assert_eq!(curl.urls(), [LATEST_PAGE, LATEST_API]);
+
+    // `--check` takes the same way.
+    let check = curl.updater("0.3.0").check().unwrap();
+    assert_eq!(check.line(), "v0.3.1 available (running v0.3.0)");
+}
+
+#[test]
+fn latest_reports_both_failures_and_the_rate_limit() {
+    let _guard = lock();
+
+    // No release yet, and the API has none either.
+    let curl = FakeCurl::new();
+    curl.redirect(LATEST_PAGE, RELEASES_PAGE);
+    curl.fail(LATEST_API, 404);
+    let err = curl.updater("0.3.2").check().unwrap_err().to_string();
+    assert!(
+        err.starts_with(
+            "cannot look up the latest release: releases page: no release found; GitHub API: "
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("rate limit"), "{err}");
+    assert!(
+        err.ends_with("`tower update --version vX.Y.Z` skips the lookup"),
+        "{err}"
+    );
+
+    // The API refuses with 403 or 429: named as the rate limit, curl's
+    // text kept.
+    for status in [403, 429] {
+        let curl = FakeCurl::new();
+        curl.fail(LATEST_PAGE, 503);
+        curl.fail(LATEST_API, status);
+        let err = curl.updater("0.3.2").check().unwrap_err().to_string();
+        assert!(err.contains("releases page: curl: (22) "), "{err}");
+        assert!(err.contains("returned error: 503"), "{err}");
+        assert!(
+            err.contains("GitHub API: GitHub's API rate limit for this network address"),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!(
+                "returned error: {status} ({LATEST_API}, curl exit 22)"
+            )),
+            "{err}"
+        );
+        assert!(
+            err.ends_with("`tower update --version vX.Y.Z` skips the lookup"),
+            "{err}"
+        );
+        assert!(!err.contains('\n'), "one line: {err}");
+    }
+
+    // `tower update` fails the same way and changes nothing.
+    let curl = FakeCurl::new();
+    curl.fail(LATEST_PAGE, 403);
+    curl.fail(LATEST_API, 403);
+    let install = Install::new("0.2.1", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+    let (result, _) = run(
+        &curl.updater("0.2.1"),
+        &install.target(),
+        &Request::default(),
+    );
+    let err = result.unwrap_err();
+    assert!(err.contains("rate limit"), "{err}");
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
 }
 
 /// The real binary: `--check` exit codes, and a dev build refused before
@@ -437,13 +645,13 @@ fn update_replaces_the_file_and_keeps_its_mode() {
     );
     assert!(out.contains("Running tower instances keep the old version until restarted."));
 
-    // The API, then the versioned checksum and asset, each written with -o
+    // The releases page, then the versioned checksum and asset, each written with -o
     // into a temp dir next to the target.
     let base = format!("{RELEASE_BASE}/v0.3.0");
     assert_eq!(
         curl.urls(),
         [
-            LATEST_API.to_owned(),
+            LATEST_PAGE.to_owned(),
             format!("{base}/{ASSET}.sha256"),
             format!("{base}/{ASSET}"),
         ]
@@ -475,7 +683,7 @@ fn update_when_up_to_date_downloads_nothing_unless_forced() {
     );
     assert_eq!(result, Ok(Outcome::UpToDate(v("0.2.1"))));
     assert!(out.contains("up to date (v0.2.1)"), "{out}");
-    assert_eq!(curl.urls(), [LATEST_API]);
+    assert_eq!(curl.urls(), [LATEST_PAGE]);
     assert_eq!(std::fs::read(install.target()).unwrap(), before);
 
     let forced = Request {
@@ -533,7 +741,7 @@ fn explicit_version_uses_its_url_and_checks_what_runs() {
     );
     assert_eq!(std::fs::read(install.target()).unwrap(), before);
     assert_eq!(install.bin_entries(), ["tower"], "no temp leftovers");
-    // No API lookup: straight to the versioned URLs.
+    // No lookup: straight to the versioned URLs.
     let base = format!("{RELEASE_BASE}/v0.2.0");
     assert_eq!(
         curl.urls(),
@@ -620,7 +828,7 @@ fn unwritable_directory_is_a_clear_error() {
             install.target().display()
         )
     );
-    assert_eq!(curl.urls(), [LATEST_API], "nothing downloaded");
+    assert_eq!(curl.urls(), [LATEST_PAGE], "nothing downloaded");
     assert_eq!(install.bin_entries(), ["tower"]);
 }
 

@@ -1,7 +1,7 @@
 # 0012. Static musl build and distribution
 
 - Status: Accepted · 2026-10-18
-- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md), [0026](0026-latest-release-from-the-web-redirect.md)
 
 ## Context
 
@@ -45,10 +45,11 @@ glibc, so a binary built on the development machine may fail on the target with
   - `tower-x86_64-linux-musl.sha256`, the `sha256sum` line for that file name.
 
   The release notes are GitHub's generated notes plus a short install snippet.
-- `tower update` consumes these releases: it reads the latest tag from the GitHub API and
-  fetches both assets from the versioned `releases/download/vX.Y.Z/` URLs, so the asset
-  names, the `sha256sum` format and `tower --version` printing `tower X.Y.Z` must stay as
-  they are ([0023](0023-self-update.md)).
+- `tower update` consumes these releases: it reads the latest tag from the redirect of
+  `releases/latest` (the GitHub API as fallback, [0026](0026-latest-release-from-the-web-redirect.md))
+  and fetches both assets from the versioned `releases/download/vX.Y.Z/` URLs, so the
+  asset names, the `sha256sum` format and `tower --version` printing `tower X.Y.Z` must
+  stay as they are ([0023](0023-self-update.md)).
 
 ### Release checklist
 

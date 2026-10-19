@@ -40,9 +40,10 @@ This directory records the design decisions behind it, one file per decision.
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted |
-| 0023 | [Self-update command](0023-self-update.md) | Accepted |
+| 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
 | 0024 | [Settings window](0024-settings-window.md) | Accepted |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
+| 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

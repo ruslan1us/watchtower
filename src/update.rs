@@ -2,7 +2,9 @@
 //! from GitHub, and `tower update --check`, which only compares versions.
 //!
 //! This is the only place tower uses the network, and only when one of
-//! these commands is typed: nothing checks for updates on its own. Every
+//! these commands is typed: nothing checks for updates on its own. The
+//! latest version comes from the redirect of the `releases/latest` web page,
+//! with the GitHub API as the fallback (doc/0026). Every
 //! request goes through the system `curl`, run directly (no shell) with
 //! HTTPS-only, TLS 1.2+ options and `-q`, so a `~/.curlrc` cannot weaken
 //! them. Tower links no HTTP or TLS code.
@@ -27,8 +29,20 @@ use sha2::{Digest, Sha256};
 /// The release asset: the static musl binary (doc/0012).
 pub const ASSET: &str = "tower-x86_64-linux-musl";
 
+/// The web page of the newest (non-draft, non-pre-release) release. GitHub
+/// answers it with a redirect to `<RELEASE_TAG_PREFIX><tag>`, or to
+/// [`RELEASES_PAGE`] while the repository has no release. Unlike the REST
+/// API it is not subject to the 60-requests-per-hour limit per address.
+pub const LATEST_PAGE: &str = "https://github.com/ruslan1us/watchtower/releases/latest";
+
+/// What [`LATEST_PAGE`] redirects to, followed by the tag.
+pub const RELEASE_TAG_PREFIX: &str = "https://github.com/ruslan1us/watchtower/releases/tag/";
+
+/// Where [`LATEST_PAGE`] redirects while there is no release.
+pub const RELEASES_PAGE: &str = "https://github.com/ruslan1us/watchtower/releases";
+
 /// The GitHub API endpoint for the newest (non-draft, non-pre-release)
-/// release.
+/// release: the fallback when [`LATEST_PAGE`] gives no answer.
 pub const LATEST_API: &str = "https://api.github.com/repos/ruslan1us/watchtower/releases/latest";
 
 /// Versioned downloads live under `<DOWNLOAD_BASE>/vX.Y.Z/<asset>`.
@@ -68,6 +82,51 @@ pub fn curl_args() -> Vec<String> {
     .map(|s| (*s).to_owned())
     .chain([CURL_MAX_TIME_SECS.to_string()])
     .collect()
+}
+
+/// The arguments `curl` gets before [`LATEST_PAGE`]: the same `-q`, fail on
+/// HTTP errors, HTTPS-only, TLS and time options as [`curl_args`], but no
+/// `-L`. The one redirect GitHub answers with is the result: `-w
+/// %{redirect_url}` prints its target on stdout, and `-o /dev/null` drops
+/// the few bytes of the 302 body. Following it (`-L -w %{url_effective}`)
+/// would download the whole release page for nothing, and a HEAD request
+/// (`-I`) is a method proxies and GitHub treat less uniformly than GET.
+/// Without `-L` no redirect is followed, so `--proto-redir` is moot.
+pub fn lookup_args() -> Vec<String> {
+    ["-q", "-fsS", "--proto", "=https", "--tlsv1.2", "--max-time"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .chain([CURL_MAX_TIME_SECS.to_string()])
+        .chain(["-o", "/dev/null", "-w", "%{redirect_url}"].map(str::to_owned))
+        .collect()
+}
+
+/// The release version from the target of [`LATEST_PAGE`]'s redirect. The
+/// URL must be exactly `<RELEASE_TAG_PREFIX>vX.Y.Z[-PRE]`; a redirect to
+/// [`RELEASES_PAGE`] means no release exists yet, and anything else is an
+/// error.
+pub fn parse_latest_redirect(url: &str) -> Result<Version, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(format!("{LATEST_PAGE} did not redirect to a release"));
+    }
+    if url == RELEASES_PAGE || url.strip_prefix(RELEASES_PAGE) == Some("/") {
+        return Err("no release found".to_owned());
+    }
+    let Some(tag) = url.strip_prefix(RELEASE_TAG_PREFIX) else {
+        return Err(format!(
+            "{LATEST_PAGE} redirected to an unexpected URL `{}`",
+            crate::attach::printable(url)
+        ));
+    };
+    match Version::parse(tag) {
+        // The tag must be the exact `vX.Y.Z` the download URLs are built from.
+        Some(v) if v.tag() == tag => Ok(v),
+        _ => Err(format!(
+            "the latest release tag `{}` is not a version",
+            crate::attach::printable(tag)
+        )),
+    }
 }
 
 /// The URL of a release file (`ASSET` or `ASSET.sha256`) of version `v`.
@@ -353,25 +412,51 @@ impl Updater {
         Updater::default()
     }
 
-    /// The newest release's version, from the GitHub API.
+    /// The newest release's version: from the redirect of [`LATEST_PAGE`],
+    /// or, when that fails, from the GitHub API ([`LATEST_API`]). When both
+    /// fail the error names both reasons and how to skip the lookup.
     pub fn latest(&self) -> Result<Version, UpdateError> {
-        let body = self
-            .curl(LATEST_API, None)
-            .map_err(|e| UpdateError(format!("cannot look up the latest release: {e}")))?;
-        let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
-            UpdateError(format!(
-                "cannot look up the latest release: the GitHub API answer is not JSON ({e})"
-            ))
-        })?;
-        let Some(tag) = json.get("tag_name").and_then(|t| t.as_str()) else {
-            return err("cannot look up the latest release: the GitHub API answer has no tag_name");
+        let web = match self.run_curl(&lookup_args(), LATEST_PAGE) {
+            Ok(out) => parse_latest_redirect(&String::from_utf8_lossy(&out)),
+            // The API needs curl too: report this once, with the manual way.
+            Err(CurlError::NotInstalled(e)) => {
+                return err(format!("cannot look up the latest release: {e}"));
+            }
+            Err(e) => Err(e.to_string()),
         };
-        Version::parse(tag).ok_or_else(|| {
+        let web_err = match web {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+        self.latest_from_api().map_err(|api_err| {
             UpdateError(format!(
-                "cannot look up the latest release: tag `{}` is not a version",
-                crate::attach::printable(tag)
+                "cannot look up the latest release: releases page: {web_err}; \
+                 GitHub API: {api_err}; `tower update --version vX.Y.Z` skips the lookup"
             ))
         })
+    }
+
+    /// The newest release's version from the GitHub API.
+    fn latest_from_api(&self) -> Result<Version, String> {
+        let body = self
+            .run_curl(&curl_args(), LATEST_API)
+            .map_err(|e| match e {
+                CurlError::Failed {
+                    status: Some(403 | 429),
+                    ..
+                } => format!(
+                    "GitHub's API rate limit for this network address is used up, \
+                     try again later ({e})"
+                ),
+                e => e.to_string(),
+            })?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|e| format!("the answer is not JSON ({e})"))?;
+        let Some(tag) = json.get("tag_name").and_then(|t| t.as_str()) else {
+            return Err("the answer has no tag_name".to_owned());
+        };
+        Version::parse(tag)
+            .ok_or_else(|| format!("tag `{}` is not a version", crate::attach::printable(tag)))
     }
 
     /// `tower update --check`: compares the latest release with this binary.
@@ -538,12 +623,23 @@ impl Updater {
     /// Runs `curl <curl_args> [-o dest] url`. Without `dest`, returns the
     /// body from stdout; with it, an empty vector.
     fn curl(&self, url: &str, dest: Option<&Path>) -> Result<Vec<u8>, String> {
-        let mut cmd = Command::new("curl");
-        cmd.args(curl_args());
+        let mut args: Vec<OsString> = curl_args().into_iter().map(OsString::from).collect();
         if let Some(dest) = dest {
-            cmd.arg("-o").arg(dest);
+            args.push("-o".into());
+            args.push(dest.into());
         }
-        cmd.arg(url)
+        self.run_curl(&args, url).map_err(|e| e.to_string())
+    }
+
+    /// Runs `curl <args> <url>` directly (no shell) and returns its stdout.
+    fn run_curl<A: AsRef<std::ffi::OsStr>>(
+        &self,
+        args: &[A],
+        url: &str,
+    ) -> Result<Vec<u8>, CurlError> {
+        let mut cmd = Command::new("curl");
+        cmd.args(args)
+            .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -553,27 +649,68 @@ impl Updater {
         let output = match cmd.output() {
             Ok(output) => output,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(format!(
+                return Err(CurlError::NotInstalled(format!(
                     "`curl` is not installed or not on PATH; install it, or update by hand:\n  {}",
                     manual_command("~/.local/bin/tower")
-                ));
+                )));
             }
-            Err(e) => return Err(format!("cannot run curl: {e}")),
+            Err(e) => {
+                return Err(CurlError::Failed {
+                    message: format!("cannot run curl: {e}"),
+                    status: None,
+                });
+            }
         };
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stderr = crate::attach::printable(stderr.trim());
+            let raw = String::from_utf8_lossy(&output.stderr);
+            let status = http_status(&raw);
+            let stderr = crate::attach::printable(raw.trim());
             let code = output
                 .status
                 .code()
                 .map_or_else(|| "killed".to_owned(), |c| format!("exit {c}"));
-            return Err(if stderr.is_empty() {
+            let message = if stderr.is_empty() {
                 format!("curl failed for {url} ({code})")
             } else {
                 format!("{stderr} ({url}, curl {code})")
-            });
+            };
+            return Err(CurlError::Failed { message, status });
         }
         Ok(output.stdout)
+    }
+}
+
+/// Why a `curl` run failed.
+#[derive(Debug)]
+enum CurlError {
+    /// No `curl` on `PATH`; the message has the manual install command.
+    NotInstalled(String),
+    /// curl ran and failed; `status` is the HTTP status `-f` reported.
+    Failed {
+        message: String,
+        status: Option<u16>,
+    },
+}
+
+impl fmt::Display for CurlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CurlError::NotInstalled(message) | CurlError::Failed { message, .. } => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
+/// The HTTP status from curl's `-f` message, `curl: (22) The requested URL
+/// returned error: 403` (older curl versions add the reason phrase).
+fn http_status(stderr: &str) -> Option<u16> {
+    let (_, rest) = stderr.split_once("returned error: ")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.len() == 3 {
+        digits.parse().ok()
+    } else {
+        None
     }
 }
 
@@ -737,6 +874,16 @@ mod tests {
         h[18] = 183; // aarch64
         assert!(!is_elf_x86_64(&h));
         assert!(!is_elf_x86_64(b"#!/bin/sh\necho tower 1"));
+    }
+
+    #[test]
+    fn http_status_from_curl_messages() {
+        let new = "curl: (22) The requested URL returned error: 403";
+        assert_eq!(http_status(new), Some(403));
+        let old = "curl: (22) The requested URL returned error: 429 Too Many Requests";
+        assert_eq!(http_status(old), Some(429));
+        assert_eq!(http_status("curl: (6) Could not resolve host: x"), None);
+        assert_eq!(http_status("returned error: 40"), None);
     }
 
     #[test]

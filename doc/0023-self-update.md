@@ -1,6 +1,6 @@
 # 0023. Self-update command
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · release lookup amended by [0026](0026-latest-release-from-the-web-redirect.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0012](0012-build-and-distribution.md), [0013](0013-privacy-and-repository-hygiene.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
