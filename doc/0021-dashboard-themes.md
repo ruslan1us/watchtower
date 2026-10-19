@@ -60,8 +60,26 @@ text on a painted background (selection, pills, chips) ≥ 7:1. A unit test
 computes them from the palettes.
 
 **Backgrounds.** No theme paints behind ordinary text or fills panels:
-painted backgrounds are only the selected row, the state pills and the
-account chips. The terminal's background stays the background.
+painted backgrounds are only the selected row (and the selection bar in
+windows), the state pills and the account chips. The terminal's
+background stays the background.
+
+**Overlays.** In the dashboard style every window over the screen follows
+the theme: the new-session dialog, the resume window, confirmations and
+the quit questions, the account and target pickers, help, popups, the
+"not trusted" windows and the filter's input line. They have rounded
+borders in the line colour with the title in the title colour; labels
+are secondary, values text, hints dim with key names in the key colour;
+the selected item (a project, an account, a focused choice) and the
+dialog's discard and quit questions sit on the selection bar with `▶` in
+the mark colour (reverse video in `terminal`); errors are the theme's
+red, the Haiku warning its amber. The styles come from one place, `Look`
+in `src/ui/theme.rs` (`overlay_block`, `field_label`, `hint_line`,
+`selected_item`, `selected_marker`, `choice`, `prompt`, `error`,
+`warning`, …), for later windows such as settings to reuse. Text, layout
+and sizes are the same as in the minimal style, which keeps its own look,
+as does the minimal fallback below 80×24. The contrast test covers the
+windows' roles too, with 4.5:1 for the `▶` marker on the bar.
 
 **Scope.** The theme applies to the dashboard style only; the minimal
 style keeps its own look. The roles a theme sets are the text greys,

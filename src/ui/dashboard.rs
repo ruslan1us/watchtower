@@ -121,7 +121,7 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
         None => draw_list(frame, app, body, tall, now_ms, th),
     }
     if app.filter_editing() {
-        super::draw_filter_input(frame, app, input);
+        super::draw_filter_input(frame, app, input, super::theme::Look::Themed(th));
     }
     draw_status(frame, app, status, now, th);
     draw_footer(frame, footer, th);

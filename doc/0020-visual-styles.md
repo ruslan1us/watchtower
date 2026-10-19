@@ -57,7 +57,9 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
 - Status line and footer carry the same content and rules as the minimal
   style (counter first, segments, whole key hints dropped least used first,
   `? help` and the detach hint kept), in the dashboard's palette.
-- Overlays, dialogs, pickers and help are the same windows in both styles.
+- Overlays, dialogs, pickers and help are the same windows in both styles,
+  with the same text and layout; while the dashboard is drawn they take
+  its theme's look, colours from [0021](0021-dashboard-themes.md).
 
 **Fallback.** The dashboard needs 80×24, the mockup's own minimum (its
 borders cost 4 rows and 2 columns; at 60×20 the list already scrolls).

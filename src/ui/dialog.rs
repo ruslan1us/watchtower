@@ -4,11 +4,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use super::theme::Look;
 use crate::app::App;
 use crate::dialog::{
     Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, ResumeField, ResumeWindow,
@@ -191,7 +192,7 @@ impl Painter<'_, '_> {
     }
 }
 
-fn label(field: Field, focused: Field, color: bool) -> Span<'static> {
+fn label(field: Field, focused: Field, look: Look) -> Span<'static> {
     let on = field == focused;
     let text = format!(
         "{}{:<w$}",
@@ -199,35 +200,71 @@ fn label(field: Field, focused: Field, color: bool) -> Span<'static> {
         field.label(),
         w = usize::from(LABEL_W) - 2
     );
-    let mut style = Style::new();
-    if on {
-        style = style.add_modifier(Modifier::BOLD);
-        if color {
-            style = style.fg(Color::Cyan);
-        }
-    }
-    Span::styled(text, style)
+    Span::styled(text, look.field_label(on))
 }
 
-fn dim() -> Style {
-    Style::new().add_modifier(Modifier::DIM)
-}
-
-fn choice_spans(choice: &Choice, on: bool, extra: &str) -> Vec<Span<'static>> {
-    let mut style = Style::new().add_modifier(Modifier::BOLD);
-    if on {
-        style = style.add_modifier(Modifier::REVERSED);
-    }
-    let mut spans = vec![Span::styled(format!("‹ {} ›", choice.value()), style)];
+fn choice_spans(choice: &Choice, on: bool, extra: &str, look: Look) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("‹ {} ›", choice.value()),
+        look.choice(on),
+    )];
     if choice.items().len() > 1 {
         spans.push(Span::styled(
             format!("  {}/{}", choice.index() + 1, choice.items().len()),
-            dim(),
+            look.hint(),
         ));
     }
     if !extra.is_empty() {
-        spans.push(Span::styled(format!("  {extra}"), dim()));
+        spans.push(Span::styled(format!("  {extra}"), look.hint()));
     }
+    spans
+}
+
+/// One row of the project list: `▶` and the selection bar on the selected
+/// project (bold while the list is not focused), `value_w` columns wide.
+fn project_line(
+    display: &str,
+    selected: bool,
+    focused: bool,
+    value_w: usize,
+    look: Look,
+) -> Line<'static> {
+    let text = super::fit(
+        &format!("{} {display}", if selected { "▶" } else { " " }),
+        value_w,
+    );
+    let style = match (selected, focused) {
+        (false, _) => look.item(),
+        (true, true) => look.selected_item(),
+        (true, false) => look.chosen_item(),
+    };
+    let mut spans = vec![Span::raw(" ".repeat(usize::from(LABEL_W)))];
+    if selected {
+        let rest = text.strip_prefix('▶').unwrap_or(&text).to_owned();
+        spans.push(Span::styled("▶", style.patch(look.selected_marker())));
+        spans.push(Span::styled(rest, style));
+    } else {
+        spans.push(Span::styled(text, style));
+    }
+    Line::from(spans)
+}
+
+/// The project field's first row: the label, the filter (or its
+/// placeholder) and the match count.
+fn filter_spans(
+    input: &LineInput,
+    focused: Field,
+    shown: String,
+    count: String,
+    look: Look,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![label(Field::Project, focused, look)];
+    if input.is_empty() && focused == Field::Project {
+        spans.push(Span::styled("type to filter", look.hint()));
+    } else {
+        spans.push(Span::styled(shown, look.text()));
+    }
+    spans.push(Span::styled(count, look.hint()));
     spans
 }
 
@@ -254,13 +291,12 @@ fn empty_project_text(app: &App, scanning: bool, total: usize) -> String {
 }
 
 /// Draws the dialog centred in `area`.
-pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
+pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Look) {
     let w = if area.width > 104 {
         100
     } else {
         area.width.saturating_sub(2).max(1)
     };
-    let color = app.color;
     let width = usize::from(w.saturating_sub(2)).max(1);
     let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
     let focused = dialog.field;
@@ -268,16 +304,8 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
 
     // Messages below the fields, wrapped to the dialog width.
     let mut messages: Vec<Line> = Vec::new();
-    let warn = if color {
-        Style::new().fg(Color::Yellow)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
-    };
-    let err = if color {
-        Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
-    };
+    let warn = look.warning();
+    let err = look.error();
     if let Some(first) = dialog.project_warnings.first() {
         let more = dialog.project_warnings.len() - 1;
         let text = if more > 0 {
@@ -286,7 +314,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
             first.clone()
         };
         for row in wrap(&text, width) {
-            messages.push(Line::styled(row, dim()));
+            messages.push(Line::styled(row, look.hint()));
         }
     }
     if let Some(text) = dialog.haiku_warning() {
@@ -303,7 +331,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         DialogStatus::Editing => {}
         DialogStatus::Starting { .. } => messages.push(Line::styled(
             "starting… (a supervisor may have to start first; this can take a few seconds)",
-            Style::new().add_modifier(Modifier::BOLD),
+            look.strong(),
         )),
         DialogStatus::Untrusted { dir, .. } => {
             let account = app
@@ -318,7 +346,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
                  /exit; tower retries the dispatch afterwards"
             );
             for row in wrap(&text, width) {
-                messages.push(Line::styled(row, Style::new().add_modifier(Modifier::BOLD)));
+                messages.push(look.text_line(row, look.strong()));
             }
         }
     }
@@ -326,11 +354,11 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         None => {}
         Some(DialogPrompt::Discard) => messages.push(Line::styled(
             "Discard this task?  y discard · n keep editing",
-            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            look.prompt(),
         )),
         Some(DialogPrompt::Quit) => messages.push(Line::styled(
             "Quit tower? The dialog's contents are lost.  y quit · n stay",
-            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            look.prompt(),
         )),
     }
 
@@ -365,10 +393,9 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         .max(1);
     let rect = super::centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .title(" New session ")
-        .title_bottom(Line::styled(" Esc cancel ", dim()));
+    let block = look
+        .overlay_block(" New session ")
+        .title_bottom(look.hint_line(" Esc cancel "));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
@@ -388,16 +415,13 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
 
     // Project: filter line, then the matching projects.
     let (shown, cx) = input_window(&dialog.filter, value_w.saturating_sub(16));
-    let mut spans = vec![label(Field::Project, focused, color)];
-    if dialog.filter.is_empty() && focused == Field::Project {
-        spans.push(Span::styled("type to filter", dim()));
-    } else {
-        spans.push(Span::raw(shown));
-    }
-    spans.push(Span::styled(
+    let spans = filter_spans(
+        &dialog.filter,
+        focused,
+        shown,
         format!("   {} of {}", filtered.len(), dialog.projects.len()),
-        dim(),
-    ));
+        look,
+    );
     if focused == Field::Project && editing && p.has_room() {
         cursor = Some(Position::new(value_x + cx as u16, p.y));
     }
@@ -406,7 +430,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         for row in empty_rows.iter().take(project_rows) {
             p.line(Line::styled(
                 format!("{:w$}{row}", "", w = usize::from(LABEL_W)),
-                dim(),
+                look.hint(),
             ));
         }
     } else {
@@ -417,39 +441,27 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
             sel + 1 - project_rows
         };
         for (i, project) in filtered.iter().enumerate().skip(start).take(project_rows) {
-            let selected = i == sel;
-            let mut style = Style::new();
-            if selected {
-                style = style.add_modifier(if focused == Field::Project {
-                    Modifier::REVERSED
-                } else {
-                    Modifier::BOLD
-                });
-            }
-            let text = super::fit(
-                &format!("{} {}", if selected { "▶" } else { " " }, project.display),
+            p.line(project_line(
+                &project.display,
+                i == sel,
+                focused == Field::Project,
                 value_w,
-            );
-            p.line(Line::from(vec![
-                Span::raw(" ".repeat(usize::from(LABEL_W))),
-                Span::styled(text, style),
-            ]));
+                look,
+            ));
         }
     }
     p.line(Line::raw(""));
 
     // Task: label row, then the wrapped text.
-    p.line(Line::from(vec![
-        label(Field::Task, focused, color),
-        Span::styled(
-            if dialog.task.is_blank() {
-                "describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR"
-            } else {
-                ""
-            },
-            dim(),
-        ),
-    ]));
+    let mut spans = vec![label(Field::Task, focused, look)];
+    if dialog.task.is_blank() {
+        spans.extend(
+            look.hint_spans("describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR"),
+        );
+    } else {
+        spans.push(Span::styled("", look.hint()));
+    }
+    p.line(Line::from(spans));
     let (rows, (crow, ccol)) = task_rows(dialog, value_w);
     let start = if crow < task_h { 0 } else { crow + 1 - task_h };
     for i in start..start + task_h {
@@ -458,19 +470,22 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
             cursor = Some(Position::new(value_x + ccol as u16, p.y));
         }
         p.line(Line::from(vec![
-            Span::styled(format!("{:>w$}", "┊ ", w = usize::from(LABEL_W)), dim()),
-            Span::raw(text),
+            Span::styled(
+                format!("{:>w$}", "┊ ", w = usize::from(LABEL_W)),
+                look.hint(),
+            ),
+            Span::styled(text, look.text()),
         ]));
     }
     p.line(Line::raw(""));
 
     // Name.
     let (shown, cx) = input_window(&dialog.name, value_w);
-    let mut spans = vec![label(Field::Name, focused, color)];
+    let mut spans = vec![label(Field::Name, focused, look)];
     if dialog.name.is_empty() {
-        spans.push(Span::styled("optional", dim()));
+        spans.push(Span::styled("optional", look.hint()));
     } else {
-        spans.push(Span::raw(shown));
+        spans.push(Span::styled(shown, look.text()));
     }
     if focused == Field::Name && editing && p.has_room() {
         cursor = Some(Position::new(value_x + cx as u16, p.y));
@@ -484,11 +499,12 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         .get(dialog.account.index())
         .map(|a| a.command.clone())
         .unwrap_or_default();
-    let mut spans = vec![label(Field::Account, focused, color)];
+    let mut spans = vec![label(Field::Account, focused, look)];
     spans.extend(choice_spans(
         &dialog.account,
         focused == Field::Account,
         &command,
+        look,
     ));
     p.line(Line::from(spans));
 
@@ -496,28 +512,35 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
     let hint = format!("  ↑↓ {} · or type a model name", MODEL_CHOICES.join(" · "));
     let field_w = value_w.saturating_sub(hint.width()).clamp(8, 40);
     let (shown, cx) = input_window(&dialog.model, field_w);
-    let mut model_style = Style::new().add_modifier(Modifier::BOLD);
+    let mut model_style = look.strong();
     if focused == Field::Model {
         model_style = model_style.add_modifier(Modifier::UNDERLINED);
     }
     if focused == Field::Model && editing && p.has_room() {
         cursor = Some(Position::new(value_x + cx as u16, p.y));
     }
-    p.line(Line::from(vec![
-        label(Field::Model, focused, color),
+    let mut spans = vec![
+        label(Field::Model, focused, look),
         Span::styled(super::fit(&shown, field_w), model_style),
-        Span::styled(hint, dim()),
-    ]));
+    ];
+    spans.extend(look.hint_spans(hint));
+    p.line(Line::from(spans));
 
     // Effort and permission mode.
-    let mut spans = vec![label(Field::Effort, focused, color)];
-    spans.extend(choice_spans(&dialog.effort, focused == Field::Effort, ""));
+    let mut spans = vec![label(Field::Effort, focused, look)];
+    spans.extend(choice_spans(
+        &dialog.effort,
+        focused == Field::Effort,
+        "",
+        look,
+    ));
     p.line(Line::from(spans));
-    let mut spans = vec![label(Field::Mode, focused, color)];
+    let mut spans = vec![label(Field::Mode, focused, look)];
     spans.extend(choice_spans(
         &dialog.mode,
         focused == Field::Mode,
         "permission mode",
+        look,
     ));
     p.line(Line::from(spans));
     p.line(Line::raw(""));
@@ -526,7 +549,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect) {
         p.line(line);
     }
     for row in footer {
-        p.line(Line::styled(row, dim()));
+        p.line(look.hint_line(row));
     }
 
     if let Some(pos) = cursor
@@ -554,13 +577,12 @@ pub fn resume_note(command: &str) -> String {
 
 /// Draws the resume window of `R` centred in `area` (doc/0019): the
 /// project list with its filter, the account, a note and the keys.
-pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Rect) {
+pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Rect, look: Look) {
     let w = if area.width > 104 {
         100
     } else {
         area.width.saturating_sub(2).max(1)
     };
-    let color = app.color;
     let width = usize::from(w.saturating_sub(2)).max(1);
     let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
     // The resume window reuses the dialog's labels for its two fields.
@@ -582,7 +604,7 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
     let mut messages: Vec<Line> = Vec::new();
     if let Some(first) = window.project_warnings.first() {
         for row in wrap(first, width) {
-            messages.push(Line::styled(row, dim()));
+            messages.push(Line::styled(row, look.hint()));
         }
     }
     let command = window
@@ -590,16 +612,11 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         .map(|a| a.command.clone())
         .unwrap_or_default();
     for row in wrap(&resume_note(&command), width) {
-        messages.push(Line::styled(row, dim()));
+        messages.push(Line::styled(row, look.hint()));
     }
     if let Some(text) = &window.error {
-        let err = if color {
-            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().add_modifier(Modifier::BOLD)
-        };
         for row in wrap(text, width) {
-            messages.push(Line::styled(row, err));
+            messages.push(Line::styled(row, look.error()));
         }
     }
     let footer = wrap(
@@ -615,10 +632,9 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         .max(1);
     let rect = super::centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .title(" Resume a past conversation ")
-        .title_bottom(Line::styled(" Esc cancel ", dim()));
+    let block = look
+        .overlay_block(" Resume a past conversation ")
+        .title_bottom(look.hint_line(" Esc cancel "));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
@@ -636,16 +652,13 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
     let value_x = inner.x + LABEL_W;
 
     let (shown, cx) = input_window(&window.filter, value_w.saturating_sub(16));
-    let mut spans = vec![label(Field::Project, focused, color)];
-    if window.filter.is_empty() && focused == Field::Project {
-        spans.push(Span::styled("type to filter", dim()));
-    } else {
-        spans.push(Span::raw(shown));
-    }
-    spans.push(Span::styled(
+    let spans = filter_spans(
+        &window.filter,
+        focused,
+        shown,
         format!("   {} of {}", filtered.len(), window.projects.len()),
-        dim(),
-    ));
+        look,
+    );
     if focused == Field::Project && p.has_room() {
         cursor = Some(Position::new(value_x + cx as u16, p.y));
     }
@@ -654,7 +667,7 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         for row in empty_rows.iter().take(project_rows) {
             p.line(Line::styled(
                 format!("{:w$}{row}", "", w = usize::from(LABEL_W)),
-                dim(),
+                look.hint(),
             ));
         }
     } else {
@@ -665,32 +678,23 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
             sel + 1 - project_rows
         };
         for (i, project) in filtered.iter().enumerate().skip(start).take(project_rows) {
-            let selected = i == sel;
-            let mut style = Style::new();
-            if selected {
-                style = style.add_modifier(if focused == Field::Project {
-                    Modifier::REVERSED
-                } else {
-                    Modifier::BOLD
-                });
-            }
-            let text = super::fit(
-                &format!("{} {}", if selected { "▶" } else { " " }, project.display),
+            p.line(project_line(
+                &project.display,
+                i == sel,
+                focused == Field::Project,
                 value_w,
-            );
-            p.line(Line::from(vec![
-                Span::raw(" ".repeat(usize::from(LABEL_W))),
-                Span::styled(text, style),
-            ]));
+                look,
+            ));
         }
     }
     p.line(Line::raw(""));
 
-    let mut spans = vec![label(Field::Account, focused, color)];
+    let mut spans = vec![label(Field::Account, focused, look)];
     spans.extend(choice_spans(
         &window.account,
         focused == Field::Account,
         &command,
+        look,
     ));
     p.line(Line::from(spans));
     p.line(Line::raw(""));
@@ -699,7 +703,7 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         p.line(line);
     }
     for row in footer {
-        p.line(Line::styled(row, dim()));
+        p.line(look.hint_line(row));
     }
 
     if let Some(pos) = cursor

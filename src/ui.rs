@@ -21,6 +21,8 @@ mod detail;
 mod dialog;
 mod theme;
 
+use theme::{Look, Theme};
+
 pub use dashboard::{MIN_SIZE as DASHBOARD_MIN_SIZE, SIDE_MIN_WIDTH as DASHBOARD_SIDE_MIN_WIDTH};
 pub use dialog::{resume_note, wrap};
 
@@ -147,74 +149,109 @@ fn draw_minimal(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
         }
     }
     if app.filter_editing() {
-        draw_filter_input(frame, app, input);
+        draw_filter_input(frame, app, input, Look::Minimal { color: app.color });
     }
     draw_status(frame, app, status, now);
     draw_footer(frame, footer);
 }
 
+/// How the windows are drawn over a screen of `area`: in the dashboard's
+/// theme while the dashboard is drawn, else in the minimal look (doc/0020,
+/// doc/0021).
+pub(crate) fn look(app: &App, area: Rect) -> Look {
+    match app.style {
+        UiStyle::Dashboard if dashboard::fits(area) => {
+            Look::Themed(Theme::new(app.theme, app.color))
+        }
+        _ => Look::Minimal { color: app.color },
+    }
+}
+
 /// The windows above either style's screen: overlays, the dialogs, the
-/// popup and the quit question. They look the same in both styles.
+/// popup and the quit question. The same windows in both styles, drawn in
+/// the style's [`Look`].
 fn draw_windows(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let look = look(app, area);
     match app.overlay().clone() {
         Overlay::None => {}
-        Overlay::Help => draw_help(frame, app, area),
-        Overlay::Picker(p) => draw_picker(frame, app, &p, area),
-        Overlay::Confirm(c) => draw_confirm(frame, app, &c, area),
-        Overlay::Target(p) => draw_target(frame, app, &p, area),
-        Overlay::Untrusted(u) => draw_untrusted(frame, app, &u, area),
-        Overlay::OrchestratorUntrusted(u) => draw_orchestrator_untrusted(frame, app, &u, area),
+        Overlay::Help => draw_help(frame, app, area, look),
+        Overlay::Picker(p) => draw_picker(frame, app, &p, area, look),
+        Overlay::Confirm(c) => draw_confirm(frame, &c, area, look),
+        Overlay::Target(p) => draw_target(frame, app, &p, area, look),
+        Overlay::Untrusted(u) => draw_untrusted(frame, app, &u, area, look),
+        Overlay::OrchestratorUntrusted(u) => {
+            draw_orchestrator_untrusted(frame, app, &u, area, look);
+        }
     }
     if let Some(d) = app.dialog() {
-        dialog::draw(frame, app, d, area);
+        dialog::draw(frame, app, d, area, look);
     }
     if let Some(r) = app.resume_window() {
-        dialog::draw_resume(frame, app, r, area);
+        dialog::draw_resume(frame, app, r, area, look);
     }
     if let Some(popup) = app.popup_mut() {
-        draw_popup(frame, popup, area);
+        draw_popup(frame, popup, area, look);
     }
     if let Some(prompt) = app.quit_prompt() {
-        draw_quit_prompt(frame, app, prompt, area);
+        draw_quit_prompt(frame, prompt, area, look);
     }
+}
+
+/// A confirmation's answer line: ` y <yes>   n/Esc <no>`.
+fn answer_line(yes: &str, no: &str, look: Look) -> Line<'static> {
+    let key = look.answer_key();
+    let text = look.text();
+    Line::from(vec![
+        Span::styled(" y", key),
+        Span::styled(format!(" {yes}   "), text),
+        Span::styled("n", key),
+        Span::styled("/", text),
+        Span::styled("Esc", key),
+        Span::styled(format!(" {no}"), text),
+    ])
+}
+
+/// A picker's item: `▶` and the selection bar when selected.
+fn picker_item(text: String, selected: bool, look: Look) -> Line<'static> {
+    if !selected {
+        return Line::styled(text, look.item());
+    }
+    // ` ▶ rest`: the marker in the selection's mark colour.
+    let Some((pre, rest)) = text.split_once('▶') else {
+        return Line::styled(text, look.selected_item());
+    };
+    Line::from(vec![
+        Span::raw(pre.to_owned()),
+        Span::styled("▶", look.selected_marker()),
+        Span::raw(rest.to_owned()),
+    ])
+    .style(look.selected_item())
 }
 
 /// The quit question while a hand-off runs (doc/0004, doc/0011), above
 /// every other window.
-fn draw_quit_prompt(frame: &mut Frame, app: &App, prompt: &QuitPrompt, area: Rect) {
+fn draw_quit_prompt(frame: &mut Frame, prompt: &QuitPrompt, area: Rect, look: Look) {
     let w = area.width.saturating_sub(4).min(76);
     let inner_w = usize::from(w.saturating_sub(4)).max(1);
     let mut lines: Vec<Line> = wrap(&prompt.text(), inner_w)
         .into_iter()
-        .map(|r| Line::from(format!(" {r}")))
+        .map(|r| Line::styled(format!(" {r}"), look.text()))
         .collect();
     lines.push(Line::from(""));
-    let key_style = if app.color {
-        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
-    };
-    lines.push(Line::from(vec![
-        Span::styled(" y", key_style),
-        Span::raw(" quit   "),
-        Span::styled("n", key_style),
-        Span::raw("/"),
-        Span::styled("Esc", key_style),
-        Span::raw(" keep running (default)"),
-    ]));
+    lines.push(answer_line("quit", "keep running (default)", look));
     let h = lines.len() as u16 + 2;
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(" Quit tower? ")),
+        Paragraph::new(lines).block(look.overlay_block(" Quit tower? ")),
         rect,
     );
 }
 
 /// The filter's input line (doc/0006): `/` and the text with the cursor,
 /// then the match count and the keys.
-pub(crate) fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect, look: Look) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -234,15 +271,12 @@ pub(crate) fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect) {
         shown.remove(0);
     }
     let used = 2 + shown.width();
-    let line = Line::from(vec![
-        Span::styled(" /", Style::new().add_modifier(Modifier::BOLD)),
-        Span::raw(shown),
-        Span::styled(
-            fit(&hint, w.saturating_sub(used + 1)),
-            Style::new().add_modifier(Modifier::DIM),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    let mut spans = vec![
+        Span::styled(" /", look.input_prompt()),
+        Span::styled(shown, look.text()),
+    ];
+    spans.extend(look.hint_spans(fit(&hint, w.saturating_sub(used + 1))));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
     let x = area.x + (used as u16).min(area.width.saturating_sub(1));
     frame.set_cursor_position((x, area.y));
 }
@@ -576,23 +610,29 @@ pub(crate) fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
-fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
+/// A row of the help's key table: the key padded to `w` columns.
+fn help_row(key: &str, what: &str, w: usize, look: Look) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(" ", look.text()),
+        Span::styled(format!("{key:<w$}"), look.table_key()),
+        Span::styled(format!(" {what}"), look.text()),
+    ])
+}
+
+fn draw_help(frame: &mut Frame, app: &App, area: Rect, look: Look) {
     let mut lines: Vec<Line> = KEY_TABLE
         .iter()
-        .map(|(key, what)| Line::from(format!(" {key:<16} {what}")))
+        .map(|(key, what)| help_row(key, what, 16, look))
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        " New-session dialog",
-        Style::new().add_modifier(Modifier::BOLD),
-    ));
+    lines.push(Line::styled(" New-session dialog", look.heading()));
     for (key, what) in DIALOG_KEY_TABLE {
         let key = if key.starts_with("Ctrl+Enter") && !app.keyboard_enhanced {
             "Alt+Enter"
         } else {
             key
         };
-        lines.push(Line::from(format!(" {key:<22} {what}")));
+        lines.push(help_row(key, what, 22, look));
     }
     // 15 list keys, a blank line, the dialog title and 6 dialog keys:
     // with the borders the help fits 24 rows (doc/0011).
@@ -601,19 +641,14 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(lines).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title(" Keys ")
-                .title_bottom(Line::styled(
-                    " Esc or ? closes this help ",
-                    Style::new().add_modifier(Modifier::DIM),
-                )),
+            look.overlay_block(" Keys ")
+                .title_bottom(look.hint_line(" Esc or ? closes this help ")),
         ),
         rect,
     );
 }
 
-fn draw_confirm(frame: &mut Frame, app: &App, confirm: &Confirm, area: Rect) {
+fn draw_confirm(frame: &mut Frame, confirm: &Confirm, area: Rect, look: Look) {
     let (title, mut text) = match confirm {
         Confirm::Stop { action, detail } => (
             " Stop session? ",
@@ -681,36 +716,27 @@ fn draw_confirm(frame: &mut Frame, app: &App, confirm: &Confirm, area: Rect) {
     text.push(String::new());
     let w = area.width.saturating_sub(4).min(76);
     let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    // The hand-off's `From:`, `To:` and `Plan:` are labels.
+    let labels: &[&str] = if matches!(confirm, Confirm::Handoff { .. }) {
+        &["From:", "To:", "Plan:"]
+    } else {
+        &[]
+    };
     let mut lines: Vec<Line> = text
         .iter()
         .flat_map(|t| wrap(t, inner_w))
-        .map(|r| Line::from(format!(" {r}")))
+        .map(|r| look.labelled_line(&format!(" {r}"), labels))
         .collect();
-    let key_style = if app.color {
-        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().add_modifier(Modifier::BOLD)
-    };
-    lines.push(Line::from(vec![
-        Span::styled(" y", key_style),
-        Span::raw(" yes   "),
-        Span::styled("n", key_style),
-        Span::raw("/"),
-        Span::styled("Esc", key_style),
-        Span::raw(" no (default)"),
-    ]));
+    lines.push(answer_line("yes", "no (default)", look));
     let h = lines.len() as u16 + 2;
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
 /// The popup window: wrapped text, scrolled; the scroll offset is clamped
 /// here because only the renderer knows the visible height.
-fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
+fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect, look: Look) {
     let w = if area.width > 104 {
         100
     } else {
@@ -728,7 +754,7 @@ fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
         .iter()
         .skip(popup.scroll)
         .take(visible)
-        .map(|r| Line::from(format!(" {r}")))
+        .map(|r| Line::styled(format!(" {r}"), look.text()))
         .collect();
     let hint = if more {
         " ↑↓/PgUp/PgDn scroll · Esc close "
@@ -738,10 +764,8 @@ fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(lines).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", popup.title))
-                .title_bottom(Line::styled(hint, Style::new().add_modifier(Modifier::DIM))),
+            look.overlay_block(format!(" {} ", popup.title))
+                .title_bottom(look.hint_line(hint)),
         ),
         rect,
     );
@@ -750,14 +774,16 @@ fn draw_popup(frame: &mut Frame, popup: &mut Popup, area: Rect) {
 /// The hand-off target picker (doc/0004): the accounts of the owner's
 /// group except the owner, or every other account with
 /// `allow_cross_group_handoff` ([`crate::handoff::targets`]).
-fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect) {
+fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect, look: Look) {
     let mut lines = vec![match &picker.owner {
-        Some(owner) => Line::from(format!(
-            " Owner: {owner}. Stop it there and continue under:"
-        )),
-        None => {
-            Line::from(" Owner unknown (?). Stop it with the target's command and continue under:")
-        }
+        Some(owner) => look.labelled_line(
+            &format!(" Owner: {owner}. Stop it there and continue under:"),
+            &["Owner:"],
+        ),
+        None => Line::styled(
+            " Owner unknown (?). Stop it with the target's command and continue under:",
+            look.text(),
+        ),
     }];
     lines.push(Line::raw(""));
     for (i, name) in picker.targets.iter().enumerate() {
@@ -771,32 +797,27 @@ fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect) 
             " {} {name}  ({command}){group}",
             if i == picker.selected { "▶" } else { " " }
         );
-        let style = if i == picker.selected {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(text, style));
+        lines.push(picker_item(text, i == picker.selected, look));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        " Enter continue under this account · Esc cancel",
-        Style::new().add_modifier(Modifier::DIM),
-    ));
+    lines.push(look.hint_line(" Enter continue under this account · Esc cancel"));
     let h = lines.len() as u16 + 2;
     let w = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
     let rect = centered(area, w.max(40), h);
     frame.render_widget(Clear, rect);
     let title = format!(" Continue {} under which account? ", picker.name);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
 /// The window after a hand-off failed with `Workspace not trusted`
 /// (doc/0004, doc/0008).
-fn draw_untrusted(frame: &mut Frame, app: &App, untrusted: &UntrustedHandoff, area: Rect) {
+fn draw_untrusted(
+    frame: &mut Frame,
+    app: &App,
+    untrusted: &UntrustedHandoff,
+    area: Rect,
+    look: Look,
+) {
     let r = &untrusted.job.request;
     let dir = paths::shorten_home(&r.cwd.to_string_lossy(), app.home());
     let mut text: Vec<String> = untrusted.message.lines().map(str::to_owned).collect();
@@ -818,16 +839,13 @@ fn draw_untrusted(frame: &mut Frame, app: &App, untrusted: &UntrustedHandoff, ar
     let lines: Vec<Line> = text
         .iter()
         .flat_map(|t| wrap(t, inner_w))
-        .map(|r| Line::from(format!(" {r}")))
+        .map(|r| look.text_line(format!(" {r}"), look.text()))
         .collect();
     let h = lines.len() as u16 + 2;
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     let title = format!(" Not trusted by {} ", r.target.name);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
 /// The window after the orchestrator's start failed with `Workspace not
@@ -837,6 +855,7 @@ fn draw_orchestrator_untrusted(
     app: &App,
     untrusted: &UntrustedOrchestrator,
     area: Rect,
+    look: Look,
 ) {
     let r = &untrusted.job.request;
     let dir = paths::shorten_home(&r.project.to_string_lossy(), app.home());
@@ -859,32 +878,34 @@ fn draw_orchestrator_untrusted(
     let lines: Vec<Line> = text
         .iter()
         .flat_map(|t| wrap(t, inner_w))
-        .map(|r| Line::from(format!(" {r}")))
+        .map(|r| look.text_line(format!(" {r}"), look.text()))
         .collect();
     let h = lines.len() as u16 + 2;
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     let title = format!(" Not trusted by {} ", r.account.name);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
-fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect) {
-    let mut lines = vec![Line::from(
+fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect, look: Look) {
+    let mut lines = vec![Line::styled(
         " The account that owns this session is unknown.",
+        look.text(),
     )];
     if picker.purpose == Purpose::Attach {
-        lines.push(Line::from(
+        lines.push(Line::styled(
             " Attaching with another account moves the session to it.",
+            look.text(),
         ));
     }
     if let Some(dir) = &picker.config_dir {
-        lines.push(Line::from(format!(
-            " Its process uses CLAUDE_CONFIG_DIR={}, which matches no account.",
-            dir.display()
-        )));
+        lines.push(Line::styled(
+            format!(
+                " Its process uses CLAUDE_CONFIG_DIR={}, which matches no account.",
+                dir.display()
+            ),
+            look.text(),
+        ));
     }
     lines.push(Line::raw(""));
     for (i, a) in app.config().accounts.iter().enumerate() {
@@ -894,30 +915,19 @@ fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect) {
             a.name,
             a.command
         );
-        let style = if i == picker.selected {
-            Style::new().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::new()
-        };
-        lines.push(Line::styled(text, style));
+        lines.push(picker_item(text, i == picker.selected, look));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        format!(
-            " Enter {} with this account · Esc cancel",
-            picker.purpose.verb()
-        ),
-        Style::new().add_modifier(Modifier::DIM),
-    ));
+    lines.push(look.hint_line(format!(
+        " Enter {} with this account · Esc cancel",
+        picker.purpose.verb()
+    )));
     let h = lines.len() as u16 + 2;
     let w = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
     let rect = centered(area, w.max(40), h);
     frame.render_widget(Clear, rect);
     let title = format!(" Which account owns {}? ", picker.name);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::new().borders(Borders::ALL).title(title)),
-        rect,
-    );
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
 /// Pads or truncates `s` to exactly `w` display columns, ending a truncated

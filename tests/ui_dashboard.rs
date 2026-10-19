@@ -653,13 +653,18 @@ fn a_long_list_scrolls_to_keep_the_selection_in_view() {
 fn windows_draw_over_the_dashboard() {
     let mut app = app();
     app.handle_key(ch('?'));
-    // The help fits 24 rows (doc/0011), over the panels.
+    // The help fits 24 rows (doc/0011), over the panels, in the
+    // dashboard's rounded look (doc/0021).
     let l = screen(&mut app, 80, 24);
-    assert!(line_with(&l, " Keys ").contains('┌'), "{}", l.join("\n"));
+    assert!(
+        line_with(&l, " Keys ").contains("╭ Keys "),
+        "{}",
+        l.join("\n")
+    );
     assert!(l.iter().any(|x| x.contains("Esc or ? closes this help")));
     let l = screen(&mut app, 100, 30);
     assert!(l[0].starts_with("╭ ◆ tower"), "{}", l[0]);
-    assert!(line_with(&l, " Keys ").contains('┌'));
+    assert!(line_with(&l, " Keys ").contains("╭ Keys "));
 }
 
 /// What a theme paints: ordinary text, the Needs-me pill and the selected

@@ -8,6 +8,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::UiTheme;
@@ -422,6 +423,310 @@ impl Theme {
     }
 }
 
+/// How the windows over the screen are drawn (doc/0020, doc/0021): the
+/// overlays, dialogs, pickers, help, popups and the filter's input line.
+/// The minimal style keeps its plain look (square borders, terminal
+/// colours); the dashboard style draws them in its theme, like its panels.
+/// Every window takes its styles from here, so a new one looks like the
+/// others.
+#[derive(Debug, Clone, Copy)]
+pub enum Look {
+    /// The minimal style's look; `color` is false under `NO_COLOR`.
+    Minimal { color: bool },
+    /// The dashboard style in a theme.
+    Themed(Theme),
+}
+
+/// Whether `token` (trimmed of brackets and punctuation) names a key, for
+/// the key hints of [`Look::hint_line`].
+fn is_key(token: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "Tab/Shift+Tab",
+        "Tab",
+        "Enter",
+        "Esc",
+        "Space",
+        "Space/Esc",
+        "↑↓",
+        "↑↓/PgUp/PgDn",
+        "PgUp/PgDn",
+        "Home",
+        "End",
+        "?",
+        "y",
+        "n",
+        "n/Esc",
+    ];
+    ["Ctrl+", "Alt+", "Shift+"]
+        .iter()
+        .any(|p| token.starts_with(p) && token.len() > p.len())
+        || KEYS.contains(&token)
+}
+
+/// `token` split into leading punctuation, the core and trailing
+/// punctuation: `(or` → `("(", "or", "")`, `Alt+Enter)` → `("",
+/// "Alt+Enter", ")")`.
+fn split_token(token: &str) -> (&str, &str, &str) {
+    let punct = |c: char| matches!(c, '(' | ')' | ',' | ':' | '.' | ';');
+    let core = token.trim_start_matches(punct);
+    let lead = &token[..token.len() - core.len()];
+    let trimmed = core.trim_end_matches(punct);
+    // A lone `?` stays a key; only brackets and separators are trimmed.
+    let trimmed = if trimmed.is_empty() { core } else { trimmed };
+    (lead, trimmed, &core[trimmed.len()..])
+}
+
+impl Look {
+    /// The minimal look's style, or the theme's.
+    fn pick(self, minimal: Style, themed: impl FnOnce(Theme) -> Style) -> Style {
+        match self {
+            Look::Minimal { .. } => minimal,
+            Look::Themed(th) => themed(th),
+        }
+    }
+
+    /// A window's frame: square borders and a plain title, or rounded
+    /// borders in the theme's line colour with the title in its title
+    /// colour, like the dashboard's panels.
+    pub fn overlay_block(self, title: impl Into<String>) -> Block<'static> {
+        let title = title.into();
+        match self {
+            Look::Minimal { .. } => Block::new().borders(Borders::ALL).title(title),
+            Look::Themed(th) => Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(th.line())
+                .title(Line::styled(title, self.overlay_title())),
+        }
+    }
+
+    /// A window's title: plain, or bold in the theme's title colour.
+    pub fn overlay_title(self) -> Style {
+        self.pick(Style::new(), |th| th.bold(th.p.title))
+    }
+
+    /// Ordinary text: values, window text.
+    pub fn text(self) -> Style {
+        self.pick(Style::new(), Theme::text)
+    }
+
+    /// Secondary text: labels such as `From:` and `To:`.
+    pub fn secondary(self) -> Style {
+        self.pick(Style::new(), Theme::muted)
+    }
+
+    /// Hints, placeholders and notes: dim.
+    pub fn hint(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::DIM), Theme::faint)
+    }
+
+    /// Bold text: a value that stands out, a state message.
+    pub fn strong(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::BOLD), |th| {
+            th.bold(th.p.text)
+        })
+    }
+
+    /// A heading inside a window (the help's dialog section).
+    pub fn heading(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::BOLD), |th| {
+            th.bold(th.p.title)
+        })
+    }
+
+    /// The keys of a confirmation's answer line (`y`, `n`, `Esc`).
+    pub fn answer_key(self) -> Style {
+        match self {
+            Look::Minimal { color: true } => {
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            }
+            Look::Minimal { color: false } => Style::new().add_modifier(Modifier::BOLD),
+            Look::Themed(th) => th.bold(th.p.key),
+        }
+    }
+
+    /// A key in a table of keys (the help): plain in the minimal look.
+    pub fn table_key(self) -> Style {
+        self.pick(Style::new(), |th| th.bold(th.p.key))
+    }
+
+    /// The `/` of the filter's input line.
+    pub fn input_prompt(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::BOLD), |th| {
+            th.bold(th.p.key)
+        })
+    }
+
+    /// A field's label: secondary, or bold in the key colour while the
+    /// field has the focus (with its `▶`).
+    pub fn field_label(self, focused: bool) -> Style {
+        match self {
+            Look::Minimal { color } => {
+                let mut style = Style::new();
+                if focused {
+                    style = style.add_modifier(Modifier::BOLD);
+                    if color {
+                        style = style.fg(Color::Cyan);
+                    }
+                }
+                style
+            }
+            Look::Themed(th) if focused => th.bold(th.p.key),
+            Look::Themed(th) => th.muted(),
+        }
+    }
+
+    /// The selected item of a list (a picker's account, the dialog's
+    /// project): reversed in the minimal look; in a theme the selected
+    /// row's bar (reversed in `terminal` and without colour).
+    pub fn selected_item(self) -> Style {
+        self.pick(Style::new().add_modifier(Modifier::REVERSED), |th| {
+            th.text().patch(th.selected())
+        })
+    }
+
+    /// The `▶` of the selected item, drawn over [`Look::selected_item`]:
+    /// the theme's selection mark colour.
+    pub fn selected_marker(self) -> Style {
+        self.pick(Style::new(), |th| th.fg(th.p.mark))
+    }
+
+    /// An item of a list that is not selected.
+    pub fn item(self) -> Style {
+        self.text()
+    }
+
+    /// The selected item of a list without the focus: bold.
+    pub fn chosen_item(self) -> Style {
+        self.strong()
+    }
+
+    /// A choice field's value (`‹ auto ›`), on the selection bar while
+    /// focused.
+    pub fn choice(self, focused: bool) -> Style {
+        if focused {
+            self.pick(
+                Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                |th| th.text().patch(th.selected()).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            self.strong()
+        }
+    }
+
+    /// A question inside a window (discard, quit): bold on the selection
+    /// bar.
+    pub fn prompt(self) -> Style {
+        self.pick(
+            Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            |th| th.text().patch(th.selected()).add_modifier(Modifier::BOLD),
+        )
+    }
+
+    /// An error: red and bold, bold without colour.
+    pub fn error(self) -> Style {
+        match self {
+            Look::Minimal { color: true } => {
+                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+            }
+            Look::Minimal { color: false } => Style::new().add_modifier(Modifier::BOLD),
+            Look::Themed(th) => th.bold(th.p.red),
+        }
+    }
+
+    /// A warning (the Haiku note): amber, bold without colour.
+    pub fn warning(self) -> Style {
+        match self {
+            Look::Minimal { color: true } => Style::new().fg(Color::Yellow),
+            Look::Themed(th) if th.color => th.fg(th.p.amber),
+            _ => Style::new().add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// A row of key hints (`Enter keep · Esc clear`): dim, with the keys in
+    /// the theme's key colour.
+    pub fn hint_line(self, text: impl Into<String>) -> Line<'static> {
+        match self {
+            Look::Minimal { .. } => Line::styled(text.into(), self.hint()),
+            Look::Themed(_) => Line::from(self.hint_spans(text)),
+        }
+    }
+
+    /// [`Look::hint_line`] as spans, each with its whole style.
+    pub fn hint_spans(self, text: impl Into<String>) -> Vec<Span<'static>> {
+        let text = text.into();
+        let Look::Themed(th) = self else {
+            return vec![Span::styled(text, self.hint())];
+        };
+        let (hint, key) = (th.faint(), th.bold(th.p.key));
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut plain = String::new();
+        for (i, token) in text.split(' ').enumerate() {
+            if i > 0 {
+                plain.push(' ');
+            }
+            let (lead, core, tail) = split_token(token);
+            if is_key(core) {
+                plain.push_str(lead);
+                if !plain.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut plain), hint));
+                }
+                spans.push(Span::styled(core.to_owned(), key));
+                plain.push_str(tail);
+            } else {
+                plain.push_str(token);
+            }
+        }
+        if !plain.is_empty() {
+            spans.push(Span::styled(plain, hint));
+        }
+        spans
+    }
+
+    /// A row of window text in `base`; a leading `Key:` (as in `Ctrl+T:
+    /// run …`, `Esc: leave it`) takes the key colour.
+    pub fn text_line(self, row: impl Into<String>, base: Style) -> Line<'static> {
+        let row = row.into();
+        if let Look::Themed(th) = self {
+            let body = row.trim_start_matches(' ');
+            let indent = row.len() - body.len();
+            if let Some((first, rest)) = body.split_once(' ')
+                && let Some(core) = first.strip_suffix(':')
+                && is_key(core)
+            {
+                return Line::from(vec![
+                    Span::styled(row[..indent].to_owned(), base),
+                    Span::styled(core.to_owned(), base.patch(th.bold(th.p.key))),
+                    Span::styled(format!(": {rest}"), base),
+                ]);
+            }
+        }
+        Line::styled(row, base)
+    }
+
+    /// A row of window text whose `labels` (`From:`, `To:`) are secondary
+    /// and the rest ordinary text.
+    pub fn labelled_line(self, row: &str, labels: &[&str]) -> Line<'static> {
+        if let Look::Minimal { .. } = self {
+            return Line::from(row.to_owned());
+        }
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, token) in row.split(' ').enumerate() {
+            let style = if labels.contains(&token) {
+                self.secondary()
+            } else {
+                self.text()
+            };
+            let s = if i > 0 {
+                format!(" {token}")
+            } else {
+                token.to_owned()
+            };
+            spans.push(Span::styled(s, style));
+        }
+        Line::from(spans)
+    }
+}
+
 /// A line under construction that tracks its display width.
 #[derive(Default)]
 pub struct Lb {
@@ -531,7 +836,56 @@ mod tests {
             }
             check("logo", p.logo, BLACK, 4.5);
             check("keys", p.key, BLACK, 4.5);
+
+            // The windows' roles (doc/0021): text on the selection bar
+            // (selected items, focused choices, prompts) 7:1, the `▶`
+            // marker on it 4.5:1, title, key, error and warning on black.
+            let look = Look::Themed(th);
+            for (what, st) in [
+                ("selected item", look.selected_item()),
+                ("focused choice", look.choice(true)),
+                ("prompt", look.prompt()),
+            ] {
+                check(what, st.fg.unwrap(), st.bg.unwrap(), 7.0);
+            }
+            let bar = look.selected_item().bg.unwrap();
+            let marker = look.selected_item().patch(look.selected_marker());
+            check("selection marker", marker.fg.unwrap(), bar, 4.5);
+            for (what, st, min) in [
+                ("title", look.overlay_title(), 7.0),
+                ("label", look.field_label(false), 7.0),
+                ("focused label", look.field_label(true), 4.5),
+                ("text", look.text(), 7.0),
+                ("hint", look.hint(), 4.5),
+                ("answer key", look.answer_key(), 4.5),
+                ("error", look.error(), 4.5),
+                ("warning", look.warning(), 4.5),
+            ] {
+                check(what, st.fg.unwrap(), BLACK, min);
+            }
         }
+    }
+
+    #[test]
+    fn hints_put_keys_in_the_key_colour_and_keep_the_text() {
+        let th = Theme::new(UiTheme::Warm, true);
+        let text = " Ctrl+Enter (or Alt+Enter) start · Esc or ? closes · type a name ";
+        let spans = Look::Themed(th).hint_spans(text);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, text);
+        let keys: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style == th.bold(WARM.key))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(keys, ["Ctrl+Enter", "Alt+Enter", "Esc", "?"]);
+        // The minimal look keeps one dim span.
+        let minimal = Look::Minimal { color: true }.hint_spans(text);
+        assert_eq!(minimal.len(), 1);
+        assert_eq!(minimal[0].style, Style::new().add_modifier(Modifier::DIM));
+        assert_eq!(split_token("(or"), ("(", "or", ""));
+        assert_eq!(split_token("Alt+Enter)"), ("", "Alt+Enter", ")"));
+        assert_eq!(split_token("?"), ("", "?", ""));
     }
 
     #[test]
