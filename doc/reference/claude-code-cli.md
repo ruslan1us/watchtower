@@ -169,8 +169,22 @@ Session terminal size, verified with Claude Code 2.1.303 on Linux:
 - `claude attach` resizes the PTY to the attaching terminal (tested at 57 × 231), and the
   PTY **keeps that size after detaching** (`Ctrl+Z`).
 
+Scrolling, verified with Claude Code 2.1.303 on Linux (a background session asked to
+print 300 numbered lines, its terminal 50 × 200, never attached), and on every captured
+fixture under `tests/fixtures/logs/`:
+
+- The stream contains no line feed (LF, VT, FF), no reverse index (`ESC M`) and no
+  scroll-up or scroll-down sequence (`ESC[<n>S`, `ESC[<n>T`). Claude Code draws in place
+  with absolute (`ESC[<r>;<c>H`) and relative (`ESC[<n>B`, `ESC[<n>C`, `ESC[<n>G`) moves,
+  so the terminal's screen never scrolls and nothing reaches a terminal's scrollback.
+- The stream was 9 KB. Replayed at 50 × 200 its final screen showed lines 258–300, the
+  end-of-turn line, the prompt box and the footer; lines 1–257 appear in the stream only as
+  intermediate frames that later frames overwrite in place. `claude logs` therefore gives
+  the session's current screen, not its history.
+
 How Watchtower uses it: [0009](../0009-stop-remove-and-logs.md),
-[0025](../0025-session-terminal-size-for-logs.md) (the replay uses the PTY's real size).
+[0025](../0025-session-terminal-size-for-logs.md) (the replay uses the PTY's real size),
+[0028](../0028-scrolling-the-logs-panel.md) (scrolling the replayed screen).
 
 ## Attach and detach keys
 

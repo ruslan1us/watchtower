@@ -34,14 +34,16 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::activity;
 use crate::app::{
-    App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LogsPanel, LogsView, Overlay, Picker, Popup,
-    Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff, UntrustedOrchestrator,
-    UntrustedRename,
+    App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LOGS_KEY_TABLE, LogsPanel, LogsView, Overlay,
+    Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
+    UntrustedOrchestrator, UntrustedRename,
 };
 use crate::config::UiStyle;
 use crate::groups;
@@ -69,6 +71,40 @@ pub const FOOTER_KEYS: &[&str] = &[
     "e rename",
     "c settings",
     "↑↓ move",
+    "q quit",
+];
+
+/// [`FOOTER_KEYS`] while the logs panel is open with the list focused:
+/// `→` gives the panel the keys (doc/0028).
+pub const FOOTER_KEYS_LOGS_OPEN: &[&str] = &[
+    "Enter attach",
+    "Space logs",
+    "→ scroll logs",
+    "n new",
+    "m seen",
+    "/ filter",
+    "a hand-off",
+    "s stop",
+    "d remove",
+    "o orchestrator",
+    "Tab fold",
+    "p by project",
+    "i interactive",
+    "R resume",
+    "e rename",
+    "c settings",
+    "↑↓ move",
+    "q quit",
+];
+
+/// Footer key hints while the logs panel has the focus (doc/0028).
+pub const FOOTER_LOGS_KEYS: &[&str] = &[
+    "↑↓ scroll",
+    "PgUp/PgDn page",
+    "g/G top/follow",
+    "f full screen",
+    "← list",
+    "Space close",
     "q quit",
 ];
 
@@ -146,9 +182,12 @@ fn draw_minimal(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     .areas(frame.area());
 
     draw_title(frame, app, title);
-    match app.logs().cloned() {
-        None => draw_list(frame, app, list, now_ms),
-        Some(panel) => {
+    let full = app.logs().is_some_and(LogsPanel::full_screen);
+    match app.logs().is_some() {
+        false => draw_list(frame, app, list, now_ms),
+        // Full screen (doc/0028): the panel takes the list's place.
+        true if full => draw_logs(frame, app, list),
+        true => {
             let [list_area, panel_area] = if list.width >= SIDE_PANEL_MIN_WIDTH {
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(list)
@@ -157,14 +196,25 @@ fn draw_minimal(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
                     .areas(list)
             };
             draw_list(frame, app, list_area, now_ms);
-            draw_logs(frame, app, &panel, panel_area);
+            draw_logs(frame, app, panel_area);
         }
     }
     if app.filter_editing() {
         draw_filter_input(frame, app, input, Look::Minimal { color: app.color });
     }
     draw_status(frame, app, status, now);
-    draw_footer(frame, footer);
+    draw_footer(frame, footer, footer_hint_list(app));
+}
+
+/// The footer's key hints for the keys' owner (doc/0011, doc/0028): the
+/// logs panel's keys while it has the focus, else the list's, with
+/// `→ scroll logs` while the panel is open.
+pub fn footer_hint_list(app: &App) -> &'static [&'static str] {
+    match app.logs() {
+        Some(panel) if panel.focused() => FOOTER_LOGS_KEYS,
+        Some(_) => FOOTER_KEYS_LOGS_OPEN,
+        None => FOOTER_KEYS,
+    }
 }
 
 /// How the windows are drawn over a screen of `area`: in the dashboard's
@@ -301,9 +351,14 @@ pub(crate) fn draw_filter_input(frame: &mut Frame, app: &App, area: Rect, look: 
 /// importance, ending with `? help`; a hint that does not fit is dropped
 /// with the rest, never cut.
 pub fn footer_keys(w: usize) -> String {
+    footer_keys_of(FOOTER_KEYS, w)
+}
+
+/// [`footer_keys`] for the hints `keys`.
+pub fn footer_keys_of(keys: &[&str], w: usize) -> String {
     let help = FOOTER_HELP.width();
     let mut out = String::new();
-    for hint in FOOTER_KEYS {
+    for hint in keys {
         let next = out.width() + hint.width() + HINT_SEP.width();
         if next + help > w {
             break;
@@ -320,14 +375,14 @@ pub fn footer_keys(w: usize) -> String {
 }
 
 /// The footer: key hints on the left, the detach hint on the right.
-fn draw_footer(frame: &mut Frame, area: Rect) {
+fn draw_footer(frame: &mut Frame, area: Rect, keys: &[&str]) {
     let w = usize::from(area.width);
     let hint = DETACH_HINT.width();
     let sep = "  │  ";
     let text = if w >= hint + sep.width() + 8 {
         // Whole key hints in the space left of the detach hint.
         let keys_w = w - hint - sep.width();
-        format!("{}{sep}{DETACH_HINT}", footer_keys(keys_w))
+        format!("{}{sep}{DETACH_HINT}", footer_keys_of(keys, keys_w))
     } else {
         fit(DETACH_HINT, w)
     };
@@ -337,24 +392,66 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
     );
 }
 
-/// The logs panel: the replayed screen's last rows, unwrapped (doc/0009).
-fn draw_logs(frame: &mut Frame, app: &App, panel: &LogsPanel, area: Rect) {
+/// The logs panel: the replayed screen's last rows, or the scrolled-to
+/// page, unwrapped (doc/0009, doc/0028). With the focus its border is
+/// thick and its title bold.
+fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.set_logs_height(logs_text_height(area));
+    let app: &App = app;
+    let Some(panel) = app.logs() else {
+        return;
+    };
+    let (border, title) = if panel.focused() {
+        (BorderType::Thick, Style::new().add_modifier(Modifier::BOLD))
+    } else {
+        (BorderType::Plain, Style::new())
+    };
     let block = Block::new()
         .borders(Borders::ALL)
-        .title(logs_title(panel))
+        .border_type(border)
+        .title(Line::styled(logs_title(panel, area.width), title))
         .title_bottom(Line::styled(
-            " Space/Esc close ",
+            logs_hint(panel),
             Style::new().add_modifier(Modifier::DIM),
         ));
     draw_logs_in(frame, app, panel, area, block);
 }
 
-/// The logs panel's title: `logs`, or `logs · <name> (<account>)`.
-pub(crate) fn logs_title(panel: &LogsPanel) -> String {
-    if panel.title.is_empty() {
-        " logs ".to_owned()
-    } else {
-        format!(" logs · {} ", panel.title)
+/// Text rows inside a bordered logs panel of `area`.
+pub(crate) fn logs_text_height(area: Rect) -> usize {
+    usize::from(area.height.saturating_sub(2))
+}
+
+/// The logs panel's title in a panel `width` columns wide:
+/// `logs · <name> (<account>)`, and while paused (doc/0028) where it is,
+/// e.g. `paused · line 120–160 of 900 · End follows`; the name goes first
+/// when it does not fit.
+pub(crate) fn logs_title(panel: &LogsPanel, width: u16) -> String {
+    let room = usize::from(width.saturating_sub(2));
+    let paused = panel
+        .position()
+        .map(|(first, last, len)| format!("paused · line {first}–{last} of {len} · End follows"));
+    let mut parts = vec!["logs"];
+    if !panel.title.is_empty() {
+        parts.push(&panel.title);
+    }
+    if let Some(p) = &paused {
+        parts.push(p);
+    }
+    let title = format!(" {} ", parts.join(" · "));
+    match &paused {
+        Some(p) if title.width() > room => format!(" logs · {p} "),
+        _ => title,
+    }
+}
+
+/// The hint on the logs panel's bottom border: how to scroll it from the
+/// list, or the panel's own keys while it has the focus (doc/0028).
+pub(crate) fn logs_hint(panel: &LogsPanel) -> &'static str {
+    match (panel.focused(), panel.full_screen()) {
+        (false, _) => " → scroll · Space/Esc close ",
+        (true, false) => " ↑↓ PgUp/PgDn g/G · f full screen · ← list · Space close ",
+        (true, true) => " ↑↓ PgUp/PgDn g/G · f/← back · Space close ",
     }
 }
 
@@ -394,7 +491,7 @@ pub(crate) fn draw_logs_in(
         }
         LogsView::Screen(screen) if screen.is_empty() => note("(no output yet)"),
         LogsView::Screen(screen) => {
-            let mut lines = screen.tail(usize::from(inner.height));
+            let mut lines = screen.page(usize::from(inner.height), panel.scroll());
             if !app.color {
                 for line in &mut lines {
                     for span in &mut line.spans {
@@ -641,17 +738,26 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, look: Look) {
         .map(|(key, what)| help_row(key, what, 16, look))
         .collect();
     lines.push(Line::raw(""));
-    lines.push(Line::styled(" New-session dialog", look.heading()));
-    for (key, what) in DIALOG_KEY_TABLE {
-        let key = if key.starts_with("Ctrl+Enter") && !app.keyboard_enhanced {
-            "Alt+Enter"
-        } else {
-            key
-        };
-        lines.push(help_row(key, what, 22, look));
+    if app.logs_focused() {
+        // From the logs panel its own keys take the dialog's place
+        // (doc/0028).
+        lines.push(Line::styled(" Logs panel (after →)", look.heading()));
+        for (key, what) in LOGS_KEY_TABLE {
+            lines.push(help_row(key, what, 16, look));
+        }
+    } else {
+        lines.push(Line::styled(" New-session dialog", look.heading()));
+        for (key, what) in DIALOG_KEY_TABLE {
+            let key = if key.starts_with("Ctrl+Enter") && !app.keyboard_enhanced {
+                "Alt+Enter"
+            } else {
+                key
+            };
+            lines.push(help_row(key, what, 22, look));
+        }
     }
-    // 15 list keys, a blank line, the dialog title and 6 dialog keys:
-    // with the borders the help fits 24 rows (doc/0011).
+    // 15 list keys, a blank line, the dialog or logs title and 6 dialog
+    // or logs keys: with the borders the help fits 24 rows (doc/0011).
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);

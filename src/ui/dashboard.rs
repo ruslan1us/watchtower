@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::{Lb, Theme, rfit};
-use super::{DETACH_HINT, FOOTER_HELP, FOOTER_KEYS, MARKER, age_column, fit, row_columns};
+use super::{DETACH_HINT, FOOTER_HELP, MARKER, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::listing::Status;
@@ -92,10 +92,13 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
 
     draw_header(frame, app, header, tall, th);
     let wide = area.width >= SIDE_MIN_WIDTH;
-    match app.logs().cloned() {
+    let full = app.logs().is_some_and(LogsPanel::full_screen);
+    match app.logs().is_some() {
+        // Full screen (doc/0028): the logs panel takes the whole body.
+        true if full => draw_logs(frame, app, body, th),
         // The logs panel takes the detail panel's place (doc/0009); it
         // gets half the space, since the replayed screen is wide.
-        Some(logs) => {
+        true => {
             let [list, side] = if wide {
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(body)
@@ -104,34 +107,48 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
                     .areas(body)
             };
             draw_list(frame, app, list, tall, now_ms, th);
-            draw_logs(frame, app, &logs, side, th);
+            draw_logs(frame, app, side, th);
         }
-        None if wide => {
+        false if wide => {
             let [list, side] =
                 Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAIL_W)]).areas(body);
             draw_list(frame, app, list, tall, now_ms, th);
             super::detail::draw_side(frame, app, side, now_ms, th);
         }
-        None if tall => {
+        false if tall => {
             let [list, strip] =
                 Layout::vertical([Constraint::Min(4), Constraint::Length(STRIP_H)]).areas(body);
             draw_list(frame, app, list, tall, now_ms, th);
             super::detail::draw_strip(frame, app, strip, now_ms, th);
         }
-        None => draw_list(frame, app, body, tall, now_ms, th),
+        false => draw_list(frame, app, body, tall, now_ms, th),
     }
     if app.filter_editing() {
         super::draw_filter_input(frame, app, input, super::theme::Look::Themed(th));
     }
     draw_status(frame, app, status, now, th);
-    draw_footer(frame, footer, th);
+    draw_footer(frame, footer, super::footer_hint_list(app), th);
 }
 
-/// The logs panel in the dashboard's look (doc/0009).
-fn draw_logs(frame: &mut Frame, app: &App, logs: &LogsPanel, area: Rect, th: Theme) {
-    let block = panel(th, th.p.logs_border)
-        .title(Line::styled(super::logs_title(logs), th.bold(th.p.title)))
-        .title_bottom(Line::styled(" Space/Esc close ", th.muted()).right_aligned());
+/// The logs panel in the dashboard's look (doc/0009). With the focus
+/// (doc/0028) its border is thick and in the selection marker's colour.
+fn draw_logs(frame: &mut Frame, app: &mut App, area: Rect, th: Theme) {
+    app.set_logs_height(super::logs_text_height(area));
+    let app: &App = app;
+    let Some(logs) = app.logs() else {
+        return;
+    };
+    let block = if logs.focused() {
+        panel(th, th.p.mark).border_type(BorderType::Thick)
+    } else {
+        panel(th, th.p.logs_border)
+    };
+    let block = block
+        .title(Line::styled(
+            super::logs_title(logs, area.width),
+            th.bold(th.p.title),
+        ))
+        .title_bottom(Line::styled(super::logs_hint(logs), th.muted()).right_aligned());
     super::draw_logs_in(frame, app, logs, area, block);
 }
 
@@ -702,7 +719,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
 
 /// The footer (doc/0011): whole key hints, least used dropped first, then
 /// `? help`, and the detach hint on the right, which is kept longest.
-fn draw_footer(frame: &mut Frame, area: Rect, th: Theme) {
+fn draw_footer(frame: &mut Frame, area: Rect, keys: &'static [&'static str], th: Theme) {
     let w = usize::from(area.width);
     let key_st = th.bold(th.p.key);
     let label_st = th.muted();
@@ -720,7 +737,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, th: Theme) {
     }
     // Room for the keys: everything left of the detach hint, with a gap.
     let room = w.saturating_sub(right.w + 3);
-    let hints = footer_hints(room.saturating_sub(1));
+    let hints = footer_hints_of(keys, room.saturating_sub(1));
     let mut left = Lb::new();
     left.push(" ", label_st);
     for (k, hint) in hints.iter().enumerate() {
@@ -735,11 +752,17 @@ fn draw_footer(frame: &mut Frame, area: Rect, th: Theme) {
 
 /// The footer hints that fit in `w` columns: whole hints in order of
 /// importance, then `? help` while it fits.
+#[cfg(test)]
 pub fn footer_hints(w: usize) -> Vec<&'static str> {
+    footer_hints_of(super::FOOTER_KEYS, w)
+}
+
+/// [`footer_hints`] for the hints `keys`.
+pub fn footer_hints_of(keys: &'static [&'static str], w: usize) -> Vec<&'static str> {
     let help = FOOTER_HELP.width();
     let mut out = Vec::new();
     let mut used = 0;
-    for hint in FOOTER_KEYS {
+    for hint in keys {
         let next = used + hint.width() + HINT_GAP.width();
         if next + help > w {
             break;
@@ -783,7 +806,7 @@ mod tests {
         assert_eq!(some.last(), Some(&"? help"));
         assert_eq!(some[0], "Enter attach");
         let all = footer_hints(1000);
-        assert_eq!(all.len(), FOOTER_KEYS.len() + 1);
+        assert_eq!(all.len(), super::super::FOOTER_KEYS.len() + 1);
     }
 
     #[test]

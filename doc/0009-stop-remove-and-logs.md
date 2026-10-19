@@ -1,6 +1,6 @@
 # 0009. Stop, remove and the logs panel
 
-- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md)
+- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md) · scrollback, scrolling and the line-feed budget amended by [0028](0028-scrolling-the-logs-panel.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -66,8 +66,14 @@ list from 130 columns, below it on narrower terminals, half the space either way
   DECSED, alternate-screen switches, reset) also share fixed work budgets per replay;
   once one is spent, further sequences of that kind are dropped. Claude Code's streams
   stay far below them. Any 2 MiB window then replays in well under a second.
+  *Amended by [0028](0028-scrolling-the-logs-panel.md):* line feeds and reverse index
+  share a budget too, and the emulator keeps a bounded scrollback (5000 lines, at most
+  1 000 000 cells) above the screen.
 - Refresh on every poll, only for the selected row and only while the panel is open.
   Changing the selection fetches the new row immediately.
+  *Amended by [0028](0028-scrolling-the-logs-panel.md):* `→` / `l` give the panel the
+  keys to scroll it and `f` shows it full screen; while scrolled up it is paused on its
+  snapshot and not refreshed until `End` or the last page.
 - Interactive rows have no `id`; the panel shows a short note instead of output.
 - Rows without a live process (no `pid` and no `status`,
   [0006](0006-session-states-and-grouping.md)) show the note "no live output — session
