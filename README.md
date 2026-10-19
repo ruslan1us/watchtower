@@ -253,6 +253,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `Enter` | Attach to the session (after a refresh); on a group header, collapse / expand |
 | `Tab` | Collapse / expand the group of the selected line |
 | `Space` | Toggle the logs panel for the selected session |
+| `→`, `l` | Scroll the open logs panel (keys below) |
 | `n` | New-session dialog |
 | `a` | Continue under another of your accounts (hand-off; always asks, same group only by default) |
 | `o` | Attach to the orchestrator, starting it if missing |
@@ -270,12 +271,27 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |
 
+Logs panel after `→` ([0028](doc/0028-scrolling-the-logs-panel.md)):
+
+| Key | Action |
+|---|---|
+| `↑` / `↓`, `k` / `j` | One line |
+| `PgUp` / `PgDn`, `Ctrl+U` / `Ctrl+D` | One page |
+| `Home` / `g`, `End` / `G` | Top; bottom, following the output again |
+| `f` | Full screen on / off |
+| `←`, `h`, `Esc` | Back to the list |
+| `Space` | Close the panel |
+
+Scrolled up, the panel pauses on what it shows and its title says
+`paused · line 120–160 of 900 · End follows`; `End` refreshes it.
+
 Command keys also work with a Russian or Ukrainian (ЙЦУКЕН) layout active: `т` acts as
 `n`, `ф` as `a`, and so on; text fields keep Cyrillic as typed ([0011](doc/0011-keybindings.md)).
 
 Confirmations take `y`; `n`, `Esc` and `Enter` cancel. The hand-off confirmation names
 both accounts and their groups and says that the full conversation and project context
-continue under the target account and its terms. Tower never binds `←` and treats
+continue under the target account and its terms. Tower never binds `←` in the session
+list (only inside the focused logs panel, where it means "back") and treats
 `Ctrl+Z` as a no-op, because inside an attached session those are Claude Code's keys
 (`←` on an empty prompt opens agent view, `Ctrl+Z` returns to tower).
 

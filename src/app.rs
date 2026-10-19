@@ -3,7 +3,7 @@
 //! groups, the interactive toggle and the text filter, doc/0006), the
 //! selection over headers and rows, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
-//! logs panel (doc/0009), the hand-off to another account (doc/0004), the
+//! logs panel and its scrolling (doc/0009, doc/0028), the hand-off to another account (doc/0004), the
 //! rename window of `e` (doc/0027), the
 //! orchestrator key `o` (doc/0010), the tracked activity times and the
 //! attention highlight with `m` (doc/0006, doc/0007, via
@@ -26,6 +26,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -717,13 +718,15 @@ pub enum LogsView {
     Note(String),
     /// The first fetch for this row is running.
     Loading,
-    /// The replayed screen of the latest fetch.
-    Screen(LogScreen),
+    /// The replayed screen of the latest fetch, shared so drawing does not
+    /// copy its history.
+    Screen(Arc<LogScreen>),
     /// The latest fetch failed.
     Error(String),
 }
 
-/// The logs panel of the selected row (doc/0009).
+/// The logs panel of the selected row (doc/0009), and its scrolling
+/// (doc/0028).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogsPanel {
     /// Name and account of the row, for the panel title.
@@ -736,9 +739,32 @@ pub struct LogsPanel {
     in_flight: Option<LogsTarget>,
     /// Fetch again as soon as the running fetch reports back.
     pending: bool,
+    /// Whether the panel has the keys (`→`), not the list.
+    focused: bool,
+    /// Whether the panel takes the whole body (`f`); only with the focus.
+    full: bool,
+    /// The first line shown while scrolled up (paused on the current
+    /// snapshot); `None` while following the output at the bottom.
+    scroll: Option<usize>,
+    /// Text rows inside the panel, as last drawn ([`App::set_logs_height`]).
+    height: usize,
 }
 
 impl LogsPanel {
+    fn new() -> LogsPanel {
+        LogsPanel {
+            title: String::new(),
+            view: LogsView::Loading,
+            target: None,
+            in_flight: None,
+            pending: false,
+            focused: false,
+            full: false,
+            scroll: None,
+            height: 10,
+        }
+    }
+
     /// The row whose logs are fetched, if any.
     pub fn target(&self) -> Option<&LogsTarget> {
         self.target.as_ref()
@@ -748,6 +774,55 @@ impl LogsPanel {
     pub fn in_flight(&self) -> Option<&LogsTarget> {
         self.in_flight.as_ref()
     }
+
+    /// Whether the panel has the keys rather than the list (doc/0028).
+    pub fn focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Whether the panel takes the whole body area (`f`, doc/0028).
+    pub fn full_screen(&self) -> bool {
+        self.full
+    }
+
+    /// The first line shown while paused (scrolled up); `None` while the
+    /// panel follows the output (doc/0028).
+    pub fn scroll(&self) -> Option<usize> {
+        self.scroll
+    }
+
+    /// Whether the panel is scrolled up and frozen on its snapshot.
+    pub fn paused(&self) -> bool {
+        self.scroll.is_some()
+    }
+
+    /// Text rows inside the panel, as last drawn.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Where a paused panel is: the first and last line shown (1-based)
+    /// and the number of lines it scrolls through. `None` while following
+    /// or without a screen.
+    pub fn position(&self) -> Option<(usize, usize, usize)> {
+        let top = self.scroll?;
+        let LogsView::Screen(screen) = &self.view else {
+            return None;
+        };
+        let h = self.height.max(1);
+        let len = screen.scroll_len(h);
+        let top = top.min(len.saturating_sub(h));
+        Some((top + 1, (top + h).min(len), len))
+    }
+}
+
+/// A move of the logs panel's view (doc/0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Up(usize),
+    Down(usize),
+    Top,
+    Bottom,
 }
 
 /// The note for a row without a live process (doc/0009).
@@ -840,6 +915,31 @@ pub enum Action {
     Settings,
     /// `e`: rename the session (doc/0027).
     Rename,
+    /// `→` / `l`: give the keys to the open logs panel (doc/0028).
+    FocusLogs,
+}
+
+/// Keys of the logs panel while it has the focus (doc/0028), looked up
+/// through [`logs_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogsAction {
+    LineUp,
+    LineDown,
+    PageUp,
+    PageDown,
+    Top,
+    /// `End` / `G`: the bottom, following the output again.
+    Bottom,
+    /// `f`: full screen on / off.
+    FullScreen,
+    /// `←` / `h` / `Esc`: the keys back to the list.
+    Back,
+    /// `Space`: close the panel.
+    Close,
+    Refresh,
+    Help,
+    Quit,
+    DetachKeyHint,
 }
 
 /// Keys of the session list (doc/0011), for the help. Short enough that
@@ -859,10 +959,24 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("a, e", "continue under another account (hand-off); rename"),
     ("s, d", "stop (confirm when working or blocked); remove"),
     ("m", "mark the highlighted session as seen"),
-    ("Space, Esc", "toggle / close the logs panel"),
+    (
+        "Space, Esc, →",
+        "toggle / close the logs panel; → scrolls it",
+    ),
     ("c, r, ?", "settings; refresh now; this help"),
     ("q, Ctrl+C", "quit"),
     ("Ctrl+Z", "inside a session: return to tower"),
+];
+
+/// Keys of the logs panel while it has the focus (doc/0028), for the help,
+/// which shows them instead of the dialog keys there.
+pub const LOGS_KEY_TABLE: &[(&str, &str)] = &[
+    ("↑/↓, k/j", "scroll one line"),
+    ("PgUp/PgDn", "scroll one page (also Ctrl+U / Ctrl+D)"),
+    ("Home/g, End/G", "top; bottom, following the output again"),
+    ("f", "full screen on / off"),
+    ("←, h, Esc", "back to the list"),
+    ("Space", "close the logs panel"),
 ];
 
 /// Keys of the new-session dialog, for the help (doc/0011).
@@ -876,8 +990,9 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
 ];
 
 /// Maps a key to a list action. Letters only match without Ctrl/Alt, so
-/// `Ctrl+C` is never mistaken for `c`. `←` is never bound (it is Claude
-/// Code's key, doc/0011).
+/// `Ctrl+C` is never mistaken for `c`. `←` is never bound in the list (it
+/// is Claude Code's key, doc/0011); `→` / `l` give the keys to the open
+/// logs panel (doc/0028).
 pub fn list_action(key: &KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -917,6 +1032,43 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Tab => Action::ToggleGroup,
         KeyCode::Char('c') => Action::Settings,
         KeyCode::Char('e') => Action::Rename,
+        KeyCode::Right | KeyCode::Char('l') => Action::FocusLogs,
+        _ => return None,
+    };
+    Some(action)
+}
+
+/// Maps a key to a logs-panel action while the panel has the focus
+/// (doc/0028). Letters only match without Ctrl/Alt; `Ctrl+U` / `Ctrl+D`
+/// page as in a pager.
+pub fn logs_action(key: &KeyEvent) -> Option<LogsAction> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    if ctrl {
+        return match key.code {
+            KeyCode::Char('c' | 'C') => Some(LogsAction::Quit),
+            KeyCode::Char('z' | 'Z') => Some(LogsAction::DetachKeyHint),
+            KeyCode::Char('u' | 'U') => Some(LogsAction::PageUp),
+            KeyCode::Char('d' | 'D') => Some(LogsAction::PageDown),
+            _ => None,
+        };
+    }
+    if alt {
+        return None;
+    }
+    let action = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => LogsAction::LineUp,
+        KeyCode::Down | KeyCode::Char('j') => LogsAction::LineDown,
+        KeyCode::PageUp => LogsAction::PageUp,
+        KeyCode::PageDown => LogsAction::PageDown,
+        KeyCode::Home | KeyCode::Char('g') => LogsAction::Top,
+        KeyCode::End | KeyCode::Char('G') => LogsAction::Bottom,
+        KeyCode::Char('f') => LogsAction::FullScreen,
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => LogsAction::Back,
+        KeyCode::Char(' ') => LogsAction::Close,
+        KeyCode::Char('r') => LogsAction::Refresh,
+        KeyCode::Char('?') => LogsAction::Help,
+        KeyCode::Char('q') => LogsAction::Quit,
         _ => return None,
     };
     Some(action)
@@ -1210,6 +1362,25 @@ impl App {
     /// The logs panel, when open.
     pub fn logs(&self) -> Option<&LogsPanel> {
         self.logs.as_ref()
+    }
+
+    /// Whether the open logs panel has the keys (doc/0028).
+    pub fn logs_focused(&self) -> bool {
+        self.logs.as_ref().is_some_and(|p| p.focused)
+    }
+
+    /// Records the text rows inside the logs panel; the renderer calls it
+    /// before drawing the panel, so paging uses the panel's height and a
+    /// paused panel's first line stays within the history after a resize
+    /// (doc/0028).
+    pub fn set_logs_height(&mut self, height: usize) {
+        let Some(panel) = self.logs.as_mut() else {
+            return;
+        };
+        panel.height = height;
+        if let (Some(top), LogsView::Screen(screen)) = (panel.scroll, &panel.view) {
+            panel.scroll = Some(top.min(screen.max_top(height.max(1))));
+        }
     }
 
     /// The popup window, when open.
@@ -1864,7 +2035,8 @@ impl App {
 
     /// Reports how an attach ended and asks for an immediate poll. A
     /// successful attach (exit code 0) acknowledges the session's highlight
-    /// with the tuple it had (doc/0007).
+    /// with the tuple it had (doc/0007). An open logs panel follows the
+    /// output again, so the poll refreshes it (doc/0028).
     pub fn attach_finished(&mut self, outcome: AttachOutcome) -> Vec<Effect> {
         let mut effects = Vec::new();
         // A rename through this attach (doc/0027): after a clean return the
@@ -1873,6 +2045,9 @@ impl App {
             self.attached_id.as_deref() == Some(i.id.as_str())
                 && matches!(outcome.result, Ok(Some(0)))
         });
+        if let Some(panel) = self.logs.as_mut() {
+            panel.scroll = None;
+        }
         if let Some(id) = self.attached_id.take()
             && matches!(outcome.result, Ok(Some(0)))
             && let Some(key) = self
@@ -2150,6 +2325,8 @@ impl App {
 
     /// Takes a finished logs fetch (doc/0009). A result for a row the panel
     /// no longer shows is dropped, and the current row is fetched instead.
+    /// While the panel is paused (scrolled up) it keeps its snapshot and the
+    /// result is dropped too (doc/0028).
     pub fn logs_fetched(
         &mut self,
         target: LogsTarget,
@@ -2162,9 +2339,13 @@ impl App {
             panel.in_flight = None;
         }
         let current = panel.target.as_ref() == Some(&target);
+        if current && panel.scroll.is_some() {
+            panel.pending = false;
+            return Vec::new();
+        }
         if current {
             panel.view = match result {
-                Ok(screen) => LogsView::Screen(screen),
+                Ok(screen) => LogsView::Screen(Arc::new(screen)),
                 Err(LogsError::NotRunning) => LogsView::Note(NOTE_STOPPED.to_owned()),
                 Err(LogsError::UnknownSession) => LogsView::Note(format!(
                     "account {} does not host this session (it may run under another \
@@ -2292,6 +2473,7 @@ impl App {
             Overlay::OrchestratorUntrusted(u) => self.orchestrator_untrusted_key(key, *u),
             Overlay::RenameUntrusted(u) => self.rename_untrusted_key(key, *u),
             Overlay::None if self.filter.editing => self.filter_key(key),
+            Overlay::None if self.logs_focused() => self.logs_key(key),
             Overlay::None => self.list_key(key),
         }
     }
@@ -2627,15 +2809,18 @@ impl App {
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
-                    self.logs = Some(LogsPanel {
-                        title: String::new(),
-                        view: LogsView::Loading,
-                        target: None,
-                        in_flight: None,
-                        pending: false,
-                    });
+                    self.logs = Some(LogsPanel::new());
                     // Force the first fetch even if the target is unchanged.
                     return self.logs_follow(true);
+                }
+                return Vec::new();
+            }
+            Action::FocusLogs => {
+                match self.logs.as_mut() {
+                    Some(panel) => panel.focused = true,
+                    None => {
+                        self.set_message("→ scrolls the logs panel; Space opens it", Severity::Info)
+                    }
                 }
                 return Vec::new();
             }
@@ -2694,6 +2879,97 @@ impl App {
         }
         effects.extend(self.logs_follow(false));
         effects
+    }
+
+    /// Keys while the logs panel has the focus (doc/0028): scrolling, full
+    /// screen, back to the list, close; `q`, `Ctrl+C`, `r` and `?` as in
+    /// the list. Other list keys only say how to get back to the list.
+    fn logs_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(action) = logs_action(&key) else {
+            if list_action(&key).is_some_and(|a| a != Action::FocusLogs) {
+                self.set_message(
+                    "the logs panel has the keys: ← or Esc returns to the list",
+                    Severity::Info,
+                );
+            }
+            return Vec::new();
+        };
+        let Some(page) = self.logs.as_ref().map(|p| p.height.max(1)) else {
+            return Vec::new();
+        };
+        match action {
+            LogsAction::LineUp => self.scroll_logs(Scroll::Up(1)),
+            LogsAction::LineDown => self.scroll_logs(Scroll::Down(1)),
+            LogsAction::PageUp => self.scroll_logs(Scroll::Up(page)),
+            LogsAction::PageDown => self.scroll_logs(Scroll::Down(page)),
+            LogsAction::Top => self.scroll_logs(Scroll::Top),
+            LogsAction::Bottom => self.scroll_logs(Scroll::Bottom),
+            LogsAction::FullScreen => {
+                if let Some(panel) = self.logs.as_mut() {
+                    panel.full = !panel.full;
+                }
+                Vec::new()
+            }
+            LogsAction::Back => {
+                if let Some(panel) = self.logs.as_mut() {
+                    panel.focused = false;
+                    panel.full = false;
+                }
+                Vec::new()
+            }
+            LogsAction::Close => {
+                self.logs = None;
+                Vec::new()
+            }
+            LogsAction::Refresh => {
+                self.set_message("refreshing…", Severity::Info);
+                vec![Effect::PollNow]
+            }
+            LogsAction::Help => {
+                self.overlay = Overlay::Help;
+                Vec::new()
+            }
+            LogsAction::Quit => vec![Effect::Quit],
+            LogsAction::DetachKeyHint => {
+                self.set_message(
+                    "Ctrl+Z does nothing here; inside a session it returns to tower",
+                    Severity::Info,
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Scrolls the logs panel's screen (doc/0028). Leaving the bottom
+    /// pauses the panel on its snapshot; reaching the bottom again, or
+    /// `End`, follows the output again and fetches at once. Nothing to
+    /// scroll (a note, or output that fits) leaves the panel following.
+    fn scroll_logs(&mut self, how: Scroll) -> Vec<Effect> {
+        let Some(panel) = self.logs.as_mut() else {
+            return Vec::new();
+        };
+        let LogsView::Screen(screen) = &panel.view else {
+            return Vec::new();
+        };
+        let h = panel.height.max(1);
+        let max_top = screen.max_top(h);
+        let now = panel.scroll.unwrap_or(max_top).min(max_top);
+        let top = match how {
+            Scroll::Up(n) => now.saturating_sub(n),
+            Scroll::Down(n) => now.saturating_add(n).min(max_top),
+            Scroll::Top => 0,
+            Scroll::Bottom => max_top,
+        };
+        if top < max_top {
+            panel.scroll = Some(top);
+            panel.pending = false;
+            return Vec::new();
+        }
+        let was_paused = panel.scroll.take().is_some();
+        if was_paused || how == Scroll::Bottom {
+            return self.logs_follow(true);
+        }
+        Vec::new()
     }
 
     /// A row action (attach, stop, remove) on the selected row: with the
@@ -4767,7 +5043,9 @@ impl App {
     /// Points the open logs panel at the selected row: a note for rows
     /// without fetchable logs, otherwise a fetch when the row changed or
     /// `refresh` is set. At most one fetch runs at a time; a request while
-    /// one runs is remembered and issued when it reports back.
+    /// one runs is remembered and issued when it reports back. Another row
+    /// (or a note) follows the output from the bottom; a paused panel on
+    /// the same row keeps its snapshot and fetches nothing (doc/0028).
     fn logs_follow(&mut self, refresh: bool) -> Vec<Effect> {
         if self.logs.is_none() {
             return Vec::new();
@@ -4781,6 +5059,7 @@ impl App {
             Err(note) => {
                 panel.target = None;
                 panel.pending = false;
+                panel.scroll = None;
                 panel.view = LogsView::Note(note);
                 Vec::new()
             }
@@ -4789,7 +5068,8 @@ impl App {
                 if changed {
                     panel.target = Some(target.clone());
                     panel.view = LogsView::Loading;
-                } else if !refresh {
+                    panel.scroll = None;
+                } else if !refresh || panel.scroll.is_some() {
                     return Vec::new();
                 }
                 if panel.in_flight.is_some() {

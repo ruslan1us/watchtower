@@ -363,6 +363,137 @@ fn a_stream_of_nothing_but_expensive_sequences_is_bounded() {
     assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
 }
 
+// ---- history (doc/0028) --------------------------------------------------
+
+/// `line 1` … `line n`, one per line, scrolling a terminal of any height.
+fn numbered(n: usize) -> Vec<u8> {
+    let lines: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
+    format!("\x1b[2J\x1b[H{}", lines.join("\r\n")).into_bytes()
+}
+
+fn line_numbers(from: usize, to: usize) -> Vec<String> {
+    (from..=to).map(|i| format!("line {i}")).collect()
+}
+
+#[test]
+fn lines_scrolled_off_the_top_are_kept_oldest_first() {
+    let screen = logview::render(&numbered(300));
+    assert_eq!(screen.size(), (DEFAULT_ROWS, DEFAULT_COLS));
+    // 300 lines on 64 rows: 236 scrolled off the top.
+    assert_eq!(screen.scrollback_rows(), 236);
+    assert_eq!(screen.history_rows(), 300);
+    assert_eq!(screen.history_plain(), line_numbers(1, 300));
+    let styled: Vec<String> = screen
+        .history_lines()
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    assert_eq!(styled, line_numbers(1, 300));
+    // The screen methods stay screen-aligned and the tail is unchanged.
+    assert_eq!(screen.plain_lines(), line_numbers(237, 300));
+    assert_eq!(screen.tail_plain(500), line_numbers(237, 300));
+    assert_eq!(screen.tail_plain(10), line_numbers(291, 300));
+}
+
+#[test]
+fn the_scrollback_is_capped() {
+    let screen = logview::render_sized(&numbered(6000), Some((5, 200)));
+    assert_eq!(screen.scrollback_rows(), logview::scrollback_len(200));
+    assert_eq!(screen.scrollback_rows(), logview::SCROLLBACK_LINES);
+    assert_eq!(screen.history_plain(), line_numbers(996, 6000));
+
+    // Wide screens keep fewer lines: at most SCROLLBACK_CELLS cells.
+    let screen = logview::render_sized(&numbered(3000), Some((5, 600)));
+    assert_eq!(screen.scrollback_rows(), 1666);
+    assert_eq!(screen.history_plain(), line_numbers(3000 - 1666 - 4, 3000));
+}
+
+#[test]
+fn pages_scroll_through_the_history() {
+    let screen = logview::render(&numbered(300));
+    assert_eq!(screen.scroll_len(10), 300);
+    assert_eq!(screen.max_top(10), 290);
+    // Following: the last page, as the tail shows it.
+    assert_eq!(screen.page_plain(10, None), line_numbers(291, 300));
+    assert_eq!(screen.page(10, None), screen.tail(10));
+    assert_eq!(screen.page_plain(10, Some(0)), line_numbers(1, 10));
+    assert_eq!(screen.page_plain(10, Some(120)), line_numbers(121, 130));
+    // Past the end: clamped to the last page.
+    assert_eq!(screen.page_plain(10, Some(9999)), line_numbers(291, 300));
+    // A panel taller than the history shows all of it.
+    assert_eq!(screen.max_top(500), 0);
+    assert_eq!(screen.page_plain(500, Some(7)), line_numbers(1, 300));
+    assert!(screen.page(0, None).is_empty());
+}
+
+#[test]
+fn blank_runs_collapse_only_when_the_history_does_not_fit() {
+    let bytes = b"\x1b[2J\x1b[Htop\r\n\r\n\r\n\r\nmiddle\x1b[10;1Hbottom";
+    let screen = logview::render(bytes);
+    assert_eq!(screen.scrollback_rows(), 0);
+    assert_eq!(screen.history_rows(), 10);
+    // Fits: unchanged, blank rows included.
+    assert_eq!(screen.scroll_len(10), 10);
+    assert_eq!(screen.page_plain(10, None)[1], "");
+    // Does not fit: each blank run becomes one blank row.
+    assert_eq!(screen.scroll_len(4), 5);
+    assert_eq!(
+        screen.page_plain(4, Some(0)),
+        ["top", "", "middle", ""].map(String::from)
+    );
+    assert_eq!(
+        screen.page_plain(4, None),
+        ["", "middle", "", "bottom"].map(String::from)
+    );
+    assert_eq!(screen.page(4, None), screen.tail(4));
+}
+
+#[test]
+fn empty_and_short_output_has_nothing_to_scroll() {
+    let empty = logview::render(b"");
+    assert_eq!(empty.history_rows(), 0);
+    assert_eq!(empty.scroll_len(10), 0);
+    assert_eq!(empty.max_top(10), 0);
+    assert!(empty.page(10, Some(3)).is_empty());
+    assert!(empty.history_lines().is_empty());
+
+    let short = logview::render(b"one\r\ntwo");
+    assert_eq!(short.max_top(10), 0);
+    assert_eq!(short.page_plain(10, Some(5)), ["one", "two"]);
+    assert_eq!(short.page_plain(1, Some(5)), ["two"]);
+    assert_eq!(short.page_plain(1, Some(0)), ["one"]);
+}
+
+#[test]
+fn line_feed_floods_replay_quickly() {
+    // One byte per scroll: unbounded, 2 MiB of line feeds on the largest
+    // screen took about two seconds in a release build, longer with the
+    // scrollback. The scroll budget bounds them (about 0.3 s in a release
+    // build, 1.5 s in a debug one); text after the flood still lands.
+    let limit = std::time::Duration::from_secs(if cfg!(debug_assertions) { 6 } else { 1 });
+    let flood = |unit: &[u8]| {
+        let mut bytes = b"\x1b[300;600Hx".to_vec();
+        while bytes.len() < MAX_INPUT_BYTES - 64 {
+            bytes.extend_from_slice(unit);
+        }
+        bytes.extend_from_slice(b"\x1b[1;1Hstill here");
+        bytes
+    };
+    for unit in [&b"\n"[..], b"x\n", b"\x1bM", b"\x1b[\n5A"] {
+        let bytes = flood(unit);
+        let started = std::time::Instant::now();
+        let screen = logview::render(&bytes);
+        let took = started.elapsed();
+        assert!(took < limit, "{unit:?} took {took:?}");
+        assert_eq!(screen.size(), (MAX_ROWS, MAX_COLS));
+        assert!(
+            screen.plain_lines()[0].starts_with("still here"),
+            "{unit:?}"
+        );
+        assert!(screen.scrollback_rows() <= logview::scrollback_len(MAX_COLS));
+    }
+}
+
 // ---- fetch ---------------------------------------------------------------
 
 /// Serializes the fake-executable tests (ETXTBSY, see tests/cli.rs).
