@@ -15,9 +15,9 @@ use common::{
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
-use watchtower::actions::RemoveError;
+use watchtower::actions::{Removal, RemoveError};
 use watchtower::app::{
-    App, AttachOutcome, Confirm, Effect, HandoffJob, Overlay, SessionAction, SidecarJob,
+    App, AttachOutcome, Confirm, Effect, HandoffJob, Overlay, RemoveJob, SessionAction, SidecarJob,
 };
 use watchtower::dialog::DialogPrompt;
 use watchtower::handoff::HandoffError;
@@ -73,7 +73,7 @@ fn start_handoff(app: &mut App) -> HandoffJob {
     handoff_of(&app.handle_key(ch('y')))
 }
 
-fn remove_of(effects: &[Effect]) -> SessionAction {
+fn remove_of(effects: &[Effect]) -> RemoveJob {
     effects
         .iter()
         .find_map(|e| match e {
@@ -90,11 +90,12 @@ fn attach_of(effects: &[Effect]) -> Option<(String, String)> {
     })
 }
 
-fn refused() -> Result<(), RemoveError> {
+fn refused() -> Removal {
     Err(RemoveError::Refused {
         code: Some(1),
         message: "has unpushed commits".into(),
     })
+    .into()
 }
 
 fn untrusted() -> Result<watchtower::handoff::Resumed, HandoffError> {
@@ -135,7 +136,7 @@ fn a_late_trust_window_waits_for_the_open_confirmation() {
 
     // The next key answers the question it was meant for.
     let action = remove_of(&app.handle_key(ch('y')));
-    assert_eq!(action.name, "print-date");
+    assert_eq!(action.action.name, "print-date");
     // Then the trust window opens.
     assert!(matches!(app.overlay(), Overlay::Untrusted(_)));
     assert_eq!(app.waiting_windows(), 0);
@@ -154,7 +155,7 @@ fn late_windows_wait_for_help_and_pickers_in_order() {
     };
     app.handle_key(ch('?'));
     assert_eq!(app.overlay(), &Overlay::Help);
-    app.remove_finished(action, refused());
+    app.remove_finished(action.into(), refused());
     app.handoff_finished(job, untrusted());
     assert_eq!(app.overlay(), &Overlay::Help, "help stays open");
     assert!(app.popup().is_none());
@@ -207,7 +208,7 @@ fn ctrl_c_in_a_popup_asks_while_a_handoff_runs() {
         id: "7b4d9f02".into(),
         name: "print-date".into(),
     };
-    app.remove_finished(action, refused());
+    app.remove_finished(action.into(), refused());
     assert!(app.popup().is_some(), "nothing else was open");
 
     let effects = app.handle_key(ctrl('c'));

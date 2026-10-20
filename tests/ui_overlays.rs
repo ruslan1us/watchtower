@@ -207,11 +207,12 @@ config_dir = "~/.claude-spare"
         name: "say-ok".into(),
     };
     app.remove_finished(
-        action,
+        action.into(),
         Err(RemoveError::Refused {
             code: Some(1),
             message: "refusal line 1\nrefusal line 2".into(),
-        }),
+        })
+        .into(),
     );
     out.push(("popup", app));
 

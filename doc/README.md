@@ -20,13 +20,13 @@ This directory records the design decisions behind it, one file per decision.
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
 | 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029) |
 | 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029) |
-| 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted |
+| 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
 | 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029; busy rows outside `working` amended by 0032) |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted (rename wake amended by 0027) |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029) |
-| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030) |
+| 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029) |
 | 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
@@ -51,6 +51,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0031 | [The background logs-follow interval](0031-logs-follow-interval.md) | Accepted |
 | 0032 | [A background task that outlives a finished turn](0032-background-task-after-a-finished-turn.md) | Accepted |
 | 0033 | [Hand-off without a prompt](0033-hand-off-without-a-prompt.md) | Accepted |
+| 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

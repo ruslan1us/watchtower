@@ -35,10 +35,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::actions::{self, RemoveError, StopError};
+use crate::actions::{self, Removal, StopError};
 use crate::app::{
-    App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, OrchestratorJob, ProjectScan, RenameJob,
-    SessionAction, SidecarJob,
+    App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, OrchestratorJob, ProjectScan, RemoveJob,
+    RenameJob, SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::config::ConfigError;
@@ -62,8 +62,8 @@ pub enum JobResult {
     Orchestrator(OrchestratorJob, Result<Dispatched, StartError>),
     /// `stop <id>`.
     Stop(SessionAction, Result<(), StopError>),
-    /// `rm <id>`.
-    Remove(SessionAction, Result<(), RemoveError>),
+    /// `rm <id>`, with its fallback (doc/0034).
+    Remove(RemoveJob, Removal),
     /// A step of a running hand-off has started.
     HandoffStep(Step),
     /// A finished hand-off (doc/0004). The job is boxed to keep the enum
@@ -100,7 +100,7 @@ impl JobResult {
             JobResult::Dispatch(job, result) => app.dispatch_finished(job, result),
             JobResult::Orchestrator(job, result) => app.orchestrator_finished(job, result),
             JobResult::Stop(action, result) => app.stop_finished(action, result),
-            JobResult::Remove(action, result) => app.remove_finished(action, result),
+            JobResult::Remove(job, removal) => app.remove_finished(job, removal),
             JobResult::HandoffStep(step) => {
                 app.handoff_step(step);
                 Vec::new()
@@ -257,12 +257,19 @@ impl Jobs {
         });
     }
 
-    /// Runs `<account command> rm <id>` (doc/0009).
-    pub fn remove(&self, action: SessionAction) {
-        let fail = |action, err: CliError| JobResult::Remove(action, Err(err.into()));
-        self.launch("rm", action, fail, |runner, _, action| {
-            let result = actions::remove(runner, &action.account, &action.id);
-            JobResult::Remove(action, result)
+    /// Runs `<account command> rm <id>`, then, after the owner's service
+    /// refusal, the other accounts' commands the job allows (doc/0009,
+    /// doc/0034).
+    pub fn remove(&self, job: RemoveJob) {
+        let fail = |job, err: CliError| JobResult::Remove(job, Err(err.into()).into());
+        self.launch("rm", job, fail, |runner, _, job| {
+            let removal = actions::remove_with_fallback(
+                runner,
+                &job.action.account,
+                &job.fallback,
+                &job.action.id,
+            );
+            JobResult::Remove(job, removal)
         });
     }
 
@@ -543,6 +550,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::actions::RemoveError;
     use crate::config::Account;
 
     fn action() -> SessionAction {
@@ -604,10 +612,11 @@ mod tests {
             "{err:?}"
         );
         assert!(err.to_string().contains("cannot start its thread"), "{err}");
-        jobs.remove(action());
+        jobs.remove(action().into());
         assert!(matches!(
             result(&jobs),
-            JobResult::Remove(a, Err(RemoveError::Cli(CliError::Worker { .. }))) if a == action()
+            JobResult::Remove(j, Removal { result: Err(RemoveError::Cli(CliError::Worker { .. })), .. })
+                if j.action == action()
         ));
     }
 }

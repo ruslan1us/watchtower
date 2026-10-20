@@ -41,7 +41,7 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude logs <id\|name>` | "Recent terminal output" of the session. Part of a name is accepted. **No line-limit flag.** Format below. Fails (exit 1, empty stdout) for a stopped session, since there is no live process. | CLI help, verified |
 | `claude stop <id>` / `claude kill <id>` | Stops the session's process; the conversation is kept. **Short id only**: a name, a full `sessionId` or a pid gives `No job matching '<x>'`. Idempotent: on an already stopped session it prints `stopped <id>` and exits 0. | CLI help, verified |
-| `claude rm <id> [--discard-unpushed <commit>@<worktree>] [--force-remove-worktree <worktree>]` | Removes the row and, when safe, the session's worktree. The transcript stays on disk. Works on exited sessions. Refuses on uncommitted changes, unpushed commits or a worktree in use, and prints the flag to pass for a second try. | CLI help, verified (success case) |
+| `claude rm <id> [--discard-unpushed <commit>@<worktree>] [--force-remove-worktree <worktree>]` | Removes the row and, when safe, the session's worktree. The transcript stays on disk. Works on exited sessions. Refuses on uncommitted changes, unpushed commits or a worktree in use, and prints the flag to pass for a second try. Can also refuse with `couldn't remove <id> — the background service may be restarting. …` (exit 1) while the hosting account's supervisor is not running; another account's command then removes it ([Multiple config dirs](#multiple-config-dirs-accounts), [0034](../0034-remove-with-another-account-when-the-service-is-down.md)). | CLI help, verified (success case; service refusal on the owner's server 2026-10-20) |
 | `claude respawn <id>\|--all` | Restarts sessions onto the currently installed binary. | CLI help |
 | `claude daemon status\|logs\|stop [--any] [--keep-workers]` | Supervisor information (pid, version, socket dir, worker counts), its log, stopping it. | CLI help |
 
@@ -119,6 +119,7 @@ Observed `state` / `status` / `waitingFor` combinations (verified):
 | Woken with `--resume <sessionId> --bg` and no prompt after a stop mid-turn, right after the wake (the session does not continue by itself) | `working` | `idle` | — |
 | Woken with `--resume <sessionId> --bg` and no prompt after a stop with `state: done` | `done` (kept) | `idle` | — |
 | Stopped with `claude stop` (only with `--all`) | last value kept (observed: `done`) | absent | — |
+| Process ended without `claude stop` (seen on the owner's server, 2026-10-20, Claude Code version not recorded) | last value kept (observed: `blocked`) | absent | — |
 
 Observed oddities (verified):
 
@@ -139,6 +140,10 @@ Observed oddities (verified):
   keeping its last `state`, with no `pid` and no `status`. While every session was alive, `--json` and `--json --all` returned the same rows.
   A row without a live process is therefore recognised by the missing `pid` and `status`, not
   by its `state`.
+- In a check in WSL on 2.1.303 (2026-10-20, one account), a session stopped with
+  `claude stop` was listed with `state: "stopped"`.
+- A session whose process ended without `claude stop` was listed with `state: "blocked"`, no
+  `pid` and no `status` (owner's server, 2026-10-20, version not recorded).
 
 ## `claude logs` output
 
@@ -330,6 +335,25 @@ What the **other** account's command does with a session hosted by `alt`:
 Consequence: waking with the wrong command silently switches the account. Account hand-off
 is built on this ([0004](../0004-account-hand-off.md)).
 
+`rm` while the hosting account's supervisor is not running (verified on the owner's server,
+2026-10-20, Claude Code version not recorded; shared session list, each account with its own
+transient supervisor):
+
+- A session hosted by `alt` had no live process (no `pid`, no `status`) but still showed
+  `state: blocked`: its process had ended without `claude stop`. `claude-alt daemon status`
+  printed `not running` and `bg workers: 0 in roster.json`. `main`'s supervisor was running
+  for a live session of its own.
+- `claude-alt rm <id>` exited 1 with `couldn't remove <id> — the background service may be
+  restarting. Try again in a moment.`, every time it was repeated.
+- `claude rm <id>` (the other account's command) printed `removed <id>`, and the row was gone
+  from both listings.
+
+With one account (WSL, 2.1.303, 2026-10-20), a session stopped with `claude stop`
+(`state: stopped`) and a stopped `done` session were removed with `removed <id>` while the
+supervisor was not running. So a stopped supervisor alone does not cause the refusal; what
+does is not known. Tower's fallback for it is
+[0034](../0034-remove-with-another-account-when-the-service-is-down.md).
+
 ## Account detection via `/proc`
 
 Verified:
@@ -463,6 +487,7 @@ copy a backgrounded conversation starts as.
 |---|---|---|---|
 | Unknown id for `attach`, `logs` or `stop` (or a name, full sessionId or pid for `stop`) | `No job matching '<x>'. Run 'claude agents' to list running sessions.` | 1 | verified |
 | `rm` success | `removed <id>` | 0 | verified |
+| `rm` on a row with no live process while the hosting account's supervisor is not running | `couldn't remove <id> — the background service may be restarting. Try again in a moment.` (stream not recorded) | 1 | verified (owner's server, 2026-10-20, version not recorded) |
 | `stop` success, also on an already stopped session | `stopped <id>` | 0 | verified |
 | `attach` after detach | none | 0 | verified |
 | `attach` while agent view is disabled | `'attach' is disabled by …` | 1 | verified |
@@ -480,7 +505,9 @@ copy a backgrounded conversation starts as.
 
 - Whether Claude Code limits the length or characters of a session name set with `/rename`.
 
-- Exact format of the `rm` refusal message and its exit code.
+- Exact format of the `rm` worktree refusal message and its exit code.
+- What makes `rm` refuse with `the background service may be restarting` for one row
+  without a live process but not for another, and on which stream it prints.
 - What a subagent's permission prompt looks like in `claude agents --json` (see
   [Subagents in background sessions](#subagents-in-background-sessions)).
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.

@@ -1,6 +1,6 @@
 # 0003. Multiple accounts and session ownership
 
-- Status: Accepted · 2026-10-18 · ownership rules refined by [0017](0017-ownership-evidence-rules.md) · account groups added by [0018](0018-account-groups-and-handoff-guard.md) · `/proc` reads amended by [0025](0025-session-terminal-size-for-logs.md)
+- Status: Accepted · 2026-10-18 · ownership rules refined by [0017](0017-ownership-evidence-rules.md) · account groups added by [0018](0018-account-groups-and-handoff-guard.md) · `/proc` reads amended by [0025](0025-session-terminal-size-for-logs.md) · `rm` routing amended by [0034](0034-remove-with-another-account-when-the-service-is-down.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -56,7 +56,7 @@ A config dir found in `environ` that matches no configured account also yields `
 
 **Single account.** With one configured account, rule 2 does not apply (one listing says nothing about shared lists) and rule 4 yields that account instead of `?`. This implicit owner is never written to the sidecar, so adding a second account with a shared listing later cannot inherit stale `list` records; rule 1 still applies, and a live process whose config dir is not the account's is `?`.
 
-**Command routing.** Every command that needs the hosting supervisor (`logs`, `attach`, wake via `--resume --bg`) runs with the owning account's command. `stop` and `rm` also use it, for consistency, although they work from any account.
+**Command routing.** Every command that needs the hosting supervisor (`logs`, `attach`, wake via `--resume --bg`) runs with the owning account's command. `stop` and `rm` also use it, for consistency, although they work from any account. *Amended by [0034](0034-remove-with-another-account-when-the-service-is-down.md):* one exception: when the owner's `rm` on a row with no live process answers that the background service may be restarting, tower retries `rm` with the commands of the other accounts the hand-off guard allows ([0018](0018-account-groups-and-handoff-guard.md)).
 
 ## Consequences
 

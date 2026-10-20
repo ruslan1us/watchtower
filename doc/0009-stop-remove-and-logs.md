@@ -1,6 +1,6 @@
 # 0009. Stop, remove and the logs panel
 
-- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md) · scrollback, scrolling and the line-feed budget amended by [0028](0028-scrolling-the-logs-panel.md) · rows fetched, cadence and the replay across fetches amended by [0030](0030-continuous-logs-stream.md)
+- Status: Accepted · 2026-10-18 · emulator size amended by [0025](0025-session-terminal-size-for-logs.md) · scrollback, scrolling and the line-feed budget amended by [0028](0028-scrolling-the-logs-panel.md) · rows fetched, cadence and the replay across fetches amended by [0030](0030-continuous-logs-stream.md) · remove fallback to other accounts added by [0034](0034-remove-with-another-account-when-the-service-is-down.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -34,6 +34,13 @@ try.
 Tower **never** passes `--discard-unpushed` or `--force-remove-worktree`. It shows the
 refusal text and leaves resolution to the user: attach and commit or push, or run the
 suggested command manually. These flags destroy work.
+
+*Amended by [0034](0034-remove-with-another-account-when-the-service-is-down.md):*
+when the owner's `rm` on a row with no live process fails with `… the background
+service may be restarting …`, tower retries `rm` (same argv) with the commands of the
+other accounts the hand-off guard allows, in config order; the first `removed <id>`
+wins. If all fail, the refusal window names the accounts also tried, or says why
+none was.
 
 **Logs panel.** `Space` toggles a side panel for the selected row
 ([0011](0011-keybindings.md)); on terminals narrower than 150 columns it sits below

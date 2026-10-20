@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
-use crate::actions::{RemoveError, StopError};
+use crate::actions::{Fallback, Removal, RemoveError, StopError};
 use crate::activity;
 use crate::config::ConfigError;
 use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
@@ -117,9 +117,10 @@ pub enum Effect {
     /// Run `<owning account command> stop <id>` on a worker thread, then
     /// call [`App::stop_finished`] (doc/0009).
     Stop(SessionAction),
-    /// Run `<owning account command> rm <id>` on a worker thread, then call
-    /// [`App::remove_finished`] (doc/0009).
-    Remove(SessionAction),
+    /// Run `<owning account command> rm <id>` on a worker thread, with the
+    /// other accounts' commands as a fallback when the job allows it, then
+    /// call [`App::remove_finished`] (doc/0009, doc/0034).
+    Remove(RemoveJob),
     /// Fetch `<owning account command> logs <id>` into the session's
     /// followed stream ([`crate::logfollow`]) and call [`App::logs_fetched`]
     /// with its screen (doc/0009, doc/0030).
@@ -316,6 +317,28 @@ pub struct SessionAction {
     pub id: String,
     /// Display name, for messages.
     pub name: String,
+}
+
+/// A remove of one session (doc/0009) and which other accounts' commands
+/// may retry it if the owner's background service does not answer
+/// (doc/0034).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveJob {
+    /// The session and its owning account.
+    pub action: SessionAction,
+    /// Decided when the remove is confirmed, from the row and the hand-off
+    /// guard (doc/0018).
+    pub fallback: Fallback,
+}
+
+impl From<SessionAction> for RemoveJob {
+    /// A remove with no fallback: the owner's answer is final.
+    fn from(action: SessionAction) -> RemoveJob {
+        RemoveJob {
+            action,
+            fallback: Fallback::Final,
+        }
+    }
 }
 
 /// Whose logs the panel shows: the owning account and the short id.
@@ -2440,19 +2463,32 @@ impl App {
     }
 
     /// Reports a finished remove and polls (doc/0009). A refusal opens a
-    /// scrollable window with the CLI's full text; tower never retries and
-    /// never passes the flags it suggests.
-    pub fn remove_finished(
-        &mut self,
-        action: SessionAction,
-        result: Result<(), RemoveError>,
-    ) -> Vec<Effect> {
-        match result {
-            Ok(()) => self.set_message(
+    /// scrollable window with the CLI's full text; tower never passes the
+    /// flags it suggests. A remove done with another account's command after
+    /// the owner's service refusal is reported as such; when every command
+    /// failed, the window names the accounts also tried (doc/0034).
+    pub fn remove_finished(&mut self, job: RemoveJob, removal: Removal) -> Vec<Effect> {
+        let RemoveJob { action, fallback } = job;
+        let service = removal
+            .result
+            .as_ref()
+            .is_err_and(RemoveError::service_not_answering);
+        match removal.result {
+            Ok(None) => self.set_message(
                 format!("removed {} ({})", action.name, action.id),
                 Severity::Info,
             ),
+            Ok(Some(by)) => self.set_message(
+                format!(
+                    "removed {} (with {by}'s command; {}'s background service was not answering)",
+                    action.name, action.account.name
+                ),
+                Severity::Info,
+            ),
             Err(RemoveError::Refused { code, message }) => {
+                let fallback_note = service
+                    .then(|| remove_fallback_note(&action, &fallback, &removal.tried))
+                    .flatten();
                 let code = code.map_or("a signal".to_owned(), |c| format!("code {c}"));
                 let mut lines = vec![
                     format!(
@@ -2462,6 +2498,9 @@ impl App {
                     String::new(),
                 ];
                 lines.extend(message.lines().map(str::to_owned));
+                if let Some(note) = fallback_note {
+                    lines.extend([String::new(), note]);
+                }
                 lines.extend([
                     String::new(),
                     "Tower never passes --discard-unpushed or --force-remove-worktree: they \
@@ -4789,7 +4828,37 @@ impl App {
 
     fn run_remove(&mut self, action: SessionAction) -> Vec<Effect> {
         self.set_message(format!("removing {}…", action.name), Severity::Info);
-        vec![Effect::Remove(action)]
+        let fallback = self.remove_fallback(&action);
+        vec![Effect::Remove(RemoveJob { action, fallback })]
+    }
+
+    /// Which other accounts' commands may retry the remove of `action` if
+    /// the owner's background service does not answer (doc/0034): none for
+    /// a row with a live process or no longer listed; otherwise the
+    /// accounts the hand-off guard allows for this owner (doc/0018).
+    fn remove_fallback(&self, action: &SessionAction) -> Fallback {
+        let live = self
+            .sessions
+            .iter()
+            .find(|m| m.session.id.as_deref() == Some(action.id.as_str()))
+            .map(|m| m.session.has_live_process());
+        if live != Some(false) {
+            return Fallback::Final;
+        }
+        match handoff::targets(&self.config, Some(&action.account), &action.name) {
+            Err(_) => Fallback::Guarded,
+            Ok(names) => {
+                let others: Vec<Account> = names
+                    .iter()
+                    .filter_map(|n| self.config.account(n).cloned())
+                    .collect();
+                if others.is_empty() {
+                    Fallback::NoOthers
+                } else {
+                    Fallback::Others(others)
+                }
+            }
+        }
     }
 
     /// The text of a running hand-off, if any (doc/0004).
@@ -5566,6 +5635,51 @@ fn row_key(m: &MergedSession) -> String {
         (Some(k), _) => k.to_owned(),
         (None, Some(pid)) => format!("pid:{pid}"),
         (None, None) => format!("name:{}", m.session.display_name()),
+    }
+}
+
+/// The refusal window's line about other accounts' commands after the
+/// owner's `rm` said its background service may be restarting (doc/0034):
+/// which accounts were also tried, or why none was. `None` when the owner's
+/// answer was final (a row with a live process).
+fn remove_fallback_note(
+    action: &SessionAction,
+    fallback: &Fallback,
+    tried: &[String],
+) -> Option<String> {
+    let owner = &action.account.name;
+    let retry = format!(
+        "Retry the remove later, or run `rm {}` with another account's command yourself.",
+        action.id
+    );
+    match fallback {
+        Fallback::Final => None,
+        Fallback::Others(_) if !tried.is_empty() => {
+            let (with, failed) = match tried {
+                [one] => (format!("{one}'s command"), "it did not remove"),
+                many => (
+                    format!("the commands of {}", many.join(", ")),
+                    "none of them removed",
+                ),
+            };
+            Some(format!(
+                "{owner}'s background service was not answering, so tower also tried {with}; \
+                 {failed} {} either.",
+                action.name
+            ))
+        }
+        Fallback::Others(_) => Some(format!(
+            "{owner}'s background service was not answering. {retry}"
+        )),
+        Fallback::Guarded => Some(format!(
+            "{owner}'s background service was not answering. Tower tried no other account: \
+             the account groups allow none for this session \
+             (allow_cross_group_handoff = false). {retry}"
+        )),
+        Fallback::NoOthers => Some(format!(
+            "{owner}'s background service was not answering and no other account is \
+             configured. Retry the remove later."
+        )),
     }
 }
 

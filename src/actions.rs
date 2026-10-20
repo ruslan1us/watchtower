@@ -10,12 +10,21 @@
 //! `--force-remove-worktree …` for a second try. Tower never passes those
 //! flags and never retries: [`remove`] returns the CLI's full text as
 //! [`RemoveError::Refused`] for the user to act on (doc/0009, doc/0016).
+//!
+//! One exception to the owner's command (doc/0034): when the owner's `rm`
+//! answers that its background service may be restarting and the row has no
+//! live process, [`remove_with_fallback`] retries with the commands of the
+//! other accounts the hand-off guard allows (doc/0018), first success wins.
 
 use crate::cli::{CliError, CliOutput, CliRunner, CommandLine};
 use crate::config::Account;
 
 /// The CLI's message for an unknown id (reference doc).
 pub const NO_JOB_MATCHING: &str = "No job matching";
+
+/// The stable part of `rm`'s refusal when the owning account's supervisor
+/// does not answer, matched case-insensitively (reference doc, doc/0034).
+pub const SERVICE_NOT_ANSWERING: &str = "background service may be restarting";
 
 /// `<account command> stop <id>`.
 pub fn stop_command(account: &Account, id: &str) -> CommandLine {
@@ -90,6 +99,20 @@ pub enum RemoveError {
         /// stdout and stderr, each trimmed, joined by a newline.
         message: String,
     },
+}
+
+impl RemoveError {
+    /// True for `rm`'s refusal `couldn't remove <id> — the background
+    /// service may be restarting. …`, on stdout or stderr, in any case
+    /// (doc/0034).
+    pub fn service_not_answering(&self) -> bool {
+        match self {
+            RemoveError::Refused { message, .. } => {
+                message.to_lowercase().contains(SERVICE_NOT_ANSWERING)
+            }
+            _ => false,
+        }
+    }
 }
 
 fn code_label(code: Option<i32>) -> String {
@@ -170,4 +193,79 @@ pub fn remove(runner: &CliRunner, account: &Account, id: &str) -> Result<(), Rem
     }
     let out = runner.run_line(&remove_command(account, id))?;
     interpret_remove(&out, id)
+}
+
+/// Which other accounts' commands may retry a remove that the owner's
+/// command refused because its background service did not answer
+/// (doc/0034).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fallback {
+    /// The owner's answer is final: the row has a live process, or is no
+    /// longer listed.
+    Final,
+    /// The row has no live process; these accounts may retry, in config
+    /// order (never the owner).
+    Others(Vec<Account>),
+    /// The row has no live process, but the account groups allow no other
+    /// account (doc/0018).
+    Guarded,
+    /// The row has no live process and no other account is configured.
+    NoOthers,
+}
+
+/// How a remove ended (doc/0009, doc/0034).
+#[derive(Debug)]
+pub struct Removal {
+    /// `Ok(None)`: the owner's command removed the session. `Ok(Some(name))`:
+    /// account `name`'s command did, after the owner's service refusal.
+    /// `Err`: the owner's error.
+    pub result: Result<Option<String>, RemoveError>,
+    /// The other accounts whose command was tried and did not remove the
+    /// session, in the order tried.
+    pub tried: Vec<String>,
+}
+
+impl From<Result<(), RemoveError>> for Removal {
+    /// The owner's own result, with no other account tried.
+    fn from(result: Result<(), RemoveError>) -> Removal {
+        Removal {
+            result: result.map(|()| None),
+            tried: Vec::new(),
+        }
+    }
+}
+
+/// Runs `<owner command> rm <id>` (see [`remove`]). When that fails with
+/// the service refusal ([`RemoveError::service_not_answering`]) and
+/// `fallback` lists other accounts, runs `<command> rm <id>` with each of
+/// them in turn until one prints `removed <id>` (doc/0034). Any other
+/// error, or [`Fallback::Final`], ends with the owner's answer.
+pub fn remove_with_fallback(
+    runner: &CliRunner,
+    owner: &Account,
+    fallback: &Fallback,
+    id: &str,
+) -> Removal {
+    let err = match remove(runner, owner, id) {
+        Ok(()) => return Ok(()).into(),
+        Err(err) => err,
+    };
+    let others = match fallback {
+        Fallback::Others(others) if err.service_not_answering() => others.as_slice(),
+        _ => return Err(err).into(),
+    };
+    let mut tried = Vec::new();
+    for other in others.iter().filter(|a| a.name != owner.name) {
+        if remove(runner, other, id).is_ok() {
+            return Removal {
+                result: Ok(Some(other.name.clone())),
+                tried,
+            };
+        }
+        tried.push(other.name.clone());
+    }
+    Removal {
+        result: Err(err),
+        tried,
+    }
 }

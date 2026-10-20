@@ -28,7 +28,7 @@ fn stop_of(effects: &[Effect]) -> Option<(&str, &str)> {
 
 fn remove_of(effects: &[Effect]) -> Option<(&str, &str)> {
     effects.iter().find_map(|e| match e {
-        Effect::Remove(a) => Some((a.account.name.as_str(), a.id.as_str())),
+        Effect::Remove(j) => Some((j.action.account.name.as_str(), j.action.id.as_str())),
         _ => None,
     })
 }
@@ -195,7 +195,10 @@ fn remove_always_confirms_with_the_owning_account() {
     let effects = app.handle_key(ch('Y'));
     assert_eq!(remove_of(&effects), Some(("main", "b2f8d064")));
     assert!(status_text(&app).contains("removing say-ok"));
-    assert_eq!(app.remove_finished(action, Ok(())), [Effect::PollNow]);
+    assert_eq!(
+        app.remove_finished(action.into(), Ok(()).into()),
+        [Effect::PollNow]
+    );
     assert!(status_text(&app).contains("removed say-ok (b2f8d064)"));
 }
 
@@ -229,11 +232,12 @@ fn refusal_shows_the_full_text_and_is_never_retried() {
     let text = "Refusing to remove the worktree of b2f8d064: 2 unpushed commits.\n\
                 Run again with --discard-unpushed abc1234@/home/user/workspace/demo-app/.claude/worktrees/b2f8d064";
     let effects = app.remove_finished(
-        a,
+        a.into(),
         Err(RemoveError::Refused {
             code: Some(1),
             message: text.into(),
-        }),
+        })
+        .into(),
     );
     assert_eq!(effects, [Effect::PollNow], "no retry, no flags");
     let popup = app.popup().expect("refusal window").clone();
@@ -264,10 +268,11 @@ fn other_remove_errors_go_to_the_status_line() {
     let mut app = app_single();
     let a = action(&app, "gone", "0000aaaa");
     let effects = app.remove_finished(
-        a,
+        a.into(),
         Err(RemoveError::UnknownId {
             message: "No job matching '0000aaaa'.".into(),
-        }),
+        })
+        .into(),
     );
     assert_eq!(effects, [Effect::PollNow]);
     assert!(app.popup().is_none());

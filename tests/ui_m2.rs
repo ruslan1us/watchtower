@@ -371,11 +371,12 @@ fn refusal_window_scrolls() {
         .collect::<Vec<_>>()
         .join("\n");
     app.remove_finished(
-        action,
+        action.into(),
         Err(RemoveError::Refused {
             code: Some(1),
             message,
-        }),
+        })
+        .into(),
     );
     let lines = render(&mut app, 100, 20);
     let all = text(&lines);

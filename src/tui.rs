@@ -745,7 +745,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 app.editor_finished(result);
             }
             Effect::Stop(action) => rt.jobs.stop(action),
-            Effect::Remove(action) => rt.jobs.remove(action),
+            Effect::Remove(job) => rt.jobs.remove(job),
             Effect::FetchLogs(target) => rt.follower.fetch(app.follow_spec(&target), true),
             Effect::FollowLogs(target) => rt.follower.fetch(app.follow_spec(&target), false),
             Effect::CheckConfig => {
