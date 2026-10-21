@@ -292,7 +292,8 @@ does not parse is not applied; the status line shows the error until it is fixed
 
 Texts you type again and again (review instructions, say) can live as templates: one
 file per template in `~/.config/watchtower/templates/` (the `templates` folder next to
-your `config.toml`), named `<name>.md`. In the new-session dialog `Ctrl+P` opens a picker
+your `config.toml`), named `<name>.md`. Tower creates the empty folder the first time a
+picker opens, so it is there to put files in. In the new-session dialog `Ctrl+P` opens a picker
 with the names and each template's first line; type to filter, `↑` / `↓` to choose,
 `Enter` inserts the text into the task (at the cursor, or as the whole task when it is
 empty), `Esc` closes the picker. The [quick reply](#quick-reply) window has the same
@@ -458,7 +459,8 @@ Next to the config, in `~/.config/watchtower/`:
   `config.toml.lock`: the lock held while tower saves the config
   ([0022](doc/0022-tower-writes-its-own-config.md)).
 - `orchestrator/`: the orchestrator's folder.
-- `templates/`: your prompt templates, if you add any; tower only reads them
+- `templates/`: your prompt templates; tower creates the empty folder and only reads
+  the files
   ([0036](doc/0036-prompt-templates.md)).
 
 ## Safety notes

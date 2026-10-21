@@ -16,7 +16,10 @@ sends a short text to a session, is to reuse the same picker.
 **Folder.** `<config dir>/templates/`, next to `config.toml` (default
 `~/.config/watchtower/templates/`). One file per template, `<name>.md`.
 Tower only reads the folder: it never creates, edits or deletes a template
-file, and a missing folder simply means no templates.
+file, and a missing folder simply means no templates. *Amended 2026-10-21
+(owner request):* when a picker opens and the folder is missing, tower
+creates it empty (mode `0700`) if the config dir exists, so the folder the
+picker names is there to put files in; a failed creation changes nothing.
 
 **File rules.** A load lists the folder's entries once, without recursion:
 

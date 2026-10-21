@@ -8,8 +8,9 @@
 //! ignored; symlinks (never followed), other non-regular files, files over
 //! [`MAX_TEMPLATE_BYTES`], empty files and non-UTF-8 files are skipped and
 //! listed in [`TemplateList::skipped`], which [`TemplateList::skipped_note`]
-//! sums up for the status line. A missing folder means no templates. Tower
-//! never creates, edits or deletes a template file.
+//! sums up for the status line. A missing folder means no templates and is
+//! created empty when its parent exists. Tower never creates, edits or
+//! deletes a template file.
 //!
 //! **Picker** ([`TemplatePicker`], no I/O): a window that owns no text field
 //! of its own. The window that hosts it (the new-session dialog today, a
@@ -29,7 +30,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{self, Read};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -136,12 +137,17 @@ impl TemplateList {
 }
 
 /// Lists the templates in `folder` (see the module docs for the rules). A
-/// missing folder yields an empty list without an error.
+/// missing folder yields an empty list without an error; it is created
+/// empty (mode `0700`) when its parent exists, so the user can put files
+/// there straight away. A failed creation changes nothing.
 pub fn load(folder: &Path) -> TemplateList {
     let mut list = TemplateList::default();
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return list,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(folder);
+            return list;
+        }
         Err(err) => {
             list.error = Some(format!("cannot read {}: {err}", folder.display()));
             return list;

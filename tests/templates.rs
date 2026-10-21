@@ -105,14 +105,29 @@ fn the_text_keeps_its_start_and_loses_trailing_whitespace() {
 
 #[test]
 fn a_missing_folder_means_no_templates_and_no_error() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let list = templates::load(&dir.path().join("templates"));
+    let folder = dir.path().join("templates");
+    let list = templates::load(&folder);
     assert_eq!(list, TemplateList::default());
+    // Created empty and private, so the user can put files there.
+    let meta = std::fs::metadata(&folder).expect("folder created");
+    assert!(meta.is_dir());
+    assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
     let load = TemplateLoad {
         id: 3,
         folder: dir.path().join("missing"),
     };
     assert_eq!(load.run(), TemplateList::default());
+}
+
+#[test]
+fn a_missing_parent_is_not_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("no-config").join("templates");
+    assert_eq!(templates::load(&folder), TemplateList::default());
+    assert!(!dir.path().join("no-config").exists());
 }
 
 #[test]
