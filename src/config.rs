@@ -60,8 +60,8 @@ impl UiStyle {
     }
 }
 
-/// The dashboard style's colour theme, `[ui] theme` (doc/0021). The
-/// minimal style keeps its own look; `NO_COLOR` overrides every theme.
+/// The dashboard style's colour theme, `[ui] theme` (doc/0021, doc/0038).
+/// The minimal style keeps its own look; `NO_COLOR` overrides every theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiTheme {
     /// Neutral greys, colour only for states and attention. The default.
@@ -73,24 +73,39 @@ pub enum UiTheme {
     Terminal,
     /// The original blue-grey palette.
     TokyoNight,
+    /// `neutral` for a light terminal background (doc/0038).
+    NeutralLight,
+    /// `warm` for a light terminal background (doc/0038).
+    WarmLight,
+    /// The 16 ANSI colours with attributes, readable on dark and light
+    /// backgrounds; what truecolor themes give way to on a 16-colour
+    /// terminal (doc/0038).
+    Ansi16,
 }
 
 impl UiTheme {
     /// Every theme, in the order the docs list them.
-    pub const ALL: [UiTheme; 4] = [
+    pub const ALL: [UiTheme; 7] = [
         UiTheme::Neutral,
         UiTheme::Warm,
         UiTheme::Terminal,
         UiTheme::TokyoNight,
+        UiTheme::NeutralLight,
+        UiTheme::WarmLight,
+        UiTheme::Ansi16,
     ];
 
-    /// The config value: `neutral`, `warm`, `terminal` or `tokyo-night`.
+    /// The config value: `neutral`, `warm`, `terminal`, `tokyo-night`,
+    /// `neutral-light`, `warm-light` or `ansi16`.
     pub fn as_str(self) -> &'static str {
         match self {
             UiTheme::Neutral => "neutral",
             UiTheme::Warm => "warm",
             UiTheme::Terminal => "terminal",
             UiTheme::TokyoNight => "tokyo-night",
+            UiTheme::NeutralLight => "neutral-light",
+            UiTheme::WarmLight => "warm-light",
+            UiTheme::Ansi16 => "ansi16",
         }
     }
 
@@ -100,11 +115,137 @@ impl UiTheme {
             .into_iter()
             .find(|t| t.as_str() == value)
             .ok_or_else(|| {
+                let names: Vec<String> = UiTheme::ALL
+                    .iter()
+                    .map(|t| format!("\"{}\"", t.as_str()))
+                    .collect();
+                let (last, rest) = names.split_last().expect("themes exist");
                 ConfigError::Invalid(format!(
-                    "[ui] theme `{value}` is not known; use \"neutral\", \"warm\", \
-                     \"terminal\" or \"tokyo-night\""
+                    "[ui] theme `{value}` is not known; use {} or {last}",
+                    rest.join(", ")
                 ))
             })
+    }
+
+    /// The colours the theme needs (doc/0038): the 16 named ANSI colours
+    /// for `terminal` and `ansi16`, truecolor for the others.
+    pub fn needs(self) -> ColorDepth {
+        match self {
+            UiTheme::Terminal | UiTheme::Ansi16 => ColorDepth::Ansi16,
+            _ => ColorDepth::Truecolor,
+        }
+    }
+
+    /// The theme drawn at `depth` (resolved, not `auto`): one that needs
+    /// more than 16 colours gives way to `ansi16` on a 16-colour terminal
+    /// (doc/0038). At 256 colours a truecolor theme stays, drawn with the
+    /// nearest of the 256 ([`ColorDepth::Ansi256`]).
+    pub fn shown_at(self, depth: ColorDepth) -> UiTheme {
+        if depth == ColorDepth::Ansi16 && self.needs() != ColorDepth::Ansi16 {
+            UiTheme::Ansi16
+        } else {
+            self
+        }
+    }
+}
+
+/// How many colours the terminal shows, `[ui] color_depth` (doc/0038).
+/// `auto`, the default, reads `COLORTERM` and `TERM` ([`ColorDepth::detect`]);
+/// tower never queries the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorDepth {
+    /// Detected from the environment at start. The default.
+    #[default]
+    Auto,
+    /// 24-bit colour: every theme as designed.
+    Truecolor,
+    /// The xterm 256-colour palette: truecolor themes are drawn with the
+    /// nearest of its colours.
+    Ansi256,
+    /// The 16 named ANSI colours: truecolor themes give way to `ansi16`.
+    Ansi16,
+}
+
+impl ColorDepth {
+    /// Every value, in the order the Settings window offers them.
+    pub const ALL: [ColorDepth; 4] = [
+        ColorDepth::Auto,
+        ColorDepth::Truecolor,
+        ColorDepth::Ansi256,
+        ColorDepth::Ansi16,
+    ];
+
+    /// The config value: `auto`, `truecolor`, `256` or `16`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorDepth::Auto => "auto",
+            ColorDepth::Truecolor => "truecolor",
+            ColorDepth::Ansi256 => "256",
+            ColorDepth::Ansi16 => "16",
+        }
+    }
+
+    /// Parses a config value; anything else is an error naming the choices.
+    pub fn parse(value: &str) -> Result<ColorDepth, ConfigError> {
+        ColorDepth::ALL
+            .into_iter()
+            .find(|d| d.as_str() == value)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "[ui] color_depth `{value}` is not known; use \"auto\", \"truecolor\", \
+                     \"256\" or \"16\""
+                ))
+            })
+    }
+
+    /// The depth the environment announces (doc/0038): `COLORTERM`
+    /// `truecolor` or `24bit` is full colour; else only a `TERM` known to
+    /// be limited ([`ColorDepth::limited_term`]) is 16 colours, and every
+    /// other `TERM` (`xterm`, `screen`, `tmux`, `*-256color`, …) draws in
+    /// full colour as tower always did, so nobody whose terminal is not
+    /// known to be limited sees a change. Never `auto`, never 256: the
+    /// 256-colour approximation needs an explicit `"256"`.
+    pub fn detect(colorterm: Option<&str>, term: Option<&str>) -> ColorDepth {
+        let colorterm = colorterm.unwrap_or("").trim().to_ascii_lowercase();
+        if colorterm == "truecolor" || colorterm == "24bit" {
+            ColorDepth::Truecolor
+        } else if ColorDepth::limited_term(term.unwrap_or("")) {
+            ColorDepth::Ansi16
+        } else {
+            ColorDepth::Truecolor
+        }
+    }
+
+    /// Whether `term` names a terminal known to show at most 16 colours:
+    /// unset or empty, `dumb`, `linux`, the DEC `vt` terminals (`vt52`,
+    /// `vt100`, `vt220`, …), `ansi`, `cons25`, `cygwin`, `sun`,
+    /// `xterm-color` and any `*-16color`.
+    pub fn limited_term(term: &str) -> bool {
+        let term = term.trim().to_ascii_lowercase();
+        let dec_vt = term
+            .strip_prefix("vt")
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        term.is_empty()
+            || dec_vt
+            || term.ends_with("-16color")
+            || matches!(
+                term.as_str(),
+                "dumb" | "linux" | "ansi" | "cons25" | "cygwin" | "sun" | "xterm-color"
+            )
+    }
+
+    /// [`ColorDepth::detect`] from tower's own environment.
+    pub fn from_env() -> ColorDepth {
+        let var = |name: &str| std::env::var(name).ok();
+        ColorDepth::detect(var("COLORTERM").as_deref(), var("TERM").as_deref())
+    }
+
+    /// This setting with `auto` replaced by `detected`.
+    pub fn resolve(self, detected: ColorDepth) -> ColorDepth {
+        match self {
+            ColorDepth::Auto => detected,
+            depth => depth,
+        }
     }
 }
 
@@ -234,6 +375,8 @@ pub struct Config {
     pub ui_style: UiStyle,
     /// `[ui] theme`: the dashboard's colour theme (doc/0021).
     pub ui_theme: UiTheme,
+    /// `[ui] color_depth`: how many colours the terminal shows (doc/0038).
+    pub ui_color_depth: ColorDepth,
     /// `[sessions] track_subagents` (default `true`): pass the observe-only
     /// subagent hooks with `--settings` to the sessions tower starts and
     /// read the files they write (doc/0029). When `false`, no `--settings`
@@ -333,6 +476,7 @@ struct RawSessions {
 struct RawUi {
     style: Option<String>,
     theme: Option<String>,
+    color_depth: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,6 +601,10 @@ impl Config {
             Some(theme) => UiTheme::parse(&theme)?,
             None => UiTheme::default(),
         };
+        let ui_color_depth = match ui.color_depth {
+            Some(depth) => ColorDepth::parse(&depth)?,
+            None => ColorDepth::default(),
+        };
         let expand = |v: Vec<String>| -> Vec<PathBuf> {
             v.iter()
                 .map(|p| crate::paths::expand_tilde(p, home))
@@ -476,6 +624,7 @@ impl Config {
             allow_cross_group_handoff: raw.allow_cross_group_handoff.unwrap_or(false),
             ui_style,
             ui_theme,
+            ui_color_depth,
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
         })
     }
@@ -561,9 +710,14 @@ mod tests {
         } = raw;
         let RawSessions { track_subagents } = sessions.expect("[sessions] is documented");
         assert!(track_subagents.is_some());
-        let RawUi { style, theme } = ui.expect("[ui] is documented");
+        let RawUi {
+            style,
+            theme,
+            color_depth,
+        } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());
+        assert!(color_depth.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(logs_follow_secs.is_some());

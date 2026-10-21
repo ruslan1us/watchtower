@@ -5,7 +5,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
 
@@ -297,7 +297,12 @@ fn session_lines(app: &App, m: &MergedSession, width: usize, now_ms: i64, th: Th
     let mut lines = vec![
         headline(app, m, th),
         Lb::new(),
-        kv("group", group.title(), th.bold(th.group_color(group)), th),
+        kv(
+            "group",
+            group.title(),
+            th.hue(th.group_color(group)).add_modifier(Modifier::BOLD),
+            th,
+        ),
         kv("state", state, text, th),
     ];
     lines.extend(kv_wrapped("status", &status, width, text, th));

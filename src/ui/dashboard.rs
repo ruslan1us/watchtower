@@ -79,7 +79,7 @@ pub(super) fn spinner(now_ms: i64) -> &'static str {
 /// filter's input line, status line and footer.
 pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let area = frame.area();
-    let th = Theme::new(app.theme, app.color);
+    let th = Theme::new(app.drawn_theme(), app.color);
     let tall = area.height >= TALL;
     let input_h = u16::from(app.filter_editing());
     let [header, body, input, status, footer] = Layout::vertical([
@@ -720,7 +720,7 @@ fn separator(
     let title_st = if group.is_interactive() {
         th.faint().add_modifier(Modifier::BOLD)
     } else {
-        th.bold(th.key_color(group))
+        th.hue(th.key_color(group)).add_modifier(Modifier::BOLD)
     };
     let mut l = Lb::new();
     l.push(lead.0, lead.1)
@@ -794,16 +794,16 @@ fn session_row(
                 None => (String::new(), cell),
             };
             l.push(name, name_st);
-            l.push(format!("{badge}  "), th.fg(gc));
+            l.push(format!("{badge}  "), th.hue(gc));
         }
         None => {
             l.push(format!("{}  ", fit(&t.name, ws.name)), name_st);
         }
     }
     l.push(format!("{}  ", fit(&t.project, ws.project)), soft);
-    let mut state_st = if dim { th.faint() } else { th.fg(gc) };
+    let mut state_st = if dim { th.faint() } else { th.hue(gc) };
     if lit {
-        state_st = th.attention().patch(th.fg(gc));
+        state_st = th.attention().patch(th.hue(gc));
     }
     l.push(fit(&t.state, ws.state), state_st).push("  ", text);
     let age = age_column(app, m, now_ms);
@@ -845,9 +845,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
         }
         let style = match (seg.severity, th.color) {
             (Severity::Info, _) => th.text(),
-            (Severity::Warning, true) => th.fg(th.p.amber),
+            (Severity::Warning, true) if th.hues() => th.fg(th.p.amber),
             (Severity::Error, true) => th.attention(),
-            (_, false) => Style::new().add_modifier(Modifier::BOLD),
+            _ => Style::new().add_modifier(Modifier::BOLD),
         };
         l.push(seg.text, style);
     }

@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use watchtower::config::{Account, Config, ConfigError, ConfigSource, UiStyle, UiTheme};
+use watchtower::config::{
+    Account, ColorDepth, Config, ConfigError, ConfigSource, UiStyle, UiTheme,
+};
 use watchtower::paths::Dirs;
 
 const HOME: &str = "/home/user";
@@ -400,9 +402,10 @@ fn example_config_is_valid_and_complete() {
         .map(String::as_str)
         .collect();
     ui_keys.sort_unstable();
-    assert_eq!(ui_keys, ["style", "theme"]);
+    assert_eq!(ui_keys, ["color_depth", "style", "theme"]);
     assert_eq!(c.ui_style, defaults.ui_style);
     assert_eq!(c.ui_theme, defaults.ui_theme);
+    assert_eq!(c.ui_color_depth, defaults.ui_color_depth);
     for account in table["accounts"].as_array().unwrap() {
         let mut keys: Vec<&str> = account
             .as_table()
@@ -499,20 +502,33 @@ fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
         ("warm", UiTheme::Warm),
         ("terminal", UiTheme::Terminal),
         ("tokyo-night", UiTheme::TokyoNight),
+        ("neutral-light", UiTheme::NeutralLight),
+        ("warm-light", UiTheme::WarmLight),
+        ("ansi16", UiTheme::Ansi16),
     ] {
         let c = parse(&format!("[ui]\ntheme = \"{name}\"\n")).unwrap();
         assert_eq!(c.ui_theme, theme, "{name}");
         assert_eq!(c.ui_style, UiStyle::Dashboard, "{name}");
         assert_eq!(theme.as_str(), name);
     }
-    assert_eq!(UiTheme::ALL.len(), 4);
-    for bad in ["tokyo_night", "Neutral", "light", ""] {
+    assert_eq!(UiTheme::ALL.len(), 7);
+    for bad in [
+        "tokyo_night",
+        "Neutral",
+        "light",
+        "neutral_light",
+        "ansi",
+        "",
+    ] {
         let err = parse(&format!("[ui]\ntheme = \"{bad}\"\n")).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
         let text = err.to_string();
         assert!(text.contains(&format!("[ui] theme `{bad}`")), "{text}");
         assert!(
-            text.contains("\"neutral\", \"warm\", \"terminal\" or \"tokyo-night\""),
+            text.contains(
+                "\"neutral\", \"warm\", \"terminal\", \"tokyo-night\", \"neutral-light\", \
+                 \"warm-light\" or \"ansi16\""
+            ),
             "{text}"
         );
     }
@@ -520,6 +536,132 @@ fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
         parse("[ui]\ntheme = true\n"),
         Err(ConfigError::Parse { .. })
     ));
+}
+
+/// `[ui] color_depth` (doc/0038): `auto` by default, each value on request,
+/// anything else (a number included) an error.
+#[test]
+fn color_depth_defaults_to_auto_and_rejects_unknown_values() {
+    assert_eq!(parse("").unwrap().ui_color_depth, ColorDepth::Auto);
+    assert_eq!(parse("[ui]\n").unwrap().ui_color_depth, ColorDepth::Auto);
+    assert_eq!(
+        Config::defaults(Path::new(HOME)).ui_color_depth,
+        ColorDepth::Auto
+    );
+    for (name, depth) in [
+        ("auto", ColorDepth::Auto),
+        ("truecolor", ColorDepth::Truecolor),
+        ("256", ColorDepth::Ansi256),
+        ("16", ColorDepth::Ansi16),
+    ] {
+        let c = parse(&format!("[ui]\ncolor_depth = \"{name}\"\n")).unwrap();
+        assert_eq!(c.ui_color_depth, depth, "{name}");
+        assert_eq!(c.ui_theme, UiTheme::Neutral, "{name}");
+        assert_eq!(depth.as_str(), name);
+    }
+    for bad in ["24bit", "Auto", "8", ""] {
+        let err = parse(&format!("[ui]\ncolor_depth = \"{bad}\"\n")).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
+        let text = err.to_string();
+        assert!(
+            text.contains(&format!("[ui] color_depth `{bad}`")),
+            "{text}"
+        );
+        assert!(
+            text.contains("\"auto\", \"truecolor\", \"256\" or \"16\""),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        parse("[ui]\ncolor_depth = 256\n"),
+        Err(ConfigError::Parse { .. })
+    ));
+}
+
+/// `auto` reads the environment (doc/0038): `COLORTERM` truecolor first;
+/// else only a `TERM` known to be limited is 16 colours, and every other
+/// `TERM` is full colour as before, so nobody whose terminal is not known
+/// to be limited sees a change. 256 is never detected; a set value wins.
+#[test]
+fn color_depth_detection_from_the_environment() {
+    use ColorDepth::{Ansi16, Ansi256, Auto, Truecolor};
+    let limited = [
+        "",
+        "dumb",
+        "linux",
+        "vt52",
+        "vt100",
+        "vt102",
+        "vt220",
+        "vt320",
+        "ansi",
+        "cons25",
+        "cygwin",
+        "sun",
+        "xterm-color",
+        "xterm-16color",
+        "rxvt-16color",
+        "LINUX",
+    ];
+    let full = [
+        "xterm",
+        "screen",
+        "tmux",
+        "rxvt",
+        "rxvt-unicode",
+        "xterm-256color",
+        "screen-256color",
+        "tmux-256color",
+        "xterm-direct",
+        "vte-256color",
+        "xterm-kitty",
+        "alacritty",
+    ];
+    let mut cases: Vec<(Option<&str>, Option<&str>, ColorDepth)> = vec![
+        (Some("truecolor"), Some("xterm-256color"), Truecolor),
+        (Some("24bit"), Some("xterm"), Truecolor),
+        (Some("TrueColor"), None, Truecolor),
+        // COLORTERM wins over a limited TERM.
+        (Some("truecolor"), Some("linux"), Truecolor),
+        (Some("24bit"), Some("dumb"), Truecolor),
+        (None, None, Ansi16),
+        (Some("yes"), Some("linux"), Ansi16),
+        (Some(""), Some("screen"), Truecolor),
+    ];
+    for t in limited {
+        cases.push((None, Some(t), Ansi16));
+    }
+    for t in full {
+        cases.push((None, Some(t), Truecolor));
+    }
+    for (colorterm, term, want) in cases {
+        assert_eq!(
+            ColorDepth::detect(colorterm, term),
+            want,
+            "{colorterm:?} {term:?}"
+        );
+    }
+    for detected in [Truecolor, Ansi256, Ansi16] {
+        assert_eq!(Auto.resolve(detected), detected);
+        for set in [Truecolor, Ansi256, Ansi16] {
+            assert_eq!(set.resolve(detected), set);
+        }
+    }
+}
+
+/// What each theme gives way to (doc/0038): only on a 16-colour terminal,
+/// and only a theme that needs more than 16 colours.
+#[test]
+fn themes_give_way_to_ansi16_on_sixteen_colours() {
+    for theme in UiTheme::ALL {
+        assert_eq!(theme.shown_at(ColorDepth::Truecolor), theme, "{theme:?}");
+        assert_eq!(theme.shown_at(ColorDepth::Ansi256), theme, "{theme:?}");
+        let want = match theme {
+            UiTheme::Terminal | UiTheme::Ansi16 => theme,
+            _ => UiTheme::Ansi16,
+        };
+        assert_eq!(theme.shown_at(ColorDepth::Ansi16), want, "{theme:?}");
+    }
 }
 
 #[test]

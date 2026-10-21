@@ -17,7 +17,7 @@ use super::dialog::input_window;
 use super::theme::{Lb, Look, palette};
 use super::{centered, fit, wrap};
 use crate::app::App;
-use crate::config::UiTheme;
+use crate::config::{ColorDepth, UiTheme};
 use crate::config_edit::{Section, SettingKey, SettingKind, SettingValue};
 use crate::settings::{
     ListEditor, Mode, NoticeKind, OTHER, Pick, Row, SettingsWindow, change_text, shown_value,
@@ -96,7 +96,7 @@ pub fn draw(frame: &mut Frame, app: &App, look: Look) {
     draw_status(frame, win, status, look);
     draw_footer(frame, win, footer, look);
     match &win.mode {
-        Mode::Pick(pick) => draw_pick(frame, win, pick, anchor, area, look),
+        Mode::Pick(pick) => draw_pick(frame, win, pick, anchor, area, look, app.detected_depth),
         Mode::List(list) => draw_list_editor(frame, win, list, list_area, look),
         Mode::Unsaved
         | Mode::EditPrompt
@@ -394,7 +394,7 @@ fn draw_setting(
     // previewed.
     if let Mode::Pick(pick) = &win.mode
         && pick.key == key
-        && matches!(key, SettingKey::UiStyle | SettingKey::UiTheme)
+        && key.previewed()
         && let Some(v) = pick.value()
         && setting.value.display() != v
     {
@@ -495,7 +495,7 @@ fn draw_setting(
         l.push(format!("  ({})", account.group), bar(look.hint()));
     }
     let picking = matches!(&win.mode, Mode::Pick(p) if p.key == key);
-    if picking && matches!(key, SettingKey::UiStyle | SettingKey::UiTheme) {
+    if picking && key.previewed() {
         l.push("  preview", bar(look.warning()));
     } else if is_default && value.display() != "default" {
         l.push("  default", bar(look.hint()));
@@ -750,7 +750,7 @@ fn draw_status(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
 /// The footer keys of the window's current mode.
 fn footer_keys(win: &SettingsWindow) -> Vec<(&'static str, &'static str)> {
     match &win.mode {
-        Mode::Pick(pick) if matches!(pick.key, SettingKey::UiStyle | SettingKey::UiTheme) => {
+        Mode::Pick(pick) if pick.key.previewed() => {
             vec![("↑↓", "preview"), ("Enter", "keep"), ("Esc", "revert")]
         }
         Mode::Pick(_) => vec![("↑↓", "move"), ("Enter", "keep"), ("Esc", "cancel")],
@@ -838,6 +838,12 @@ fn choice_note(key: SettingKey, value: &str) -> &'static str {
         (SettingKey::UiTheme, "warm") => "warm greys and a clay accent",
         (SettingKey::UiTheme, "terminal") => "your terminal's 16 colours",
         (SettingKey::UiTheme, "tokyo-night") => "tower 0.2's blue-grey palette",
+        (SettingKey::UiTheme, "neutral-light") => "neutral for a light background",
+        (SettingKey::UiTheme, "warm-light") => "warm for a light background",
+        (SettingKey::UiTheme, "ansi16") => "16 colours, dark or light background",
+        (SettingKey::UiColorDepth, "truecolor") => "24-bit colour: themes as designed",
+        (SettingKey::UiColorDepth, "256") => "nearest of 256 colours",
+        (SettingKey::UiColorDepth, "16") => "truecolor themes give way to ansi16",
         (SettingKey::DefaultModel, OTHER) => "type a full model name",
         (SettingKey::LogsFollowSecs, "off") => "no background fetches",
         _ => "",
@@ -853,8 +859,9 @@ fn draw_pick(
     anchor: Rect,
     screen: Rect,
     look: Look,
+    detected: ColorDepth,
 ) {
-    let wide_list = matches!(pick.key, SettingKey::UiStyle | SettingKey::UiTheme);
+    let wide_list = pick.key.previewed();
     let w: u16 = if wide_list { 74 } else { 52 };
     let w = w.min(screen.width.saturating_sub(4));
     let h = (pick.items.len() as u16 + 4).min(screen.height.saturating_sub(2));
@@ -935,10 +942,16 @@ fn draw_pick(
             ""
         };
         let room = iw.saturating_sub(l.w + tag.width());
-        l.push(
-            fit(choice_note(pick.key, value), room),
-            bar(look.secondary()),
-        );
+        let note = if pick.key == SettingKey::UiColorDepth && value == "auto" {
+            match detected {
+                ColorDepth::Ansi16 => "from COLORTERM and TERM: 16 here",
+                _ => "from COLORTERM and TERM: full colour here",
+            }
+            .to_owned()
+        } else {
+            choice_note(pick.key, value).to_owned()
+        };
+        l.push(fit(&note, room), bar(look.secondary()));
         l.push(tag, bar(look.hint()));
         put(
             frame,

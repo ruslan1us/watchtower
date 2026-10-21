@@ -36,7 +36,7 @@ use ratatui::widgets::ListState;
 use crate::actions::{Fallback, Removal, RemoveError, StopError};
 use crate::activity;
 use crate::config::ConfigError;
-use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
+use crate::config::{Account, ColorDepth, Config, ConfigSource, UiStyle, UiTheme};
 use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, EditSession, SaveError, SaveOutcome};
 use crate::dialog::{
     Dialog, DialogAction, DialogStatus, Field, RenameAction, RenameWindow, ReplyAction,
@@ -1360,9 +1360,19 @@ pub struct App {
     /// `[ui] theme`; [`App::set_theme`] switches it live. `NO_COLOR`
     /// ([`App::color`]) overrides it.
     pub theme: UiTheme,
+    /// The config's `[ui] color_depth` (doc/0038), or the Settings
+    /// window's preview of it; [`App::depth`] resolves `auto`.
+    pub color_depth: ColorDepth,
+    /// The depth the environment announces ([`ColorDepth::detect`]),
+    /// which `auto` stands for. [`App::new`] assumes truecolor; the
+    /// runtime sets it from `COLORTERM` and `TERM`.
+    pub detected_depth: ColorDepth,
     /// The dashboard fell back to the minimal layout on a small terminal
     /// and the status line said so; said once per run.
     style_fallback_noted: bool,
+    /// The theme gave way to `ansi16` on a 16-colour terminal and the
+    /// status line said so; said once per run (doc/0038).
+    theme_fallback_noted: bool,
     /// Whether the terminal reports `Ctrl+Enter` distinctly (keyboard
     /// enhancement is on); the dialog footer then shows it instead of
     /// `Alt+Enter` (doc/0011).
@@ -1400,6 +1410,7 @@ impl App {
         let orchestrator_dir = orchestrator::dir(&default_dir);
         let templates_dir = templates::dir(&default_dir);
         let theme = config.ui_theme;
+        let color_depth = config.ui_color_depth;
         App {
             config,
             home,
@@ -1459,7 +1470,10 @@ impl App {
             color: true,
             style: UiStyle::Minimal,
             theme,
+            color_depth,
+            detected_depth: ColorDepth::Truecolor,
             style_fallback_noted: false,
+            theme_fallback_noted: false,
             keyboard_enhanced: false,
             git: GitCache::default(),
             git_shown: false,
@@ -1972,6 +1986,40 @@ impl App {
     /// (doc/0021). For a settings window; no key changes it.
     pub fn set_theme(&mut self, theme: UiTheme) {
         self.theme = theme;
+    }
+
+    /// The colours the terminal shows (doc/0038): `[ui] color_depth`, with
+    /// `auto` standing for [`App::detected_depth`].
+    pub fn depth(&self) -> ColorDepth {
+        self.color_depth.resolve(self.detected_depth)
+    }
+
+    /// The theme the dashboard draws with: [`App::theme`], or `ansi16`
+    /// when it needs more colours than [`App::depth`] (doc/0038).
+    pub fn drawn_theme(&self) -> UiTheme {
+        self.theme.shown_at(self.depth())
+    }
+
+    /// Called by the renderer while the dashboard draws `ansi16` in place
+    /// of [`App::theme`]: the first time, the status line says so
+    /// (doc/0038).
+    pub fn note_theme_fallback(&mut self) {
+        if self.theme_fallback_noted {
+            return;
+        }
+        self.theme_fallback_noted = true;
+        let why = match self.color_depth {
+            ColorDepth::Auto => "COLORTERM and TERM announce 16 colours",
+            _ => "[ui] color_depth is \"16\"",
+        };
+        self.set_message(
+            format!(
+                "theme {} needs more colours; {why}, so the dashboard uses ansi16 \
+                 (see [ui] color_depth)",
+                self.theme.as_str()
+            ),
+            Severity::Info,
+        );
     }
 
     /// Called by the renderer when the dashboard falls back to the minimal
@@ -5038,11 +5086,12 @@ impl App {
         }
         self.style = live.ui_style;
         self.set_theme(live.ui_theme);
+        self.color_depth = live.ui_color_depth;
         self.config = live;
         // An open Settings window keeps its preview over the new look
         // (doc/0024).
         if let Some(window) = self.settings.as_mut() {
-            window.base = (self.style, self.theme);
+            window.base = (self.style, self.theme, self.color_depth);
         }
         self.sync_settings_preview();
         effects
@@ -5292,7 +5341,7 @@ impl App {
                 self.settings = Some(SettingsWindow::new(
                     session,
                     shown,
-                    (self.style, self.theme),
+                    (self.style, self.theme, self.color_depth),
                     &self.home,
                 ));
             }
@@ -5346,24 +5395,27 @@ impl App {
         }
     }
 
-    /// Closes the Settings window; a preview reverts to the running style
-    /// and theme.
+    /// Closes the Settings window; a preview reverts to the running style,
+    /// theme and colour depth.
     fn close_settings(&mut self) {
         if let Some(window) = self.settings.take() {
             self.style = window.base.0;
             self.set_theme(window.base.1);
+            self.color_depth = window.base.2;
         }
     }
 
-    /// Draws with the Settings window's preview of the style and theme,
-    /// over the running ones (doc/0024).
+    /// Draws with the Settings window's preview of the style, theme and
+    /// colour depth, over the running ones (doc/0024, doc/0038).
     fn sync_settings_preview(&mut self) {
         let Some(window) = &self.settings else {
             return;
         };
-        let (style, theme) = window.preview();
-        self.style = style.unwrap_or(window.base.0);
-        self.set_theme(theme.unwrap_or(window.base.1));
+        let (style, theme, depth) = window.preview();
+        let base = window.base;
+        self.style = style.unwrap_or(base.0);
+        self.set_theme(theme.unwrap_or(base.1));
+        self.color_depth = depth.unwrap_or(base.2);
     }
 
     /// The list editor's next folder job, if any ([`Effect::CheckFolders`]).

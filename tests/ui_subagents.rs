@@ -424,7 +424,18 @@ fn children_are_dimmed_in_every_theme() {
         let faint = buf[(hx, hy)].fg;
         let (nx, ny) = cell_at(&l, "disk-analyze");
         let text = buf[(nx, ny)].fg;
-        assert_ne!(muted, text, "{theme:?}");
+        if theme == UiTheme::Ansi16 {
+            // Secondary text is plain and dim text dimmed, on any
+            // background (doc/0038).
+            let (x, y) = cell_at(&l, "└─ Pipeline watcher");
+            assert!(buf[(x, y)].modifier.contains(Modifier::DIM), "ansi16 tree");
+            assert!(
+                buf[(hx, hy)].modifier.contains(Modifier::DIM),
+                "ansi16 NAME"
+            );
+        } else {
+            assert_ne!(muted, text, "{theme:?}");
+        }
         let (x, y) = cell_at(&l, "└─ Pipeline watcher");
         assert_eq!(buf[(x, y)].fg, faint, "{theme:?} tree");
         assert_eq!(buf[(x + 3, y)].fg, muted, "{theme:?} description");

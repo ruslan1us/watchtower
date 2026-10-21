@@ -94,8 +94,27 @@ style = "dashboard"
 # "terminal": your terminal's own named colours, reverse video for the
 #   selection and pills; follows light and dark terminal themes.
 # "tokyo-night": the original blue-grey palette.
+# "neutral-light", "warm-light": neutral and warm for a light (white)
+#   terminal background. Tower cannot tell a light background from a dark
+#   one without querying the terminal, so pick these yourself.
+# "ansi16": the 16 ANSI colours plus bold, dim and reverse video, readable
+#   on dark and light backgrounds (doc/0038).
 # Default: "neutral"
 theme = "neutral"
+
+# How many colours the terminal shows (doc/0038).
+# "auto": from the environment, never by asking the terminal: COLORTERM
+#   "truecolor" or "24bit" means full colour; otherwise only a TERM known
+#   to be limited (unset, "dumb", "linux", "vt100" and other "vt*",
+#   "ansi", "cons25", "cygwin", "sun", "xterm-color", "*-16color") means
+#   16, and every other TERM ("xterm", "screen", "tmux", "*-256color")
+#   draws in full colour as before.
+# "truecolor": every theme as designed.
+# "256": the truecolor themes are drawn with the nearest of the 256 colours.
+# "16": the truecolor themes give way to "ansi16" ("terminal" and "ansi16"
+#   stay as they are).
+# Default: "auto"
+color_depth = "auto"
 
 # Sessions tower starts (doc/0029).
 [sessions]

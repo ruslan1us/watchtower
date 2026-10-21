@@ -169,8 +169,8 @@ The config is `$XDG_CONFIG_HOME/watchtower/config.toml` (default
 accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt`).
 
 Press `c` in tower to change settings: the Settings window
-([0024](doc/0024-settings-window.md)) edits the style and theme (previewed as you
-browse), the new-session defaults, the project folders, the hand-off prompt and guard,
+([0024](doc/0024-settings-window.md)) edits the style, theme and colour depth
+(previewed as you browse), the new-session defaults, the project folders, the hand-off prompt and guard,
 the poll interval, the background logs follow and subagent tracking; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
@@ -246,13 +246,33 @@ does not parse is not applied; the status line shows the error until it is fixed
   ([0021](doc/0021-dashboard-themes.md)): `"neutral"` (the default, grey text with colour
   only for states and attention), `"warm"` (warm greys, a clay-orange accent),
   `"terminal"` (your terminal's own named colours, reverse video for the selection and
-  pills, so it follows light themes too) or `"tokyo-night"` (the original blue-grey
-  palette). The minimal style keeps its own look, and `NO_COLOR` turns colour off under
-  every theme.
+  pills) or `"tokyo-night"` (the original blue-grey palette). On a light (white)
+  terminal background pick `"neutral-light"` or `"warm-light"`
+  ([0038](doc/0038-light-and-16-colour-themes.md)); tower cannot tell a light
+  background from a dark one without querying the terminal, which it never does.
+  `"ansi16"` uses only the 16 ANSI colours plus bold, dim and reverse video, and reads
+  on dark and light backgrounds alike. The minimal style keeps its own look, and
+  `NO_COLOR` turns colour off under every theme.
 
   ```toml
   [ui]
-  theme = "terminal"
+  theme = "neutral-light"
+  ```
+
+- **Colour depth.** `[ui] color_depth` says how many colours the terminal shows
+  ([0038](doc/0038-light-and-16-colour-themes.md)). The default `"auto"` reads the
+  environment and never asks the terminal: `COLORTERM=truecolor` (or `24bit`) means full
+  colour; otherwise only a `TERM` known to be limited (unset, `dumb`, `linux`, `vt100`
+  and the other `vt*`, `ansi`, `cons25`, `cygwin`, `sun`, `xterm-color`, `*-16color`)
+  means 16 colours, where the themes give way to `"ansi16"` (`"terminal"` and `"ansi16"`
+  stay) and the status line says so once. Every other `TERM` (`xterm`, `screen`,
+  `tmux`, `*-256color`, also over SSH) draws in full colour as before. Set
+  `"256"` to have the themes drawn with the nearest of the 256 colours on a terminal that
+  shows no more, or `"truecolor"` / `"16"` to override the detection:
+
+  ```toml
+  [ui]
+  color_depth = "256"   # or "truecolor", "16"
   ```
 
 - **Background logs follow.** Tower fetches `claude logs` of every working session, and
@@ -393,7 +413,7 @@ Settings window ([0024](doc/0024-settings-window.md)):
 | `↑` / `↓`, `k` / `j` | Move over the settings and accounts |
 | `Tab` / `Shift+Tab` | Next / previous section |
 | `Enter` | Edit: pick list, toggle, inline input, or the folder list |
-| `←` / `→` | Previous / next value of a choice (style and theme preview at once) |
+| `←` / `→` | Previous / next value of a choice (style, theme and colour depth preview at once) |
 | `Del` | Back to the built-in default; saving removes the key from the file |
 | `Ctrl+S` | Save; the window stays open and says what was written |
 | `e` | Open `config.toml` in `$VISUAL` / `$EDITOR` (asks first about unsaved changes) |

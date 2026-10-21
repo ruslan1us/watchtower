@@ -342,8 +342,32 @@ fn offered_values_and_field_checks() {
     );
     assert_eq!(
         session.offered(SettingKey::UiTheme),
-        ["neutral", "warm", "terminal", "tokyo-night"]
+        [
+            "neutral",
+            "warm",
+            "terminal",
+            "tokyo-night",
+            "neutral-light",
+            "warm-light",
+            "ansi16"
+        ]
     );
+    assert_eq!(
+        session.offered(SettingKey::UiColorDepth),
+        ["auto", "truecolor", "256", "16"]
+    );
+    assert!(
+        session
+            .set(SettingKey::UiColorDepth, text("24bit"))
+            .is_err()
+    );
+    assert!(session.set(SettingKey::UiColorDepth, text("256")).is_ok());
+    assert_eq!(
+        session.default_value(SettingKey::UiColorDepth),
+        text("auto")
+    );
+    session.set(SettingKey::UiColorDepth, text("auto")).unwrap();
+    assert!(!session.is_modified(SettingKey::UiColorDepth));
     assert_eq!(session.offered(SettingKey::DefaultAccount), ["main", "alt"]);
     assert_eq!(
         session.kind(SettingKey::DefaultModel),

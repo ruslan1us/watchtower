@@ -37,7 +37,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
 use crate::attach::{self, Foreground, Handover, Spawner, Termination};
 use crate::cli::CommandLine;
 use crate::config::{
-    Account, Config, ConfigError, DEFAULT_LOGS_FOLLOW_SECS, DEFAULT_POLL_INTERVAL_SECS,
+    Account, ColorDepth, Config, ConfigError, DEFAULT_LOGS_FOLLOW_SECS, DEFAULT_POLL_INTERVAL_SECS,
     LOGS_FOLLOW_RANGE, LOGS_FOLLOW_STEPS, POLL_INTERVAL_RANGE, UiStyle, UiTheme,
 };
 use crate::dispatch::{
@@ -105,6 +105,7 @@ impl Section {
 pub enum SettingKey {
     UiStyle,
     UiTheme,
+    UiColorDepth,
     DefaultAccount,
     DefaultModel,
     DefaultEffort,
@@ -120,9 +121,10 @@ pub enum SettingKey {
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 13] = [
+    pub const ALL: [SettingKey; 14] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
+        SettingKey::UiColorDepth,
         SettingKey::DefaultAccount,
         SettingKey::DefaultModel,
         SettingKey::DefaultEffort,
@@ -141,6 +143,7 @@ impl SettingKey {
         match self {
             SettingKey::UiStyle => &["ui", "style"],
             SettingKey::UiTheme => &["ui", "theme"],
+            SettingKey::UiColorDepth => &["ui", "color_depth"],
             SettingKey::DefaultAccount => &["default_account"],
             SettingKey::DefaultModel => &["default_model"],
             SettingKey::DefaultEffort => &["default_effort"],
@@ -166,7 +169,9 @@ impl SettingKey {
     /// The section the setting is shown in.
     pub fn section(self) -> Section {
         match self {
-            SettingKey::UiStyle | SettingKey::UiTheme => Section::Appearance,
+            SettingKey::UiStyle | SettingKey::UiTheme | SettingKey::UiColorDepth => {
+                Section::Appearance
+            }
             SettingKey::DefaultAccount
             | SettingKey::DefaultModel
             | SettingKey::DefaultEffort
@@ -184,6 +189,7 @@ impl SettingKey {
         match self {
             SettingKey::UiStyle => "style",
             SettingKey::UiTheme => "theme",
+            SettingKey::UiColorDepth => "colour depth",
             SettingKey::DefaultAccount => "default account",
             SettingKey::DefaultModel => "default model",
             SettingKey::DefaultEffort => "default effort",
@@ -208,6 +214,10 @@ impl SettingKey {
             SettingKey::UiTheme => {
                 "The dashboard's colours; the minimal style keeps its own, and NO_COLOR turns \
                  colour off."
+            }
+            SettingKey::UiColorDepth => {
+                "The colours the terminal shows. auto reads COLORTERM and TERM; at 256 the \
+                 truecolor themes take the nearest of 256 colours, at 16 they give way to ansi16."
             }
             SettingKey::DefaultAccount => {
                 "The account new sessions and the orchestrator start under."
@@ -254,7 +264,7 @@ impl SettingKey {
     /// When a saved change takes effect in a running tower.
     pub fn applies(self) -> &'static str {
         match self {
-            SettingKey::UiStyle | SettingKey::UiTheme => "at once",
+            SettingKey::UiStyle | SettingKey::UiTheme | SettingKey::UiColorDepth => "at once",
             SettingKey::DefaultAccount => {
                 "the next new session; the orchestrator on its next start"
             }
@@ -271,6 +281,15 @@ impl SettingKey {
                 "sessions started from now on; the list from the next poll"
             }
         }
+    }
+
+    /// Whether the window previews the setting while it is picked
+    /// (doc/0024): the style, the theme and the colour depth.
+    pub fn previewed(self) -> bool {
+        matches!(
+            self,
+            SettingKey::UiStyle | SettingKey::UiTheme | SettingKey::UiColorDepth
+        )
     }
 
     /// The type of the value in the file.
@@ -602,6 +621,10 @@ impl EditSession {
                 let names: Vec<&str> = UiTheme::ALL.iter().map(|t| t.as_str()).collect();
                 choice(&names, false)
             }
+            SettingKey::UiColorDepth => {
+                let names: Vec<&str> = ColorDepth::ALL.iter().map(|d| d.as_str()).collect();
+                choice(&names, false)
+            }
             SettingKey::DefaultAccount => SettingKind::Choice {
                 values: self
                     .config
@@ -656,6 +679,7 @@ impl EditSession {
         match key {
             SettingKey::UiStyle => text(UiStyle::default().as_str()),
             SettingKey::UiTheme => text(UiTheme::default().as_str()),
+            SettingKey::UiColorDepth => text(ColorDepth::default().as_str()),
             SettingKey::DefaultAccount => text(&self.config.accounts[0].name),
             SettingKey::DefaultModel | SettingKey::DefaultEffort => text(DEFAULT_CHOICE),
             SettingKey::DefaultPermissionMode => text(DEFAULT_PERMISSION_MODE),

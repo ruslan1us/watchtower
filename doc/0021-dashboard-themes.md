@@ -1,6 +1,6 @@
 # 0021. Dashboard colour themes
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · light themes, `ansi16` and the colour depth added by [0038](0038-light-and-16-colour-themes.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md)
 - Supersedes: the "Colour" section of [0020](0020-visual-styles.md)
 
@@ -53,6 +53,11 @@ that lists the valid names.
   the user's terminal theme, light ones included, and to terminals
   without truecolor.
 - `tokyo-night`: the 0020 palette, unchanged, for anyone who liked it.
+
+*Amended by [0038](0038-light-and-16-colour-themes.md):* also
+`neutral-light` and `warm-light` for light backgrounds, and `ansi16` (the 16
+named colours plus attributes, for dark and light backgrounds), which the
+truecolor themes give way to on a 16-colour terminal (`[ui] color_depth`).
 
 **Contrast targets** for `neutral` and `warm`, on black: text and
 secondary ≥ 7:1, dim ≥ 4.5:1, lines ≥ 3:1, state accents ≥ 4.5:1, and any
@@ -117,3 +122,7 @@ switchable while running, for a later settings window; no key changes it.
 - Choosing `terminal` automatically when `COLORTERM` does not announce
   truecolor (or offering an `auto` value).
 - Light-background variants of `neutral` and `warm`.
+
+*Both settled by [0038](0038-light-and-16-colour-themes.md):* `[ui]
+color_depth` (default `auto`, from `COLORTERM` and `TERM`) chooses `ansi16`,
+not `terminal`, at 16 colours; `neutral-light` and `warm-light` exist.

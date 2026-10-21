@@ -153,6 +153,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 /// [`draw`] with the wall-clock time `now_ms` (Unix ms) the age column
 /// counts from (doc/0006).
 pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
+    draw_screen_and_windows(frame, app, now, now_ms);
+    // Every colour within what the terminal shows (doc/0038).
+    theme::reduce_buffer(frame.buffer_mut(), app.depth());
+}
+
+/// [`draw_at`] before the colours are brought within the terminal's
+/// depth.
+fn draw_screen_and_windows(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let area = frame.area();
     // The dashboard sets it again when it draws a details panel
     // (doc/0037).
@@ -163,6 +171,15 @@ pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
         settings::draw(frame, app, look);
         draw_windows(frame, app);
         return;
+    }
+    if app.color
+        && app.style == UiStyle::Dashboard
+        && dashboard::fits(area)
+        && app.drawn_theme() != app.theme
+    {
+        // The theme needs more colours than the terminal shows: `ansi16`,
+        // said once (doc/0038).
+        app.note_theme_fallback();
     }
     match app.style {
         UiStyle::Dashboard if dashboard::fits(area) => {
@@ -236,7 +253,7 @@ pub fn footer_hint_list(app: &App) -> &'static [&'static str] {
 pub(crate) fn look(app: &App, area: Rect) -> Look {
     match app.style {
         UiStyle::Dashboard if dashboard::fits(area) => {
-            Look::Themed(Theme::new(app.theme, app.color))
+            Look::Themed(Theme::new(app.drawn_theme(), app.color))
         }
         _ => Look::Minimal { color: app.color },
     }

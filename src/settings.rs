@@ -11,16 +11,17 @@
 //! [`FolderJob`] the runtime runs on a worker thread, one at a time.
 //!
 //! Live preview: while the window is open the app draws with
-//! [`SettingsWindow::preview`] (the style and theme under the pick list's
-//! cursor, else the unsaved value) over [`SettingsWindow::base`] (the
-//! running config's), and falls back to the base when the window closes.
+//! [`SettingsWindow::preview`] (the style, theme and colour depth under
+//! the pick list's cursor, else the unsaved value) over
+//! [`SettingsWindow::base`] (the running config's), and falls back to the
+//! base when the window closes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{UiStyle, UiTheme};
+use crate::config::{ColorDepth, UiStyle, UiTheme};
 use crate::config_edit::{
     ChangeSummary, Conflict, EditSession, SaveError, SaveOutcome, Section, SettingKey, SettingKind,
     SettingValue,
@@ -398,9 +399,9 @@ pub struct SettingsWindow {
     pub after_save: Option<AfterSave>,
     /// The last save wrote everything and nothing changed since.
     pub just_saved: bool,
-    /// The running config's style and theme, drawn when nothing is
-    /// previewed; the app keeps it current across reloads.
-    pub base: (UiStyle, UiTheme),
+    /// The running config's style, theme and colour depth, drawn when
+    /// nothing is previewed; the app keeps it current across reloads.
+    pub base: (UiStyle, UiTheme, ColorDepth),
     /// What the list editor knows about each folder.
     pub folders: BTreeMap<String, FolderInfo>,
     /// Folders still to look at.
@@ -415,11 +416,11 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     /// The window over `session`; `shown_path` is the file as shown, `base`
-    /// the running style and theme.
+    /// the running style, theme and colour depth.
     pub fn new(
         session: EditSession,
         shown_path: String,
-        base: (UiStyle, UiTheme),
+        base: (UiStyle, UiTheme, ColorDepth),
         home: &Path,
     ) -> Self {
         let mut rows: Vec<Row> = SettingKey::ALL.iter().map(|k| Row::Setting(*k)).collect();
@@ -486,10 +487,10 @@ impl SettingsWindow {
         }
     }
 
-    /// The style and theme to draw while the window is open: the pick
-    /// list's value under the cursor, else the unsaved value; `None` keeps
-    /// [`SettingsWindow::base`].
-    pub fn preview(&self) -> (Option<UiStyle>, Option<UiTheme>) {
+    /// The style, theme and colour depth to draw while the window is open:
+    /// the pick list's value under the cursor, else the unsaved value;
+    /// `None` keeps [`SettingsWindow::base`].
+    pub fn preview(&self) -> (Option<UiStyle>, Option<UiTheme>, Option<ColorDepth>) {
         let shown = |key: SettingKey| -> Option<String> {
             if let Mode::Pick(pick) = &self.mode
                 && pick.key == key
@@ -508,24 +509,27 @@ impl SettingsWindow {
         (
             shown(SettingKey::UiStyle).and_then(|v| UiStyle::parse(&v).ok()),
             shown(SettingKey::UiTheme).and_then(|v| UiTheme::parse(&v).ok()),
+            shown(SettingKey::UiColorDepth).and_then(|v| ColorDepth::parse(&v).ok()),
         )
     }
 
-    /// What the header says is previewed while the pick list of the style
-    /// or theme is open: `theme warm`, when it differs from the running
-    /// one.
+    /// What the header says is previewed while the pick list of the style,
+    /// theme or colour depth is open: `theme warm`, when it differs from
+    /// the running one.
     pub fn previewing(&self) -> Option<String> {
-        if !matches!(&self.mode, Mode::Pick(p) if matches!(p.key, SettingKey::UiStyle | SettingKey::UiTheme))
-        {
+        if !matches!(&self.mode, Mode::Pick(p) if p.key.previewed()) {
             return None;
         }
-        let (style, theme) = self.preview();
+        let (style, theme, depth) = self.preview();
         let mut parts = Vec::new();
         if let Some(s) = style.filter(|s| *s != self.base.0) {
             parts.push(format!("style {}", s.as_str()));
         }
         if let Some(t) = theme.filter(|t| *t != self.base.1) {
             parts.push(format!("theme {}", t.as_str()));
+        }
+        if let Some(d) = depth.filter(|d| *d != self.base.2) {
+            parts.push(format!("colour depth {}", d.as_str()));
         }
         (!parts.is_empty()).then(|| parts.join(", "))
     }

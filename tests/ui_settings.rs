@@ -52,7 +52,7 @@ fn overview_at_160x40_matches_the_mock() {
                 "│ Settings   ~/.config/watchtower/config.toml  (found)",
                 "* 1 unsaved change │",
                 "╭ Settings ─",
-                "─ 13 settings · 2 accounts ╮╭ style ─",
+                "─ 14 settings · 2 accounts ╮╭ style ─",
                 "├─ Appearance ─",
                 "│▌   style                        ‹ dashboard ›  default",
                 "Enter pick   ←→ change │",
@@ -100,7 +100,7 @@ fn overview_at_100x30_has_the_help_strip() {
         &[
             "│ Settings   ~/.config/watchtower/config.toml  (found)",
             "* 1 unsaved change │",
-            "─ 13 settings · 2 accounts ╮",
+            "─ 14 settings · 2 accounts ╮",
             "│▌   style                       ‹ dashboard ›  default",
             "│ *  default effort              high",
             "│    main    claude       ~/.claude       work        default account",
@@ -261,7 +261,7 @@ fn a_missing_file_says_ctrl_s_creates_it() {
         &[
             "│ Settings   ~/.config/watchtower/config.toml  (not found — using defaults)",
             "no unsaved changes │",
-            "─ 13 settings · 1 account ╮",
+            "─ 14 settings · 1 account ╮",
             "│    default account              main  default",
             "│    default effort               default",
             "│    project roots                none  0 folders ▸  default",

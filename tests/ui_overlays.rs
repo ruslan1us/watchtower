@@ -412,7 +412,7 @@ struct Expect {
     key: Color,
 }
 
-const EXPECT: [Expect; 4] = [
+const EXPECT: [Expect; 6] = [
     Expect {
         theme: UiTheme::Neutral,
         title: rgb(235, 235, 235),
@@ -452,6 +452,28 @@ const EXPECT: [Expect; 4] = [
         red: rgb(247, 118, 142),
         amber: rgb(224, 175, 104),
         key: rgb(122, 162, 247),
+    },
+    // The light variants (doc/0038); `ansi16` has its own checks in
+    // tests/ui_themes.rs.
+    Expect {
+        theme: UiTheme::NeutralLight,
+        title: rgb(31, 31, 31),
+        line: rgb(138, 138, 138),
+        sel: (rgb(0, 0, 0), rgb(214, 214, 214)),
+        mark: rgb(0, 0, 0),
+        red: rgb(196, 43, 43),
+        amber: rgb(138, 90, 0),
+        key: rgb(31, 31, 31),
+    },
+    Expect {
+        theme: UiTheme::WarmLight,
+        title: rgb(152, 64, 28),
+        line: rgb(150, 138, 126),
+        sel: (rgb(26, 18, 11), rgb(234, 220, 205)),
+        mark: rgb(152, 64, 28),
+        red: rgb(184, 50, 42),
+        amber: rgb(135, 90, 0),
+        key: rgb(152, 64, 28),
     },
 ];
 
@@ -673,7 +695,12 @@ fn every_theme_draws_the_same_windows() {
 
 #[test]
 fn neutral_and_warm_paint_only_their_selection_behind_window_text() {
-    for theme in [UiTheme::Neutral, UiTheme::Warm] {
+    for theme in [
+        UiTheme::Neutral,
+        UiTheme::Warm,
+        UiTheme::NeutralLight,
+        UiTheme::WarmLight,
+    ] {
         let e = EXPECT.iter().find(|e| e.theme == theme).unwrap();
         for (name, title) in [
             ("dialog", "New session"),

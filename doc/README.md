@@ -19,7 +19,7 @@ This directory records the design decisions behind it, one file per decision.
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
 | 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029, `git status` by 0037) |
-| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036) |
+| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
@@ -38,10 +38,10 @@ This directory records the design decisions behind it, one file per decision.
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted (`--settings` added by 0039) |
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037) |
-| 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
-| 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031) |
+| 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038) |
+| 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031; `[ui] color_depth` by 0038) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
-| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033) |
+| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038) |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 | 0027 | [Rename a session](0027-rename-sessions.md) | Accepted |
@@ -55,6 +55,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
 | 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted (picker also used by 0040) |
 | 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted |
+| 0038 | [Light themes, a 16-colour theme and the colour depth](0038-light-and-16-colour-themes.md) | Accepted |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
 | 0040 | [Quick reply](0040-quick-reply.md) | Accepted |
 

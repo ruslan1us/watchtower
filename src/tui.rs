@@ -444,6 +444,9 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     }
     app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    // What `[ui] color_depth = "auto"` stands for, from COLORTERM and
+    // TERM; the terminal is never queried (doc/0038).
+    app.detected_depth = crate::config::ColorDepth::from_env();
     app.style = config.ui_style;
     if let Some(warning) = loaded.warning {
         app.add_warning(warning);
