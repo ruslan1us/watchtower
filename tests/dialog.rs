@@ -183,6 +183,28 @@ fn task_is_multi_line_and_editable() {
 }
 
 #[test]
+fn ctrl_u_is_not_bound_in_the_dialog_fields() {
+    // doc/0011 and doc/0036: the dialog's text fields take no Ctrl keys
+    // (Ctrl+U empties only the list filter, the template picker's filter
+    // and the rename field). The model preset is deleted with Backspace.
+    let (mut app, _root) = open(app_single());
+    to(&mut app, Field::Model);
+    assert_eq!(app.dialog().unwrap().model.text(), "default");
+    assert!(app.handle_key(ctrl('u')).is_empty());
+    assert_eq!(app.dialog().unwrap().model.text(), "default", "no u typed");
+    for _ in 0.."default".len() {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut app, "claude-opus-9");
+    assert_eq!(app.dialog().unwrap().model.text(), "claude-opus-9");
+    to(&mut app, Field::Task);
+    type_text(&mut app, "keep");
+    assert!(app.handle_key(ctrl('u')).is_empty());
+    assert_eq!(app.dialog().unwrap().task.text(), "keep");
+    assert!(app.dialog().is_some(), "the dialog stays open");
+}
+
+#[test]
 fn config_defaults_and_choices() {
     let home = Path::new(HOME);
     let config = Config::parse(

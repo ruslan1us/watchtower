@@ -56,7 +56,14 @@ when even that does not fit). The model field's hint, `↑↓ default · fable �
 sonnet · haiku · or type a model name` or else `↑↓ presets · or type a model name`, shows
 only whole and only while the input keeps `min(max(text + 1, 8), half the value
 column)` columns; otherwise the input takes the whole row. Messages below the fields
-(`starting…`, the questions, errors) wrap at spaces.
+(`starting…`, the questions, errors) wrap at spaces. The task text wraps at spaces too
+(a word breaks inside only when it is longer than the row; the spaces after a row's last
+word stay on that row, and the cursor is drawn where the text is). The dialog keeps one
+column of padding inside its border on each side; `Esc cancel` is on its bottom border
+only, the other windows name `Esc` once, in their keys row. A wrapped ` · ` list never
+ends a row with `·`: the separator at a break is left out. `Ctrl+U` is not bound in the
+dialog's fields ([0036](0036-prompt-templates.md): they take no `Ctrl` keys); `Backspace`
+deletes the model preset.
 
 Dispatch runs, with the project as working directory:
 

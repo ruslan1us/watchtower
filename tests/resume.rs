@@ -257,8 +257,14 @@ fn the_window_shows_fields_and_how_to_come_back() {
     );
     assert!(all.contains("(Ctrl+A"), "{all}");
     assert!(all.contains("there shows all projects"), "{all}");
+    // The note wraps at spaces; its sentences are searched across rows.
+    let flat = all
+        .lines()
+        .map(|l| l.trim_matches(|c: char| " │┃".contains(c)))
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        all.contains("press ← on an empty prompt and Ctrl+C twice to come back to tower"),
+        flat.contains("press ← on an empty prompt and Ctrl+C twice to come back to tower"),
         "{all}"
     );
     assert!(

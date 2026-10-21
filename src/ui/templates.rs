@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::dialog::{input_window, wrap};
+use super::dialog::{hint_row, input_window, wrap};
 use super::theme::Look;
 use crate::templates::TemplatePicker;
 
@@ -23,32 +23,55 @@ const NAME_W: usize = 28;
 /// The preview is left out when fewer columns than this remain for it.
 const MIN_PREVIEW_W: usize = 8;
 
-/// The picker's key hints.
-pub const PICKER_KEYS: &str = "↑↓ choose · type to filter · Enter insert · Esc close";
+/// The picker's key hints with their ranks: one row, whole hints dropped
+/// from the lowest rank when it is too wide (`type to filter` first: the
+/// filter line says it too).
+pub const PICKER_KEYS: &[(u8, &str)] = &[
+    (3, "↑↓ choose"),
+    (4, "type to filter"),
+    (1, "Enter insert"),
+    (2, "Esc close"),
+];
 
-/// Draws `picker` centred in `area`: the filter line, the templates (name
-/// and a dimmed first line) or a note, and the keys.
-pub(crate) fn draw_picker(frame: &mut Frame, picker: &TemplatePicker, area: Rect, look: Look) {
-    let w = area.width.saturating_sub(4).clamp(1, MAX_W);
-    // Inside the border, one column of padding on each side.
+/// The picker's width over a host window `host_w` columns wide, inside
+/// the host's border and padding column on each side (so the two borders
+/// never touch), and the rows it wants, its border included. A host makes
+/// itself at least two rows taller than that while the picker is open.
+pub(crate) fn picker_size(picker: &TemplatePicker, host_w: u16) -> (u16, u16) {
+    let w = host_w.saturating_sub(4).clamp(1, MAX_W);
+    let (_, _, footer, list_len) = layout(picker, w);
+    // Filter, blank, list, blank, footer.
+    let wanted = 2 + list_len + 1 + footer.len();
+    (w, wanted as u16 + 2)
+}
+
+/// The text width inside a picker `w` columns wide (one column of padding
+/// inside the border on each side), its note, its keys and how many list
+/// rows it wants.
+fn layout(picker: &TemplatePicker, w: u16) -> (usize, Vec<String>, Vec<String>, usize) {
     let width = usize::from(w.saturating_sub(4)).max(1);
-    let filtered = picker.filtered();
     let note: Vec<String> = picker
         .empty_text()
         .map(|t| wrap(&t, width))
         .unwrap_or_default();
-    let footer = wrap(PICKER_KEYS, width);
-    let list_len = filtered.len().max(note.len()).clamp(1, ROWS);
-    // Filter, blank, list, blank, footer.
-    let wanted = 2 + list_len + 1 + footer.len();
-    let h = (wanted as u16 + 2)
-        .min(area.height.saturating_sub(2))
-        .max(1);
-    let rect = super::centered(area, w, h);
+    let footer = vec![hint_row(PICKER_KEYS, width)];
+    let list_len = picker.filtered().len().max(note.len()).clamp(1, ROWS);
+    (width, note, footer, list_len)
+}
+
+/// Draws `picker` inside its host window at `host`: the filter line, the
+/// templates (name and a dimmed first line) or a note, and the keys
+/// ([`picker_size`]).
+pub(crate) fn draw_picker(frame: &mut Frame, picker: &TemplatePicker, host: Rect, look: Look) {
+    let (w, wanted) = picker_size(picker, host.width);
+    let (width, note, footer, list_len) = layout(picker, w);
+    let filtered = picker.filtered();
+    // Inside the host, below its top border and above its bottom one.
+    let h = wanted.min(host.height.saturating_sub(2)).max(1);
+    let rect = super::centered(host, w, h);
     frame.render_widget(Clear, rect);
-    let block = look
-        .overlay_block(" Templates ")
-        .title_bottom(look.hint_line(" Esc close "));
+    // `Esc close` is on the keys row, as in every window.
+    let block = look.overlay_block(" Templates ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     if inner.width < 3 || inner.height == 0 {

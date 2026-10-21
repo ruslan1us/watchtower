@@ -18,6 +18,7 @@ use crate::dialog::{
     ResumeField, ResumeWindow, TextArea,
 };
 use crate::dispatch::MODEL_CHOICES;
+use crate::templates::TemplatePicker;
 
 /// Width of the label column (marker + label + gap).
 const LABEL_W: u16 = 10;
@@ -27,8 +28,7 @@ const PROJECT_ROWS: usize = 6;
 const TASK_ROWS: usize = 10;
 
 /// Wraps `text` into rows of at most `width` display columns, breaking
-/// anywhere: the task text, where every character must stay where the
-/// cursor arithmetic expects it.
+/// anywhere: the pieces of a word longer than a row.
 fn wrap_chars(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -52,21 +52,33 @@ fn wrap_chars(text: &str, width: usize) -> Vec<String> {
 /// Wraps `text` into rows of at most `width` display columns at spaces,
 /// breaking a word only when it is longer than a row. Line breaks in `text`
 /// are kept. For messages, hints and the refusal text.
+///
+/// A ` · ` between two items goes with the item after it, so a row never
+/// ends with `·`; where the rows break between them it is left out (the
+/// break separates them), so no row starts with `·` either.
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.split('\n') {
         let mut row = String::new();
         let mut used = 0;
-        for word in line.split(' ') {
+        let words: Vec<&str> = line.split(' ').collect();
+        let mut i = 0;
+        while i < words.len() {
+            // ` · ` and the next word, inside a row; a lone word otherwise.
+            let sep = words[i] == "·" && i + 1 < words.len() && !row.is_empty();
+            let word = words[i + usize::from(sep)];
+            i += 1 + usize::from(sep);
             let ww = word.width();
-            let gap = usize::from(!row.is_empty());
-            if used + gap + ww <= width {
-                if gap == 1 {
-                    row.push(' ');
-                }
+            let gap = match (row.is_empty(), sep) {
+                (true, _) => "",
+                (false, true) => " · ",
+                (false, false) => " ",
+            };
+            if used + gap.width() + ww <= width {
+                row.push_str(gap);
                 row.push_str(word);
-                used += gap + ww;
+                used += gap.width() + ww;
                 continue;
             }
             if !row.is_empty() {
@@ -94,7 +106,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 /// While the row is too wide, the hint with the lowest rank (the last of
 /// equal ranks) is dropped whole; the row never wraps and never starts or
 /// ends with `·`. Only a single hint wider than the row is cut, with `…`.
-fn hint_row(hints: &[(u8, &str)], width: usize) -> String {
+pub(super) fn hint_row(hints: &[(u8, &str)], width: usize) -> String {
     let mut kept: Vec<(u8, &str)> = hints.to_vec();
     loop {
         let line = kept.iter().map(|(_, h)| *h).collect::<Vec<_>>().join(" · ");
@@ -213,34 +225,90 @@ pub(super) fn input_window(input: &LineInput, width: usize) -> (String, usize) {
     (shown, col(&chars[start..cursor]))
 }
 
-/// One logical line wrapped like [`wrap`], plus the visual (row, column) of
-/// the cursor placed before char `cursor` (or at the end). A cursor after a
-/// full last row gets an extra empty row.
-fn wrap_with_cursor(line: &str, width: usize, cursor: usize) -> (Vec<String>, (usize, usize)) {
-    let width = width.max(1);
-    let mut rows = Vec::new();
-    let mut row = String::new();
+/// Where the visual rows of one text-area line start (char indices), for
+/// rows `width` columns wide: the rows break at spaces, and the spaces
+/// after a row's last word stay with that row even past the width (drawn
+/// as nothing); a word breaks inside only when it is longer than a row.
+fn row_starts(chars: &[char], width: usize) -> Vec<usize> {
+    let cw = |c: &char| c.width().unwrap_or(0);
+    let mut starts = vec![0];
     let mut used = 0;
-    let mut pos = None;
-    for (k, ch) in line.chars().enumerate() {
-        let cw = ch.width().unwrap_or(0);
-        if used + cw > width && !row.is_empty() {
-            rows.push(std::mem::take(&mut row));
+    let mut i = 0;
+    while i < chars.len() {
+        let mut j = i;
+        while j < chars.len() && chars[j] != ' ' {
+            j += 1;
+        }
+        let ww: usize = chars[i..j].iter().map(cw).sum();
+        let row_start = starts.last().copied().unwrap_or(0);
+        if used + ww > width && i > row_start {
+            starts.push(i);
             used = 0;
         }
-        if k == cursor {
-            pos = Some((rows.len(), used));
+        if used + ww > width {
+            // Longer than a row: break inside the word.
+            for (k, c) in chars[i..j].iter().enumerate() {
+                let w = cw(c);
+                let row_start = starts.last().copied().unwrap_or(0);
+                if used + w > width && i + k > row_start {
+                    starts.push(i + k);
+                    used = 0;
+                }
+                used += w;
+            }
+        } else {
+            used += ww;
         }
-        row.push(ch);
-        used += cw;
+        let mut k = j;
+        while k < chars.len() && chars[k] == ' ' {
+            k += 1;
+        }
+        used += k - j;
+        i = k;
     }
-    rows.push(row);
-    let pos = pos.unwrap_or_else(|| {
-        if used >= width {
+    starts
+}
+
+/// One logical line of a text area wrapped at word boundaries
+/// ([`row_starts`]), plus the visual (row, column) of the cursor placed
+/// before char `cursor` (or at the end), when given. A cursor on the
+/// spaces past a row's end shows at the row's last column plus one; a
+/// cursor at the end of a full last row gets an extra empty row.
+fn wrap_text_line(
+    line: &str,
+    width: usize,
+    cursor: Option<usize>,
+) -> (Vec<String>, Option<(usize, usize)>) {
+    let width = width.max(1);
+    let chars: Vec<char> = line.chars().collect();
+    let starts = row_starts(&chars, width);
+    let col_of = |range: &[char]| range.iter().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+    let mut rows: Vec<String> = Vec::with_capacity(starts.len());
+    for (r, &s) in starts.iter().enumerate() {
+        let e = starts.get(r + 1).copied().unwrap_or(chars.len());
+        // Only the spaces after the last word can run past the width (and
+        // a wide char on a row narrower than it).
+        let mut row = String::new();
+        let mut used = 0;
+        for c in &chars[s..e] {
+            let w = c.width().unwrap_or(0);
+            if used + w > width && !row.is_empty() {
+                break;
+            }
+            row.push(*c);
+            used += w;
+        }
+        rows.push(row);
+    }
+    let pos = cursor.map(|c| {
+        let c = c.min(chars.len());
+        let r = starts.iter().rposition(|&s| s <= c).unwrap_or(0);
+        let col = col_of(&chars[starts[r]..c]);
+        if c == chars.len() && col >= width {
             rows.push(String::new());
             (rows.len() - 1, 0)
         } else {
-            (rows.len() - 1, used)
+            (r, col.min(width))
         }
     });
     (rows, pos)
@@ -252,20 +320,18 @@ fn task_rows(dialog: &Dialog, width: usize) -> (Vec<String>, (usize, usize)) {
     text_rows(&dialog.task, width)
 }
 
-/// Visual rows of a text area wrapped to `width`, and the cursor's visual
-/// (row, column).
+/// Visual rows of a text area wrapped to `width` at word boundaries, and
+/// the cursor's visual (row, column).
 fn text_rows(text: &TextArea, width: usize) -> (Vec<String>, (usize, usize)) {
     let (crow, ccol) = text.cursor();
     let mut rows = Vec::new();
     let mut cursor = (0, 0);
     for (i, line) in text.lines().iter().enumerate() {
-        if i == crow {
-            let (wrapped, (r, c)) = wrap_with_cursor(line, width, ccol);
+        let (wrapped, pos) = wrap_text_line(line, width, (i == crow).then_some(ccol));
+        if let Some((r, c)) = pos {
             cursor = (rows.len() + r, c);
-            rows.extend(wrapped);
-        } else {
-            rows.extend(wrap_chars(line, width));
         }
+        rows.extend(wrapped);
     }
     (rows, cursor)
 }
@@ -298,6 +364,26 @@ impl Painter<'_, '_> {
         }
         self.y += 1;
     }
+}
+
+/// The text area of a window: `inner` (inside the border) less one column
+/// of padding on each side, so no text touches the border. A cursor after
+/// a full row may sit in the right padding column.
+fn padded(inner: Rect) -> Rect {
+    if inner.width < 2 {
+        return Rect { width: 0, ..inner };
+    }
+    Rect {
+        x: inner.x + 1,
+        width: inner.width - 2,
+        ..inner
+    }
+}
+
+/// The height a window `w` columns wide needs to hold the template picker
+/// open over it inside its border (doc/0036); 0 without a picker.
+fn picker_room(picker: Option<&TemplatePicker>, w: u16) -> u16 {
+    picker.map_or(0, |p| super::templates::picker_size(p, w).1 + 2)
 }
 
 fn label(field: Field, focused: Field, look: Look) -> Span<'static> {
@@ -405,7 +491,8 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     } else {
         area.width.saturating_sub(2).max(1)
     };
-    let width = usize::from(w.saturating_sub(2)).max(1);
+    // Inside the border, one column of padding on each side.
+    let width = usize::from(w.saturating_sub(4)).max(1);
     let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
     let focused = dialog.field;
     // The template picker over the dialog has the keys and the cursor.
@@ -494,6 +581,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     let (task_wanted, _) = task_rows(dialog, value_w);
     let wanted = fixed + list_len.clamp(1, PROJECT_ROWS) + task_wanted.len().clamp(3, TASK_ROWS);
     let h = (wanted as u16 + 2)
+        .max(picker_room(dialog.templates.as_ref(), w))
         .min(area.height.saturating_sub(2))
         .max(1);
     let rect = super::centered(area, w, h);
@@ -501,7 +589,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     let block = look
         .overlay_block(" New session ")
         .title_bottom(look.hint_line(" Esc cancel "));
-    let inner = block.inner(rect);
+    let inner = padded(block.inner(rect));
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
@@ -657,13 +745,13 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     }
 
     if let Some(pos) = cursor
-        && pos.x < inner.x + inner.width
+        && pos.x <= inner.x + inner.width
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
     }
     if let Some(picker) = &dialog.templates {
-        super::templates::draw_picker(p.frame, picker, area, look);
+        super::templates::draw_picker(p.frame, picker, rect, look);
     }
 }
 
@@ -690,7 +778,8 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
     } else {
         area.width.saturating_sub(2).max(1)
     };
-    let width = usize::from(w.saturating_sub(2)).max(1);
+    // Inside the border, one column of padding on each side.
+    let width = usize::from(w.saturating_sub(4)).max(1);
     let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
     // The resume window reuses the dialog's labels for its two fields.
     let focused = match window.field {
@@ -736,10 +825,8 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
         .max(1);
     let rect = super::centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let block = look
-        .overlay_block(" Resume a past conversation ")
-        .title_bottom(look.hint_line(" Esc cancel "));
-    let inner = block.inner(rect);
+    let block = look.overlay_block(" Resume a past conversation ");
+    let inner = padded(block.inner(rect));
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
@@ -811,7 +898,7 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
     }
 
     if let Some(pos) = cursor
-        && pos.x < inner.x + inner.width
+        && pos.x <= inner.x + inner.width
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
@@ -876,7 +963,10 @@ pub fn draw_rename(frame: &mut Frame, _app: &App, window: &RenameWindow, area: R
     } else {
         "Enter rename"
     };
-    let footer = wrap(&format!("{enter} · Ctrl+U clear · Esc cancel"), width);
+    let footer = [hint_row(
+        &[(1, enter), (3, "Ctrl+U clear"), (2, "Esc cancel")],
+        width,
+    )];
 
     // Name, blank, body, blank, footer.
     let wanted = 2 + body.len() + 1 + footer.len();
@@ -885,20 +975,12 @@ pub fn draw_rename(frame: &mut Frame, _app: &App, window: &RenameWindow, area: R
         .max(1);
     let rect = super::centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let block = look
-        .overlay_block(" Rename session ")
-        .title_bottom(look.hint_line(" Esc cancel "));
-    let inner = block.inner(rect);
+    let block = look.overlay_block(" Rename session ");
+    let inner = padded(block.inner(rect));
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    // One column of padding inside the border, as the other windows.
-    let inner = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(1),
-        ..inner
-    };
     let mut p = Painter {
         frame,
         area: inner,
@@ -921,7 +1003,7 @@ pub fn draw_rename(frame: &mut Frame, _app: &App, window: &RenameWindow, area: R
         p.line(look.hint_line(row));
     }
     if let Some(pos) = cursor
-        && pos.x < inner.x + inner.width
+        && pos.x <= inner.x + inner.width
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
@@ -941,8 +1023,14 @@ pub fn reply_plan(live: bool, account: &str) -> String {
     }
 }
 
-/// The reply window's keys (doc/0040).
-pub const REPLY_KEYS: &str = "Enter new line · Ctrl+S send · Ctrl+P template · Esc cancel";
+/// The reply window's keys with their ranks (doc/0040): one row, whole
+/// hints dropped from the lowest rank when it is too wide ([`hint_row`]).
+pub const REPLY_KEYS: &[(u8, &str)] = &[
+    (4, "Enter new line"),
+    (1, "Ctrl+S send"),
+    (3, "Ctrl+P template"),
+    (2, "Esc cancel"),
+];
 
 /// Draws the quick reply window of `t` centred in `area` (doc/0040): the
 /// text, what `Ctrl+S` does, an error or question, the keys, and the
@@ -975,32 +1063,25 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
             look.prompt(),
         )),
     }
-    let footer = wrap(REPLY_KEYS, width);
+    let footer = [hint_row(REPLY_KEYS, width)];
     let text_w = width.saturating_sub(2).max(1);
     let (rows, (crow, ccol)) = text_rows(&window.text, text_w);
     // Text, blank, plan and messages, blank, footer.
     let fixed = 1 + below.len() + 1 + footer.len();
     let wanted = fixed + rows.len().clamp(3, TASK_ROWS);
     let h = (wanted as u16 + 2)
+        .max(picker_room(window.templates.as_ref(), w))
         .min(area.height.saturating_sub(2))
         .max(1);
     let rect = super::centered(area, w, h);
     frame.render_widget(Clear, rect);
     let title = format!(" Reply to {} ", window.name);
-    let block = look
-        .overlay_block(title)
-        .title_bottom(look.hint_line(" Esc cancel "));
-    let inner = block.inner(rect);
+    let block = look.overlay_block(title);
+    let inner = padded(block.inner(rect));
     frame.render_widget(block, rect);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    // One column of padding inside the border, as the other windows.
-    let inner = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(1),
-        ..inner
-    };
     let text_h = usize::from(inner.height)
         .saturating_sub(fixed)
         .clamp(1, TASK_ROWS);
@@ -1046,13 +1127,13 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
         p.line(look.hint_line(row));
     }
     if let Some(pos) = cursor
-        && pos.x < inner.x + inner.width
+        && pos.x <= inner.x + inner.width
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
     }
     if let Some(picker) = &window.templates {
-        super::templates::draw_picker(p.frame, picker, area, look);
+        super::templates::draw_picker(p.frame, picker, rect, look);
     }
 }
 
@@ -1091,6 +1172,152 @@ mod tests {
         );
         assert_eq!(longest_fit(TASK_PLACEHOLDERS, 20), "describe the task");
         assert_eq!(longest_fit(TASK_PLACEHOLDERS, 10), "describe …");
+    }
+
+    #[test]
+    fn a_wrapped_list_never_ends_or_starts_a_row_with_its_separator() {
+        let list = "default · fable · opus · sonnet · haiku · a full model name";
+        // 33 columns once ended the first row with `sonnet ·`.
+        assert_eq!(
+            wrap(list, 33),
+            [
+                "default · fable · opus · sonnet",
+                "haiku · a full model name"
+            ]
+        );
+        let words: Vec<&str> = list.split(' ').filter(|w| *w != "·").collect();
+        for width in 1..70 {
+            let rows = wrap(list, width);
+            for row in &rows {
+                assert!(!row.trim_end().ends_with('·'), "{width}: {rows:?}");
+                assert!(!row.trim_start().starts_with('·'), "{width}: {rows:?}");
+                assert!(row.width() <= width, "{width}: {rows:?}");
+            }
+            // Only separators at a break are left out; every item stays.
+            if width >= "default".len() {
+                let kept: Vec<String> = rows
+                    .iter()
+                    .flat_map(|r| r.split(' ').map(str::to_owned).collect::<Vec<_>>())
+                    .filter(|w| w != "·")
+                    .collect();
+                assert_eq!(kept, words, "{width}: {rows:?}");
+            }
+        }
+        // A `·` inside a word or a lone one at the start is text.
+        assert_eq!(wrap("a·b c", 3), ["a·b", "c"]);
+        assert_eq!(wrap("· x", 10), ["· x"]);
+    }
+
+    /// The rows of `line` and the cursor before each char index.
+    fn cursors(line: &str, width: usize) -> (Vec<String>, Vec<(usize, usize)>) {
+        let n = line.chars().count();
+        let rows = wrap_text_line(line, width, None).0;
+        let pos = (0..=n)
+            .map(|c| wrap_text_line(line, width, Some(c)).1.unwrap())
+            .collect();
+        (rows, pos)
+    }
+
+    #[test]
+    fn text_areas_wrap_at_words_and_keep_the_cursor_in_place() {
+        // ASCII: the space after a full row stays on it, drawn as nothing.
+        let (rows, pos) = cursors("hello world foo", 11);
+        assert_eq!(rows, ["hello world", "foo"]);
+        assert_eq!(pos[5], (0, 5));
+        assert_eq!(pos[11], (0, 11));
+        assert_eq!(pos[12], (1, 0));
+        assert_eq!(pos[15], (1, 3));
+        let (rows, pos) = cursors("hello world foo", 8);
+        assert_eq!(rows, ["hello ", "world ", "foo"]);
+        assert_eq!(pos[6], (1, 0));
+        assert_eq!(pos[12], (2, 0));
+
+        // Cyrillic: whole words move to the next row.
+        let (rows, pos) = cursors("после обновления библиотеки", 18);
+        assert_eq!(rows, ["после обновления ", "библиотеки"]);
+        assert_eq!(pos[6], (0, 6));
+        assert_eq!(pos[17], (1, 0));
+        assert_eq!(pos[20], (1, 3));
+        assert_eq!(pos[27], (1, 10));
+
+        // A word longer than the row breaks inside, on a row of its own.
+        let (rows, pos) = cursors("a abcdefghijkl", 5);
+        assert_eq!(rows, ["a ", "abcde", "fghij", "kl"]);
+        assert_eq!(pos[2], (1, 0));
+        assert_eq!(pos[7], (2, 0));
+        assert_eq!(pos[14], (3, 2));
+        // At the end of a full last row the cursor gets a row of its own.
+        let (rows, pos) = cursors("abcdefghij", 5);
+        assert_eq!(rows, ["abcde", "fghij"]);
+        assert_eq!(pos[10], (2, 0));
+
+        // Wide characters count two columns and never split.
+        let (rows, pos) = cursors("日本語 テキスト", 6);
+        assert_eq!(rows, ["日本語", "テキス", "ト"]);
+        assert_eq!(pos[2], (0, 4));
+        assert_eq!(pos[3], (0, 6));
+        assert_eq!(pos[4], (1, 0));
+        assert_eq!(pos[7], (2, 0));
+        assert_eq!(pos[8], (2, 2));
+        assert_eq!(cursors("ab日本", 3).0, ["ab", "日", "本"]);
+    }
+
+    #[test]
+    fn the_wrapped_cursor_moves_forward_one_cell_at_a_time() {
+        let texts = [
+            "Найди, почему падают интеграционные тесты платежей после обновления",
+            "then open a pull request with a short summary",
+            "  indented   with   runs of spaces  ",
+            "日本語のテキスト and words",
+            "averyveryverylongwordwithoutanyspaces then more",
+        ];
+        for text in texts {
+            let chars: Vec<char> = text.chars().collect();
+            // From 2 columns, where a wide char fits a row.
+            for width in 2..40 {
+                let (rows, pos) = cursors(text, width);
+                for row in &rows {
+                    assert!(row.width() <= width, "{width} {text}: {rows:?}");
+                }
+                for c in 0..chars.len() {
+                    let (a, b) = (pos[c], pos[c + 1]);
+                    assert!(a.1 <= width && b.1 <= width, "{width} {text}: {c}");
+                    // The next position is further on: the same row further
+                    // right (by the char's width, or not at all past the
+                    // row's end), or the start of a later row.
+                    let cw = chars[c].width().unwrap_or(0);
+                    let same_row = b.0 == a.0 && (b.1 == a.1 + cw || b.1 == width);
+                    let next_row = b.0 == a.0 + 1 && b.1 == 0;
+                    assert!(same_row || next_row, "{width} {text}: {c} {a:?} {b:?}");
+                    // A visible char is drawn where the cursor before it is.
+                    if chars[c] != ' ' {
+                        let row: Vec<char> = rows[a.0].chars().collect();
+                        let col: usize = row
+                            .iter()
+                            .scan(0, |w, ch| {
+                                let at = *w;
+                                *w += ch.width().unwrap_or(0);
+                                Some((at, *ch))
+                            })
+                            .find(|(at, _)| *at == a.1)
+                            .map(|(_, ch)| ch.width().unwrap_or(0))
+                            .unwrap_or(usize::MAX);
+                        assert_eq!(col, cw, "{width} {text}: {c} {a:?} {rows:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_rows_count_every_line_and_find_the_cursor() {
+        let text = TextArea::new("first line here\nвторая строка текста");
+        let (rows, cursor) = text_rows(&text, 12);
+        assert_eq!(
+            rows,
+            ["first line ", "here", "вторая ", "строка ", "текста"]
+        );
+        assert_eq!(cursor, (4, 6));
     }
 
     #[test]

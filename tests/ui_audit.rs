@@ -773,7 +773,11 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
     s!("dialog-model-long", || {
         dialog_then(|app| {
             tabs(app, 4);
-            press(app, ctrl('u'));
+            // The dialog's text fields take no Ctrl keys (doc/0036):
+            // the preset is deleted with Backspace.
+            while !app.dialog().unwrap().model.text().is_empty() {
+                press(app, key(KeyCode::Backspace));
+            }
             type_in(app, LONG_MODEL);
         })
     });
@@ -2173,9 +2177,7 @@ invariants! {
     pad_filter: Pad, "filter-";
     pad_logs: Pad, "logs-";
     pad_help: Pad, "help-";
-    #[ignore = "F-J1, F-J2"]
     pad_dialog: Pad, "dialog-";
-    #[ignore = "F-J1, F-J2, F-J3"]
     pad_templates: Pad, "templates-";
     pad_reply: Pad, "reply-";
     pad_rename: Pad, "rename-";
@@ -2184,7 +2186,6 @@ invariants! {
     pad_popup: Pad, "popup-";
     pad_trust: Pad, "trust-";
     pad_picker: Pad, "picker-";
-    #[ignore = "F-J1, F-J2"]
     pad_resume: Pad, "resume-";
     pad_settings: Pad, "settings-";
     hint_row_list: HintRow, "list-";
@@ -2270,7 +2271,6 @@ invariants! {
     odd_trust: Odd, "trust-";
     odd_picker: Odd, "picker-";
     odd_resume: Odd, "resume-";
-    #[ignore = "F-C6"]
     odd_settings: Odd, "settings-";
     align_list: Align, "list-";
     align_status: Align, "status-";

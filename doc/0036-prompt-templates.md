@@ -58,6 +58,13 @@ reads `No templates yet: put .md files in ~/.config/watchtower/templates`
 (the folder actually used); with no match, `no template matches the
 filter`. It follows the style and theme like every other window
 ([0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)).
+*Amended 2026-10-21 (UI audit):* the picker sits inside its host window,
+inset by the host's border and padding column on each side so the two
+borders never touch, and below the host's top border and above its bottom
+one; the host grows to hold it while it is open. `Esc close` is named once,
+in its keys row, `↑↓ choose · type to filter · Enter insert · Esc close`,
+which is one row: when it is too wide, whole hints are dropped in this
+order: `type to filter`, `↑↓ choose`, `Esc close`; `Enter insert` stays.
 
 The picker is a component: `templates::TemplatePicker` (state and keys, no
 I/O, returning a `PickerAction`: `None`, `Close`, `Pick(text)`, `Quit`),

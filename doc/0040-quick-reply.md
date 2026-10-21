@@ -53,7 +53,11 @@ multi-line text area (the dialog's `TextArea`), one line saying what will
 happen — live: `Stops the idle session and wakes it under <account> with
 your text as the next prompt.`; stopped: `Wakes the session under
 <account> with your text as the next prompt.` — and the keys `Enter new
-line · Ctrl+S send · Ctrl+P template · Esc cancel`. The dialog's
+line · Ctrl+S send · Ctrl+P template · Esc cancel` (*amended 2026-10-21,
+UI audit:* the only place `Esc` is named; one row, whole hints dropped
+when it is too wide in this order: `Enter new line`, `Ctrl+P template`,
+`Esc cancel`, while `Ctrl+S send` stays; the text wraps at words as the
+dialog's task, [0008](0008-new-session-dialog.md)). The dialog's
 conventions apply: `Enter` and `Ctrl+J` are new lines, `Ctrl+S` sends,
 `Esc` and `Ctrl+C` ask first when text was typed. Typed Cyrillic stays as
 typed. `Ctrl+P` opens the template picker of

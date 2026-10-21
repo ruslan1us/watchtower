@@ -59,7 +59,9 @@ none found, none matching) shows why and does nothing.
 field · ↑↓ choose · type to filter · Enter open the picker · Esc cancel`,
 are one row, never wrapped or cut; when it is too wide, whole hints are
 dropped in this order: `type to filter`, `↑↓ choose`, `Tab/Shift+Tab
-field`, `Esc cancel`; `Enter open the picker` stays.
+field`, `Esc cancel`; `Enter open the picker` stays. The keys row is the
+only place `Esc cancel` is named (not the bottom border), and the window
+keeps one column of padding inside its border on each side.
 
 On `Enter` tower hands the terminal over exactly like an attach
 ([0005](0005-attach-and-detach.md): release, no-op signal handlers, saved

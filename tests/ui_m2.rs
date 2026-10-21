@@ -232,9 +232,15 @@ fn dialog_without_projects_names_the_config_file() {
     );
     app.open_dialog(watchtower::projects::ProjectList::default());
     let all = text(&render(&mut app, 80, 40));
-    assert!(all.contains("no projects found — no config at"), "{all}");
-    assert!(all.contains("(using defaults); create it with"), "{all}");
-    assert!(all.contains("(see config.example.toml)"), "{all}");
+    // The note wraps at spaces; search it across rows.
+    let flat = all
+        .lines()
+        .map(|l| l.trim_matches(|c: char| " │".contains(c)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(flat.contains("no projects found — no config at"), "{all}");
+    assert!(flat.contains("(using defaults); create it with"), "{all}");
+    assert!(flat.contains("(see config.example.toml)"), "{all}");
 }
 
 /// The text of the row holding `needle`, without the borders and spaces of
@@ -259,7 +265,12 @@ fn dialog_keys_drop_whole_hints_on_one_row() {
             24,
             "Ctrl+S start · Alt+Enter start & attach · Ctrl+P template",
         ),
-        (100, 30, wide),
+        // One column of padding on each side: at 100 columns `Ctrl+G` goes.
+        (
+            100,
+            30,
+            "Tab/Shift+Tab field · Ctrl+S start · Alt+Enter start & attach · Ctrl+P template",
+        ),
         (104, 32, wide),
     ] {
         let lines = render(&mut app, w, h);
