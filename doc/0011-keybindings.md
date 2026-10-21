@@ -203,7 +203,8 @@ setting.
   detach hint.
 - The help overlay fits a 24-row terminal: related list keys share a line
   (`s, d`, `p, i`, `a, e`, `m, t` since [0040](0040-quick-reply.md), `!, c, r, ?` since
-  [0037](0037-git-summary-and-shell.md), …), followed by the dialog keys. The Settings
+  [0037](0037-git-summary-and-shell.md), `q/Ctrl+C, Ctrl+Z` since 2026-10-21, …),
+  followed by the dialog keys: at most 22 rows inside the border. The Settings
   window has its own key list (`?` there). *Amended by
   [0028](0028-scrolling-the-logs-panel.md):* opened from the focused logs panel,
   the help lists the panel's keys instead of the dialog keys, and the footer

@@ -2200,7 +2200,7 @@ invariants! {
     hint_row_picker: HintRow, "picker-";
     hint_row_resume: HintRow, "resume-";
     hint_row_settings: HintRow, "settings-";
-    #[ignore = "F-C2, F-C3, F-G1"]
+    #[ignore = "F-C2, F-C3"]
     cut_list: Cut, "list-";
     #[ignore = "F-F1"]
     cut_status: Cut, "status-";
@@ -2212,22 +2212,19 @@ invariants! {
     cut_templates: Cut, "templates-";
     cut_reply: Cut, "reply-";
     cut_rename: Cut, "rename-";
-    #[ignore = "F-E1"]
     cut_handoff: Cut, "handoff-";
     cut_confirm: Cut, "confirm-";
     cut_popup: Cut, "popup-";
     cut_trust: Cut, "trust-";
-    #[ignore = "F-E2"]
     cut_picker: Cut, "picker-";
     cut_resume: Cut, "resume-";
     cut_settings: Cut, "settings-";
-    #[ignore = "F-C2, F-C3, F-C4, F-E3, F-E4, F-G1"]
+    #[ignore = "F-C2, F-C3, F-C4, F-E4"]
     mid_word_list: MidWord, "list-";
     #[ignore = "F-C3, F-F1"]
     mid_word_status: MidWord, "status-";
     #[ignore = "F-C2, F-C3, F-C4"]
     mid_word_filter: MidWord, "filter-";
-    #[ignore = "F-E3"]
     mid_word_logs: MidWord, "logs-";
     mid_word_help: MidWord, "help-";
     mid_word_dialog: MidWord, "dialog-";
@@ -2258,7 +2255,7 @@ invariants! {
     could_wrap_picker: CouldWrap, "picker-";
     could_wrap_resume: CouldWrap, "resume-";
     could_wrap_settings: CouldWrap, "settings-";
-    #[ignore = "F-D1, F-G1"]
+    #[ignore = "F-D1"]
     odd_list: Odd, "list-";
     odd_status: Odd, "status-";
     #[ignore = "F-F1"]
@@ -2277,7 +2274,6 @@ invariants! {
     odd_resume: Odd, "resume-";
     #[ignore = "F-C6"]
     odd_settings: Odd, "settings-";
-    #[ignore = "F-G1"]
     align_list: Align, "list-";
     align_status: Align, "status-";
     align_filter: Align, "filter-";
@@ -2298,7 +2294,6 @@ invariants! {
     missing_status: Missing, "status-";
     missing_filter: Missing, "filter-";
     missing_logs: Missing, "logs-";
-    #[ignore = "F-H1"]
     missing_help: Missing, "help-";
     missing_dialog: Missing, "dialog-";
     missing_templates: Missing, "templates-";

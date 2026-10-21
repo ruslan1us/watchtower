@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md)
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -19,7 +19,12 @@ timeline.
 
 **Two styles**, picked with `[ui] style` in `config.toml`
 ([0002](0002-tech-stack-and-files.md)): `"dashboard"` (the default) and
-`"minimal"`, today's list, kept unchanged. Any other value is a config
+`"minimal"`, today's list, kept unchanged. *Amended 2026-10-21 (owner
+request to fix cut text):* the minimal list's columns are fitted to the
+width, as the dashboard's are: folders first become `…/api`, then state
+details their short form (`permission`, `reply`), then the project and
+then the name are cut with `…`; the age and account columns always stay.
+Where every column fits, the list is drawn as before. Any other value is a config
 error that names both. The style changes presentation only: lines, order,
 selection, collapse, filter, keys, attention and orchestrator handling come
 from the same app state in both ([0006](0006-session-states-and-grouping.md),
@@ -63,6 +68,12 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
 - Overlays, dialogs, pickers and help are the same windows in both styles,
   with the same text and layout; while the dashboard is drawn they take
   its theme's look, colours from [0021](0021-dashboard-themes.md).
+  *Amended 2026-10-21 (owner request to fix cut text):* a window's or
+  panel's title is fitted to its width less 4 columns. A window first
+  grows to show its whole title, up to 100 columns and the screen less 4;
+  past that the variable part (a session name) is shortened with `…` and
+  the fixed words, counts and markers are kept, e.g.
+  `Continue refactor-the-auth… under which account?`.
 
 **Fallback.** The dashboard needs 80×24, the mockup's own minimum (its
 borders cost 4 rows and 2 columns; at 60×20 the list already scrolls).

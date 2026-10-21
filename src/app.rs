@@ -1100,7 +1100,9 @@ pub enum LogsAction {
 }
 
 /// Keys of the session list (doc/0011), for the help. Short enough that
-/// the help fits a 24-row terminal.
+/// the help fits a 24-row terminal: 14 rows, so with a blank row, a
+/// heading and the 6 dialog or logs keys the help has 22 rows inside its
+/// border.
 pub const KEY_TABLE: &[(&str, &str)] = &[
     ("↑/↓, k/j", "move selection"),
     (
@@ -1124,8 +1126,10 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
         "!, c, r, ?",
         "shell in the folder; settings; refresh now; help",
     ),
-    ("q, Ctrl+C", "quit"),
-    ("Ctrl+Z", "inside a session: return to tower"),
+    (
+        "q/Ctrl+C, Ctrl+Z",
+        "quit; inside a session: return to tower",
+    ),
 ];
 
 /// Keys of the logs panel while it has the focus (doc/0028), for the help,

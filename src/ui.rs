@@ -464,38 +464,62 @@ const PARTIAL_SHORT: &str = "partial output";
 /// The logs panel's title in a panel `width` columns wide:
 /// `logs · <name> (<account>)`, then [`PARTIAL_NOTE`] when the screen is
 /// partial (doc/0030), and while paused (doc/0028) where it is, e.g.
-/// `paused · line 120–160 of 900 · End follows`. When it does not fit,
-/// the name goes first, then the note gets shorter.
+/// `paused · line 120–160 of 900 · End follows`. It is fitted to the
+/// width less 4: when it does not fit the name is shortened with `…`
+/// (the account kept); next to a note or the position only down to
+/// [`LOGS_NAME_MIN`] columns, after which the name goes, then the note
+/// gets shorter.
 pub(crate) fn logs_title(panel: &LogsPanel, width: u16) -> String {
-    let room = usize::from(width.saturating_sub(2));
+    let room = usize::from(width.saturating_sub(4));
     let paused = panel
         .position()
         .map(|(first, last, len)| format!("paused · line {first}–{last} of {len} · End follows"));
     let partial = panel.partial();
-    let build = |name: bool, note: Option<&str>| {
-        let mut parts = vec!["logs"];
-        if name && !panel.title.is_empty() {
-            parts.push(&panel.title);
+    // `<name> (<account>)`: the name is the part that gets shorter.
+    let (name, account) = match panel.title.rsplit_once(" (") {
+        Some((name, account)) if !name.is_empty() && account.ends_with(')') => {
+            (name, format!(" ({account}"))
         }
-        parts.extend(note);
-        parts.extend(paused.as_deref());
-        format!(" {} ", parts.join(" · "))
+        _ => (panel.title.as_str(), String::new()),
     };
-    let mut tries = vec![build(true, partial.then_some(PARTIAL_NOTE))];
-    if paused.is_some() || partial {
-        tries.push(build(false, partial.then_some(PARTIAL_NOTE)));
+    let build = |name: Option<&str>, note: Option<&str>| {
+        let mut parts = vec!["logs".to_owned()];
+        if let Some(name) = name.filter(|_| !panel.title.is_empty()) {
+            parts.push(format!("{name}{account}"));
+        }
+        parts.extend(note.map(str::to_owned));
+        parts.extend(paused.clone());
+        parts.join(" · ")
+    };
+    let pad = |t: String| format!(" {t} ");
+    let note = partial.then_some(PARTIAL_NOTE);
+    let full = build(Some(name), note);
+    if full.width() <= room {
+        return pad(full);
     }
-    if partial {
-        tries.push(build(false, Some(PARTIAL_SHORT)));
+    let notes = paused.is_some() || partial;
+    let budget = room.saturating_sub(build(Some(""), note).width());
+    if !panel.title.is_empty() && (!notes || budget >= LOGS_NAME_MIN) {
+        return pad(build(Some(&shorten(name, budget.max(1))), note));
     }
+    let tries = [
+        Some(build(None, note)),
+        partial.then(|| build(None, Some(PARTIAL_SHORT))),
+    ];
+    let tries: Vec<String> = tries.into_iter().flatten().collect();
     let last = tries.len() - 1;
     tries
         .into_iter()
         .enumerate()
         .find(|(i, t)| t.width() <= room || *i == last)
-        .map(|(_, t)| t)
+        .map(|(_, t)| pad(t))
         .unwrap_or_default()
 }
+
+/// The fewest columns of a shortened name in the logs panel's title next
+/// to a note or the paused position; with less room the name goes
+/// (doc/0028).
+const LOGS_NAME_MIN: usize = 12;
 
 /// The hint on the logs panel's bottom border of a panel `width` columns
 /// wide: how to scroll it from the list, or the panel's own keys while it
@@ -638,7 +662,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
         return;
     }
 
-    let columns: Vec<[String; 4]> = app
+    let full: Vec<[String; 4]> = app
         .sessions()
         .iter()
         .map(|m| row_columns(m, app.home()))
@@ -649,21 +673,12 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
         .iter()
         .map(|m| subtree::badge(app, m))
         .collect();
-    let width = |i: usize, max: usize| {
-        columns
-            .iter()
-            .map(|c| c[i].width())
-            .max()
-            .unwrap_or(0)
-            .min(max)
-    };
-    let nw = columns
-        .iter()
-        .zip(&badges)
-        .map(|(c, b)| subtree::name_width(c[0].width().min(NAME_MAX), b.as_deref()))
-        .max()
-        .unwrap_or(0);
-    let (pw, dw) = (width(1, PROJECT_MAX), width(2, DETAIL_MAX));
+    let MinimalWidths {
+        columns,
+        name: nw,
+        project: pw,
+        detail: dw,
+    } = minimal_widths(full, &badges, usize::from(area.width));
     // Child lines start after the highlight symbol's two cells.
     let gap = GAP.len();
     let tree = subtree::Columns {
@@ -763,6 +778,119 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
+/// How far the minimal list's columns are shortened to fit the width
+/// (doc/0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    ShortFolder,
+    ShortState,
+}
+
+/// The minimal list's columns fitted to its width: each row's texts at
+/// the chosen [`Level`], and the widths of the name (with its badge),
+/// project and state columns.
+struct MinimalWidths {
+    columns: Vec<[String; 4]>,
+    name: usize,
+    project: usize,
+    detail: usize,
+}
+
+/// The selection bar, the marker, the gaps after name, project, state and
+/// age, and the age of a minimal row.
+const MINIMAL_FIXED_W: usize = 2 + 2 + 4 * GAP.len() + AGE_W;
+
+/// The narrowest the minimal list cuts its project, name and state
+/// columns to.
+const MINIMAL_CUT_MIN: usize = 8;
+
+/// The widest layout of the minimal list that fits `w` columns (doc/0020),
+/// from every session so the columns do not jump when groups fold: the
+/// columns as they are (each capped), else the folders as `…/last`, else
+/// the states in their short form as well; if even that does not fit, the
+/// project, then the name, then the state are cut with `…`. The age and
+/// the account always stay.
+fn minimal_widths(full: Vec<[String; 4]>, badges: &[Option<String>], w: usize) -> MinimalWidths {
+    let shorter = |level: Level| -> Vec<[String; 4]> {
+        full.iter()
+            .map(|[name, project, detail, account]| {
+                let detail = if level >= Level::ShortState {
+                    short_state(detail)
+                } else {
+                    detail.clone()
+                };
+                [name.clone(), short_folder(project), detail, account.clone()]
+            })
+            .collect()
+    };
+    let measure = |columns: Vec<[String; 4]>| {
+        let width = |i: usize, max: usize| {
+            columns
+                .iter()
+                .map(|c| c[i].width())
+                .max()
+                .unwrap_or(0)
+                .min(max)
+        };
+        let name = columns
+            .iter()
+            .zip(badges)
+            .map(|(c, b)| subtree::name_width(c[0].width().min(NAME_MAX), b.as_deref()))
+            .max()
+            .unwrap_or(0);
+        let (project, detail, account) = (
+            width(1, PROJECT_MAX),
+            width(2, DETAIL_MAX),
+            width(3, usize::MAX),
+        );
+        let used = MINIMAL_FIXED_W + name + project + detail + account;
+        let ws = MinimalWidths {
+            columns,
+            name,
+            project,
+            detail,
+        };
+        (ws, used)
+    };
+    let (mut ws, mut used) = measure(full.clone());
+    for level in [Level::ShortFolder, Level::ShortState] {
+        if used <= w {
+            break;
+        }
+        (ws, used) = measure(shorter(level));
+    }
+    let mut over = used.saturating_sub(w);
+    for col in [&mut ws.project, &mut ws.name, &mut ws.detail] {
+        let cut = over.min(col.saturating_sub(MINIMAL_CUT_MIN));
+        *col -= cut;
+        over -= cut;
+    }
+    ws
+}
+
+/// `~/workspace/api` → `…/api`: a folder for a narrow list (doc/0020).
+fn short_folder(project: &str) -> String {
+    match project.rsplit_once('/') {
+        Some((_, last)) if !last.is_empty() => format!("…/{last}"),
+        _ => project.to_owned(),
+    }
+}
+
+/// A shorter state detail for a narrow list (doc/0020): `permission
+/// prompt` → `permission`, `waiting for your reply` → `reply`; the
+/// interactive rows' `· not attachable` goes, and `· bg task` becomes
+/// `· bg` (doc/0032).
+fn short_state(detail: &str) -> String {
+    if let Some(head) = detail.strip_suffix(groups::BG_TASK_SUFFIX) {
+        return format!("{} · bg", short_state(head));
+    }
+    let detail = detail.split(" · ").next().unwrap_or(detail);
+    if detail == groups::WAITING_FOR_REPLY {
+        return "reply".to_owned();
+    }
+    detail.split(' ').next().unwrap_or(detail).to_owned()
+}
+
 /// The status bar's attention counter (doc/0007): `1 needs you`,
 /// `2 need you`; `None` when nothing is highlighted.
 pub fn attention_text(count: usize) -> Option<String> {
@@ -853,8 +981,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, look: Look) {
             lines.push(help_row(key, what, 22, look));
         }
     }
-    // 15 list keys, a blank line, the dialog or logs title and 6 dialog
-    // or logs keys: with the borders the help fits 24 rows (doc/0011).
+    // 14 list keys, a blank line, the dialog or logs title and 6 dialog
+    // or logs keys: 22 rows, so with the borders the help fits 24 rows
+    // (doc/0011).
     let h = lines.len() as u16 + 2;
     let rect = centered(area, 72, h);
     frame.render_widget(Clear, rect);
@@ -1040,11 +1169,16 @@ fn draw_target(frame: &mut Frame, app: &App, picker: &TargetPicker, area: Rect, 
     lines.push(Line::raw(""));
     lines.push(look.hint_line(" Enter continue under this account · Esc cancel"));
     let h = lines.len() as u16 + 2;
-    let w = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
-    let rect = centered(area, w.max(40), h);
+    let body = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
+    let make = |name: &str| format!("Continue {name} under which account?");
+    let w = window_width(area, body.max(40), make(&picker.name).width());
+    let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let title = format!(" Continue {} under which account? ", picker.name);
-    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
+    let title = fit_title(make, &picker.name, usize::from(rect.width));
+    frame.render_widget(
+        Paragraph::new(lines).block(look.overlay_block(format!(" {title} "))),
+        rect,
+    );
 }
 
 /// The window after a hand-off failed with `Workspace not trusted`
@@ -1250,11 +1384,54 @@ fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect, look: 
         picker.purpose.verb()
     )));
     let h = lines.len() as u16 + 2;
-    let w = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
-    let rect = centered(area, w.max(40), h);
+    let body = lines.iter().map(Line::width).max().unwrap_or(40) as u16 + 4;
+    let make = |name: &str| format!("Which account owns {name}?");
+    let w = window_width(area, body.max(40), make(&picker.name).width());
+    let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let title = format!(" Which account owns {}? ", picker.name);
-    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
+    let title = fit_title(make, &picker.name, usize::from(rect.width));
+    frame.render_widget(
+        Paragraph::new(lines).block(look.overlay_block(format!(" {title} "))),
+        rect,
+    );
+}
+
+/// The widest a window grows to show its whole title (doc/0011), as the
+/// popup window.
+const TITLE_WINDOW_MAX: u16 = 100;
+
+/// The width of a window over `area` whose body needs `body` columns
+/// (borders included) and whose title is `title` columns (without its
+/// padding spaces): it grows to show the whole title, up to
+/// [`TITLE_WINDOW_MAX`] and the screen less 4 columns, and never below
+/// the body's width.
+pub(crate) fn window_width(area: Rect, body: u16, title: usize) -> u16 {
+    let max = TITLE_WINDOW_MAX.min(area.width.saturating_sub(4));
+    let want = u16::try_from(title.saturating_add(4)).unwrap_or(u16::MAX);
+    body.max(want.min(max))
+}
+
+/// The title `make(name)` of a box `width` columns wide, fitted to the
+/// width less 4 (a corner and a space each side): when it does not fit
+/// the name is shortened with `…` and the fixed words around it are kept
+/// (doc/0011).
+pub(crate) fn fit_title(make: impl Fn(&str) -> String, name: &str, width: usize) -> String {
+    let room = width.saturating_sub(4);
+    let full = make(name);
+    if full.width() <= room {
+        return full;
+    }
+    let fixed = make("").width();
+    make(&shorten(name, room.saturating_sub(fixed).max(1)))
+}
+
+/// `s` in at most `w` columns: unchanged when it fits, else cut and ended
+/// with `…`, with no padding.
+pub(crate) fn shorten(s: &str, w: usize) -> String {
+    if s.width() <= w {
+        return s.to_owned();
+    }
+    fit(s, w).trim_end_matches(' ').to_owned()
 }
 
 /// Pads or truncates `s` to exactly `w` display columns, ending a truncated

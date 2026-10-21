@@ -1,6 +1,6 @@
 # 0028. Scrolling the logs panel
 
-- Status: Accepted · 2026-10-19 · paused panel and the scrollback across fetches amended by [0030](0030-continuous-logs-stream.md)
+- Status: Accepted · 2026-10-19 · paused panel and the scrollback across fetches amended by [0030](0030-continuous-logs-stream.md) · title name shortened before it goes, amended 2026-10-21
 - Related: [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0025](0025-session-terminal-size-for-logs.md), [reference](reference/claude-code-cli.md#claude-logs-output)
 - Amends: the logs panel of [0009](0009-stop-remove-and-logs.md) and the key table of [0011](0011-keybindings.md)
 
@@ -77,7 +77,10 @@ polls fetch nothing for it, and a fetch already running when it paused is droppe
 session's stream is still fed by the background follow while it works, and `End`
 shows the stream as it is then. The
 title says where it is: `logs · <name> (<account>) · paused · line 120–160 of 900 · End
-follows`, dropping the name when the panel is too narrow. `End` / `G`, or scrolling back
+follows`, dropping the name when the panel is too narrow. *Amended 2026-10-21 (owner
+request to fix cut text):* the name is first shortened with `…`, the account kept, and
+goes only when fewer than 12 columns are left for it; a title without the position or a
+note never drops it. `End` / `G`, or scrolling back
 down to the last page, follows again and fetches at once. Selecting another row (or a
 row with a note) follows from the bottom, and so does returning from an attach.
 
