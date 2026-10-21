@@ -55,6 +55,11 @@ from the new-session dialog's widgets ([0008](0008-new-session-dialog.md)):
 `Tab` / `Shift+Tab` switch fields, `Enter` confirms, `Esc` cancels and
 `Ctrl+C` quits as in the list. `Enter` without a project (still scanning,
 none found, none matching) shows why and does nothing.
+*Amended 2026-10-21 (UI audit):* the window's key hints, `Tab/Shift+Tab
+field · ↑↓ choose · type to filter · Enter open the picker · Esc cancel`,
+are one row, never wrapped or cut; when it is too wide, whole hints are
+dropped in this order: `type to filter`, `↑↓ choose`, `Tab/Shift+Tab
+field`, `Esc cancel`; `Enter open the picker` stays.
 
 On `Enter` tower hands the terminal over exactly like an attach
 ([0005](0005-attach-and-detach.md): release, no-op signal handlers, saved

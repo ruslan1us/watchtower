@@ -273,6 +273,32 @@ fn the_window_shows_fields_and_how_to_come_back() {
 }
 
 #[test]
+fn the_keys_drop_whole_hints_on_one_row() {
+    // doc/0019: Enter and Esc stay longest, `type to filter` goes first.
+    let mut app = app_two();
+    open(&mut app, projects(&["web", "api"]));
+    let full = "Tab/Shift+Tab field · ↑↓ choose · type to filter · Enter open the picker · Esc \
+                cancel";
+    for (w, h, want) in [
+        (
+            80,
+            24,
+            "Tab/Shift+Tab field · ↑↓ choose · Enter open the picker · Esc cancel",
+        ),
+        (100, 30, full),
+        (104, 32, full),
+    ] {
+        let all = render(&mut app, w, h);
+        let row = all
+            .lines()
+            .find(|l| l.contains("Tab/Shift+Tab field"))
+            .unwrap_or_else(|| panic!("{w}x{h}\n{all}"))
+            .trim_matches(|c: char| " │╭╮╰╯├┤─".contains(c));
+        assert_eq!(row, want, "{w}x{h}");
+    }
+}
+
+#[test]
 fn back_from_the_picker_polls_at_once() {
     let mut app = app_two();
     let effects = app.resume_finished(ResumeOutcome {

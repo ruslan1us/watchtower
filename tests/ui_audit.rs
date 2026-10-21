@@ -2190,9 +2190,7 @@ invariants! {
     hint_row_filter: HintRow, "filter-";
     hint_row_logs: HintRow, "logs-";
     hint_row_help: HintRow, "help-";
-    #[ignore = "F-A1, F-A3, F-B1"]
     hint_row_dialog: HintRow, "dialog-";
-    #[ignore = "F-A1, F-A3, F-B1"]
     hint_row_templates: HintRow, "templates-";
     hint_row_reply: HintRow, "reply-";
     hint_row_rename: HintRow, "rename-";
@@ -2201,7 +2199,6 @@ invariants! {
     hint_row_popup: HintRow, "popup-";
     hint_row_trust: HintRow, "trust-";
     hint_row_picker: HintRow, "picker-";
-    #[ignore = "F-A2"]
     hint_row_resume: HintRow, "resume-";
     hint_row_settings: HintRow, "settings-";
     #[ignore = "F-C2, F-C3, F-G1"]
@@ -2212,9 +2209,7 @@ invariants! {
     cut_filter: Cut, "filter-";
     cut_logs: Cut, "logs-";
     cut_help: Cut, "help-";
-    #[ignore = "F-B1, F-B2"]
     cut_dialog: Cut, "dialog-";
-    #[ignore = "F-B1"]
     cut_templates: Cut, "templates-";
     cut_reply: Cut, "reply-";
     cut_rename: Cut, "rename-";
@@ -2236,9 +2231,7 @@ invariants! {
     #[ignore = "F-E3"]
     mid_word_logs: MidWord, "logs-";
     mid_word_help: MidWord, "help-";
-    #[ignore = "F-A3, F-B1"]
     mid_word_dialog: MidWord, "dialog-";
-    #[ignore = "F-A3, F-B1"]
     mid_word_templates: MidWord, "templates-";
     mid_word_reply: MidWord, "reply-";
     mid_word_rename: MidWord, "rename-";
@@ -2274,9 +2267,7 @@ invariants! {
     odd_filter: Odd, "filter-";
     odd_logs: Odd, "logs-";
     odd_help: Odd, "help-";
-    #[ignore = "F-A1"]
     odd_dialog: Odd, "dialog-";
-    #[ignore = "F-A1"]
     odd_templates: Odd, "templates-";
     odd_reply: Odd, "reply-";
     odd_rename: Odd, "rename-";
@@ -2285,7 +2276,6 @@ invariants! {
     odd_popup: Odd, "popup-";
     odd_trust: Odd, "trust-";
     odd_picker: Odd, "picker-";
-    #[ignore = "F-A2"]
     odd_resume: Odd, "resume-";
     #[ignore = "F-C6"]
     odd_settings: Odd, "settings-";
@@ -2365,7 +2355,6 @@ fn the_details_keys_row_keeps_every_key_that_fits() {
 }
 
 #[test]
-#[ignore = "F-A3"]
 fn the_dialog_model_field_shows_a_long_model_name() {
     let rows = rows_of(frame("dialog-model-long", "dash-neutral", 80, 24));
     let model = rows

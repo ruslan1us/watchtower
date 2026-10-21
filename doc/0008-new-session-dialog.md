@@ -42,6 +42,22 @@ cancels.
 template picker over the dialog; a picked template fills a blank task field or goes in at
 the task cursor, and the task field takes the focus.
 
+*Amended 2026-10-21 (UI audit):* the dialog's key hints are one row, never wrapped or
+cut, joined by ` · ` in this order: `Tab/Shift+Tab field`, `Enter new line` (`Enter next
+field` outside the task), `Ctrl+S start`, `Alt+Enter start & attach` (the attach key that
+works, [0011](0011-keybindings.md)), `Ctrl+G editor`, `Ctrl+P template`. When the row is
+too wide, whole hints are dropped in this order: `Enter`, `Ctrl+G editor`, `Tab/Shift+Tab
+field`, the attach key, `Ctrl+P template`; `Ctrl+S start` stays. The blank task field
+shows the longest of these placeholders that fits: `describe the task · Enter new line ·
+Ctrl+G opens $VISUAL / $EDITOR · Ctrl+P inserts a template`, `describe the task · Enter
+new line · Ctrl+G editor · Ctrl+P template`, `describe the task · Ctrl+G editor · Ctrl+P
+template`, `describe the task · Ctrl+P template`, `describe the task` (cut with `…` only
+when even that does not fit). The model field's hint, `↑↓ default · fable · opus ·
+sonnet · haiku · or type a model name` or else `↑↓ presets · or type a model name`, shows
+only whole and only while the input keeps `min(max(text + 1, 8), half the value
+column)` columns; otherwise the input takes the whole row. Messages below the fields
+(`starting…`, the questions, errors) wrap at spaces.
+
 Dispatch runs, with the project as working directory:
 
 ```

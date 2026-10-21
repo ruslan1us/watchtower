@@ -237,6 +237,137 @@ fn dialog_without_projects_names_the_config_file() {
     assert!(all.contains("(see config.example.toml)"), "{all}");
 }
 
+/// The text of the row holding `needle`, without the borders and spaces of
+/// the dialog and the screen behind it.
+fn inner_text(lines: &[String], needle: &str) -> String {
+    line_with(lines, needle)
+        .trim_matches(|c: char| " │╭╮╰╯├┤─".contains(c))
+        .to_owned()
+}
+
+#[test]
+fn dialog_keys_drop_whole_hints_on_one_row() {
+    // doc/0008: Ctrl+S and Ctrl+P stay longest, then the attach key, Tab,
+    // Ctrl+G and Enter; the row never wraps.
+    let mut app = app_single();
+    let _root = open_dialog(&mut app);
+    let wide = "Tab/Shift+Tab field · Ctrl+S start · Alt+Enter start & attach · Ctrl+G editor · \
+                Ctrl+P template";
+    for (w, h, want) in [
+        (
+            80,
+            24,
+            "Ctrl+S start · Alt+Enter start & attach · Ctrl+P template",
+        ),
+        (100, 30, wide),
+        (104, 32, wide),
+    ] {
+        let lines = render(&mut app, w, h);
+        assert_eq!(inner_text(&lines, "Ctrl+S start"), want, "{w}x{h}");
+        let all = text(&lines);
+        assert!(!all.contains("Enter next field"), "{w}x{h}\n{all}");
+        assert_eq!(all.matches("Ctrl+S start").count(), 1, "{w}x{h}\n{all}");
+    }
+    // The attach key that works here, in its longer form.
+    app.keyboard_enhanced = true;
+    for (w, h, want) in [
+        (
+            80,
+            24,
+            "Ctrl+S start · Ctrl+Enter (or Alt+Enter) start & attach · Ctrl+P template",
+        ),
+        (
+            104,
+            32,
+            "Tab/Shift+Tab field · Ctrl+S start · Ctrl+Enter (or Alt+Enter) start & attach · \
+             Ctrl+P template",
+        ),
+    ] {
+        let lines = render(&mut app, w, h);
+        assert_eq!(inner_text(&lines, "Ctrl+S start"), want, "{w}x{h}");
+    }
+}
+
+#[test]
+fn dialog_task_placeholder_takes_the_longest_variant_that_fits() {
+    let mut app = app_single();
+    let _root = open_dialog(&mut app);
+    app.handle_key(key(KeyCode::Tab));
+    for (w, h, want) in [
+        (
+            80,
+            24,
+            "describe the task · Ctrl+G editor · Ctrl+P template",
+        ),
+        (
+            100,
+            30,
+            "describe the task · Enter new line · Ctrl+G editor · Ctrl+P template",
+        ),
+        (
+            104,
+            32,
+            "describe the task · Enter new line · Ctrl+G editor · Ctrl+P template",
+        ),
+    ] {
+        let lines = render(&mut app, w, h);
+        assert_eq!(
+            inner_text(&lines, "▶ Task"),
+            format!("▶ Task    {want}"),
+            "{w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn dialog_model_hint_shows_whole_or_not_at_all() {
+    let full = "↑↓ default · fable · opus · sonnet · haiku · or type a model name";
+    let short = "↑↓ presets · or type a model name";
+    let mut app = app_single();
+    let _root = open_dialog(&mut app);
+    for (w, h, want) in [(80, 24, short), (100, 30, full), (104, 32, full)] {
+        let lines = render(&mut app, w, h);
+        let model = inner_text(&lines, "  Model ");
+        assert!(model.starts_with("Model   default "), "{w}x{h}: {model}");
+        assert!(model.ends_with(want), "{w}x{h}: {model}");
+    }
+    // A long model name keeps its room; the hint goes first.
+    let long = "claude-opus-4-1-20250805-experimental-long-context";
+    for _ in 0..4 {
+        app.handle_key(key(KeyCode::Tab));
+    }
+    while !app.dialog().unwrap().model.text().is_empty() {
+        app.handle_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut app, long);
+    let lines = render(&mut app, 80, 24);
+    assert_eq!(inner_text(&lines, "▶ Model"), format!("▶ Model   {long}"));
+    for (w, h) in [(100, 30), (104, 32)] {
+        let lines = render(&mut app, w, h);
+        let model = inner_text(&lines, "▶ Model");
+        assert!(model.ends_with(short), "{w}x{h}: {model}");
+        assert!(
+            model.contains("experimental-long-context"),
+            "{w}x{h}: {model}"
+        );
+    }
+}
+
+#[test]
+fn dialog_starting_message_wraps() {
+    let mut app = app_single();
+    let _root = open_dialog(&mut app);
+    app.handle_key(key(KeyCode::Tab));
+    type_text(&mut app, "do the thing");
+    app.handle_key(ctrl('s'));
+    let lines = render(&mut app, 80, 24);
+    assert_eq!(
+        inner_text(&lines, "starting…"),
+        "starting… (a supervisor may have to start first; this can take a few"
+    );
+    assert_eq!(inner_text(&lines, "seconds)"), "seconds)");
+}
+
 #[test]
 fn dialog_survives_small_terminals() {
     let mut app = app_single();

@@ -89,6 +89,105 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// One row of key hints, `width` columns at most (doc/0008): `hints` in
+/// reading order, each with its rank (1 is kept longest), joined by ` · `.
+/// While the row is too wide, the hint with the lowest rank (the last of
+/// equal ranks) is dropped whole; the row never wraps and never starts or
+/// ends with `·`. Only a single hint wider than the row is cut, with `…`.
+fn hint_row(hints: &[(u8, &str)], width: usize) -> String {
+    let mut kept: Vec<(u8, &str)> = hints.to_vec();
+    loop {
+        let line = kept.iter().map(|(_, h)| *h).collect::<Vec<_>>().join(" · ");
+        if line.width() <= width {
+            return line;
+        }
+        // The lowest rank, the last of equal ranks.
+        let Some((drop, _)) = kept
+            .iter()
+            .enumerate()
+            .max_by_key(|(i, (rank, _))| (*rank, *i))
+            .filter(|_| kept.len() > 1)
+        else {
+            return super::fit(&line, width).trim_end().to_owned();
+        };
+        kept.remove(drop);
+    }
+}
+
+/// The longest of `variants` (longest first) that fits `width` columns;
+/// the last one cut with `…` when none fits.
+fn longest_fit(variants: &[&str], width: usize) -> String {
+    match variants.iter().find(|v| v.width() <= width) {
+        Some(v) => (*v).to_owned(),
+        None => super::fit(variants.last().copied().unwrap_or_default(), width)
+            .trim_end()
+            .to_owned(),
+    }
+}
+
+/// The new-session dialog's key hints with their ranks (doc/0008): `Ctrl+S`
+/// and `Ctrl+P` (doc/0036) stay longest, then the attach key, `Tab`,
+/// `Ctrl+G` and, first to go, `Enter` (the task placeholder names it too).
+fn dialog_hints(app: &App, focused: Field) -> Vec<(u8, String)> {
+    let enter = if focused == Field::Task {
+        "Enter new line"
+    } else {
+        "Enter next field"
+    };
+    vec![
+        (4, "Tab/Shift+Tab field".to_owned()),
+        (6, enter.to_owned()),
+        (1, "Ctrl+S start".to_owned()),
+        (3, format!("{} start & attach", attach_key(app))),
+        (5, "Ctrl+G editor".to_owned()),
+        (2, "Ctrl+P template".to_owned()),
+    ]
+}
+
+/// The resume window's key hints with their ranks (doc/0019): `Enter` and
+/// `Esc` stay longest; `type to filter` goes first (the project field's
+/// placeholder says it too).
+const RESUME_HINTS: &[(u8, &str)] = &[
+    (3, "Tab/Shift+Tab field"),
+    (4, "↑↓ choose"),
+    (5, "type to filter"),
+    (1, "Enter open the picker"),
+    (2, "Esc cancel"),
+];
+
+/// The task field's placeholder, longest first (doc/0008).
+const TASK_PLACEHOLDERS: &[&str] = &[
+    "describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR · Ctrl+P inserts a \
+     template",
+    "describe the task · Enter new line · Ctrl+G editor · Ctrl+P template",
+    "describe the task · Ctrl+G editor · Ctrl+P template",
+    "describe the task · Ctrl+P template",
+    "describe the task",
+];
+
+/// The model field's hint, longest first; it shows only whole (doc/0008).
+fn model_hints() -> [String; 2] {
+    [
+        format!("  ↑↓ {} · or type a model name", MODEL_CHOICES.join(" · ")),
+        "  ↑↓ presets · or type a model name".to_owned(),
+    ]
+}
+
+/// The model input's width and the hint after it, in `value_w` columns:
+/// the input keeps at least `min(max(text + 1, 8), value_w / 2)` columns
+/// (and at most 40 while a hint follows), and the longest hint that fits
+/// beside it shows whole; with none, the input takes the whole row.
+fn model_layout(text: &str, value_w: usize) -> (usize, Option<String>) {
+    let keep = (text.width() + 1).max(8).min(value_w / 2).max(1);
+    for hint in model_hints() {
+        let room = value_w.saturating_sub(hint.width());
+        if room >= keep {
+            return (room.min(40).max(keep), Some(hint));
+        }
+    }
+    (value_w.max(1), None)
+}
+
 /// The visible part of a line input `width` columns wide, scrolled so the
 /// cursor stays visible, and the cursor's column within it.
 pub(super) fn input_window(input: &LineInput, width: usize) -> (String, usize) {
@@ -339,10 +438,14 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     }
     match &dialog.status {
         DialogStatus::Editing => {}
-        DialogStatus::Starting { .. } => messages.push(Line::styled(
-            "starting… (a supervisor may have to start first; this can take a few seconds)",
-            look.strong(),
-        )),
+        DialogStatus::Starting { .. } => {
+            for row in wrap(
+                "starting… (a supervisor may have to start first; this can take a few seconds)",
+                width,
+            ) {
+                messages.push(Line::styled(row, look.strong()));
+            }
+        }
         DialogStatus::Untrusted { dir, .. } => {
             let account = app
                 .config()
@@ -360,29 +463,20 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
             }
         }
     }
-    match dialog.prompt {
-        None => {}
-        Some(DialogPrompt::Discard) => messages.push(Line::styled(
-            "Discard this task?  y discard · n keep editing",
-            look.prompt(),
-        )),
-        Some(DialogPrompt::Quit) => messages.push(Line::styled(
-            "Quit tower? The dialog's contents are lost.  y quit · n stay",
-            look.prompt(),
-        )),
+    let question = match dialog.prompt {
+        None => None,
+        Some(DialogPrompt::Discard) => Some("Discard this task?  y discard · n keep editing"),
+        Some(DialogPrompt::Quit) => {
+            Some("Quit tower? The dialog's contents are lost.  y quit · n stay")
+        }
+    };
+    for row in question.map(|q| wrap(q, width)).unwrap_or_default() {
+        messages.push(Line::styled(row, look.prompt()));
     }
 
-    let enter_hint = if focused == Field::Task {
-        "Enter new line"
-    } else {
-        "Enter next field"
-    };
-    let footer_text = format!(
-        "Tab/Shift+Tab field · {enter_hint} · Ctrl+S start · {} start & attach · Ctrl+G editor \
-         · Ctrl+P template",
-        attach_key(app)
-    );
-    let footer: Vec<String> = wrap(&footer_text, width);
+    let hints = dialog_hints(app, focused);
+    let hints: Vec<(u8, &str)> = hints.iter().map(|(r, h)| (*r, h.as_str())).collect();
+    let footer = [hint_row(&hints, width)];
 
     // Fixed rows: project label, blank, task label, blank, five fields, blank.
     let fixed = 10 + messages.len() + footer.len();
@@ -466,10 +560,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     // Task: label row, then the wrapped text.
     let mut spans = vec![label(Field::Task, focused, look)];
     if dialog.task.is_blank() {
-        spans.extend(look.hint_spans(
-            "describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR · Ctrl+P \
-                 inserts a template",
-        ));
+        spans.extend(look.hint_spans(longest_fit(TASK_PLACEHOLDERS, value_w)));
     } else {
         spans.push(Span::styled("", look.hint()));
     }
@@ -521,8 +612,7 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     p.line(Line::from(spans));
 
     // Model: free text with presets.
-    let hint = format!("  ↑↓ {} · or type a model name", MODEL_CHOICES.join(" · "));
-    let field_w = value_w.saturating_sub(hint.width()).clamp(8, 40);
+    let (field_w, hint) = model_layout(&dialog.model.text(), value_w);
     let (shown, cx) = input_window(&dialog.model, field_w);
     let mut model_style = look.strong();
     if focused == Field::Model {
@@ -535,7 +625,9 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
         label(Field::Model, focused, look),
         Span::styled(super::fit(&shown, field_w), model_style),
     ];
-    spans.extend(look.hint_spans(hint));
+    if let Some(hint) = hint {
+        spans.extend(look.hint_spans(hint));
+    }
     p.line(Line::from(spans));
 
     // Effort and permission mode.
@@ -634,10 +726,7 @@ pub fn draw_resume(frame: &mut Frame, app: &App, window: &ResumeWindow, area: Re
             messages.push(Line::styled(row, look.error()));
         }
     }
-    let footer = wrap(
-        "Tab/Shift+Tab field · ↑↓ choose · type to filter · Enter open the picker · Esc cancel",
-        width,
-    );
+    let footer = [hint_row(RESUME_HINTS, width)];
 
     // Fixed rows: project label, blank, account, blank.
     let fixed = 4 + messages.len() + footer.len();
@@ -964,5 +1053,62 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
     }
     if let Some(picker) = &window.templates {
         super::templates::draw_picker(p.frame, picker, area, look);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HINTS: &[(u8, &str)] = &[(3, "Tab field"), (1, "Ctrl+S start"), (2, "Esc cancel")];
+
+    #[test]
+    fn a_hint_row_drops_the_lowest_rank_first_and_keeps_its_order() {
+        let full = "Tab field · Ctrl+S start · Esc cancel";
+        assert_eq!(hint_row(HINTS, 80), full);
+        assert_eq!(hint_row(HINTS, full.width()), full);
+        assert_eq!(
+            hint_row(HINTS, full.width() - 1),
+            "Ctrl+S start · Esc cancel"
+        );
+        assert_eq!(hint_row(HINTS, 24), "Ctrl+S start");
+        // Only a single hint is cut, as a last resort.
+        assert_eq!(hint_row(HINTS, 8), "Ctrl+S …");
+        // Equal ranks: the last goes first.
+        assert_eq!(hint_row(&[(1, "a b"), (1, "c d")], 4), "a b");
+    }
+
+    #[test]
+    fn the_longest_variant_that_fits_wins() {
+        assert_eq!(longest_fit(TASK_PLACEHOLDERS, 200), TASK_PLACEHOLDERS[0]);
+        assert_eq!(
+            longest_fit(TASK_PLACEHOLDERS, 66),
+            "describe the task · Ctrl+G editor · Ctrl+P template"
+        );
+        assert_eq!(
+            longest_fit(TASK_PLACEHOLDERS, 40),
+            "describe the task · Ctrl+P template"
+        );
+        assert_eq!(longest_fit(TASK_PLACEHOLDERS, 20), "describe the task");
+        assert_eq!(longest_fit(TASK_PLACEHOLDERS, 10), "describe …");
+    }
+
+    #[test]
+    fn the_model_hint_shows_whole_beside_room_for_the_text() {
+        let [full, short] = model_hints();
+        // 100 columns: the input keeps 8 columns or more for `default`.
+        assert_eq!(model_layout("default", 86), (19, Some(full.clone())));
+        // 80 columns: only the short hint fits.
+        assert_eq!(model_layout("default", 66), (31, Some(short.clone())));
+        // A long name keeps half the row, or the whole row without a hint.
+        let long = "claude-opus-4-1-20250805-experimental-long-context";
+        assert_eq!(model_layout(long, 66), (66, None));
+        assert_eq!(model_layout(long, 86), (43, Some(short)));
+        for w in 1..120 {
+            let (field, hint) = model_layout(long, w);
+            let hint_w = hint.as_deref().map_or(0, UnicodeWidthStr::width);
+            assert!(field + hint_w <= w.max(1), "{w}");
+            assert!(field >= (long.width() + 1).min(w / 2), "{w}");
+        }
     }
 }

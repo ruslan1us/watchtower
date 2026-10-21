@@ -70,7 +70,10 @@ dialog (not while a dispatch runs or a question is open). A pick goes into
 the task field: a blank field is replaced by the text, otherwise the text
 goes in at the cursor; the cursor ends after it and the task field has the
 focus. The dialog's hint line shows `Ctrl+P template`; the help merges it
-into the `Ctrl+G` row, so the help still fits 24 rows.
+into the `Ctrl+G` row, so the help still fits 24 rows. *Amended 2026-10-21
+(UI audit):* on a narrow dialog `Ctrl+P template` is the last hint dropped
+but `Ctrl+S start`, and the task placeholder keeps `Ctrl+P template` in
+every variant but the shortest ([0008](0008-new-session-dialog.md)).
 
 `Ctrl+P` was free in the dialog: the dialog binds `Ctrl+C`, `Ctrl+G`,
 `Ctrl+J`, `Ctrl+S`, `Ctrl+T` and `Ctrl+Enter` / `Alt+Enter`, the text
