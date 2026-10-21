@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md)
-- Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md)
+- Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md)
 
 ## Context
 
@@ -87,10 +87,17 @@ handed off are refused until it reports back.
 | `←` / `→`, `↑` / `↓` | Move the cursor or change a choice inside a field |
 | `Enter` | In the task field: new line; elsewhere: next field |
 | `Ctrl+G` | Edit the task in `$VISUAL`, else `$EDITOR` |
+| `Ctrl+P` | *Added by [0036](0036-prompt-templates.md):* open the template picker from any field; the pick goes into the task field at its cursor (a blank field is replaced) |
 | `Ctrl+S` | Dispatch to the background |
 | `Ctrl+Enter`, fallback `Alt+Enter` | Dispatch and attach immediately |
 | `Ctrl+T` | After a `Workspace not trusted` error: suspend tower and run the account's interactive command in the project to accept trust, then retry the dispatch ([0008](0008-new-session-dialog.md)) |
 | `Esc` | Cancel (confirm if the task is not empty) |
+
+**Template picker** (*added by [0036](0036-prompt-templates.md)*, `Ctrl+P` in
+the dialog): typed characters filter by name, `Backspace` edits and `Ctrl+U`
+empties the filter, `↑` / `↓` (`PgUp` / `PgDn`) choose, `Enter` inserts the
+template, `Esc` closes the picker only; `Ctrl+C` closes it and asks the
+dialog's quit question.
 
 **Resume window** (`R`, [0019](0019-resume-past-sessions.md)): `Tab` /
 `Shift+Tab` switch between the project and account fields; in the project
@@ -152,7 +159,8 @@ setting.
   as `/` and `?`, so the filter and help open; `.` and `,` are not bound
   anywhere else.
 - Text input is never translated: the new-session dialog's fields (task,
-  name, model, project filter), the resume window's project filter, the `/`
+  name, model, project filter), the template picker's filter (*added by
+  [0036](0036-prompt-templates.md)*), the resume window's project filter, the `/`
   filter line, the rename window's name and the Settings window's inline
   input and folder input keep Cyrillic as typed. There, and everywhere else, only a key with `Ctrl` or
   `Alt` held is translated, so `Ctrl+ы` is `Ctrl+S` and

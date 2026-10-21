@@ -1,7 +1,7 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md)
-- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md)
+- Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
 
@@ -191,6 +191,11 @@ hook` subcommand under `subagents/.lock`. `[sessions] track_subagents`
 **Orchestrator working directory:** under the config dir, e.g.
 `~/.config/watchtower/orchestrator/`, holding its instruction file. Details are
 in [0010](0010-orchestrator.md).
+
+**Templates folder.** *Added by [0036](0036-prompt-templates.md):*
+`templates/` under the config dir holds the user's prompt templates, one
+`<name>.md` per template. Tower only reads it, on a worker thread each time
+the template picker opens; it never creates or changes anything there.
 
 ## Consequences
 

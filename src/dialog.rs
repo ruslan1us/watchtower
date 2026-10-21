@@ -8,6 +8,9 @@
 //!
 //! [`ResumeWindow`] is the small window of `R` (doc/0019): a project folder
 //! and an account, built from the same widgets.
+//!
+//! `Ctrl+P` opens the template picker ([`crate::templates`], doc/0036) over
+//! the dialog; a picked template goes into the task field at its cursor.
 
 use std::path::PathBuf;
 
@@ -20,6 +23,7 @@ use crate::dispatch::{
 };
 use crate::layout;
 use crate::projects::{self, Project, ProjectList};
+use crate::templates::{PickerAction, TemplatePicker};
 
 /// The dialog's fields, in `Tab` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +244,26 @@ impl TextArea {
             .all(|l| l.iter().all(|c| c.is_whitespace()))
     }
 
+    /// Inserts `text` at the cursor and puts the cursor after it. `\r\n`
+    /// and `\r` become line breaks; other control characters except `\t`
+    /// are dropped.
+    pub fn insert_text(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let tail = self.lines[self.row].split_off(self.col);
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.row += 1;
+                self.lines.insert(self.row, Vec::new());
+                self.col = 0;
+            }
+            for c in part.chars().filter(|c| *c == '\t' || !c.is_control()) {
+                self.lines[self.row].push(c);
+                self.col += 1;
+            }
+        }
+        self.lines[self.row].extend(tail);
+    }
+
     /// Inserts a line break at the cursor.
     pub fn newline(&mut self) {
         let rest = self.lines[self.row].split_off(self.col);
@@ -450,6 +474,9 @@ pub enum DialogAction {
     EditTask,
     /// Run the trust flow for the untrusted folder, then retry.
     Trust,
+    /// `Ctrl+P`: open the template picker (doc/0036); the app creates it
+    /// and puts it into [`Dialog::templates`].
+    OpenTemplates,
 }
 
 /// The new-session dialog (doc/0008).
@@ -486,6 +513,9 @@ pub struct Dialog {
     pub status: DialogStatus,
     /// An open yes/no question.
     pub prompt: Option<DialogPrompt>,
+    /// The template picker, while it is open over the dialog (doc/0036);
+    /// it takes every key.
+    pub templates: Option<TemplatePicker>,
 }
 
 impl Dialog {
@@ -520,6 +550,7 @@ impl Dialog {
             error: None,
             status: DialogStatus::Editing,
             prompt: None,
+            templates: None,
         }
     }
 
@@ -583,6 +614,17 @@ impl Dialog {
         self.field = Field::Task;
     }
 
+    /// Puts a picked template into the task field (doc/0036): it fills a
+    /// blank field, else goes in at the cursor; the cursor ends after it and
+    /// the task field has the focus.
+    pub fn insert_template(&mut self, text: &str) {
+        if self.task.is_blank() {
+            self.task = TextArea::default();
+        }
+        self.task.insert_text(text);
+        self.field = Field::Task;
+    }
+
     /// Handles one key. Typed text is kept as is; `Ctrl`/`Alt` keys and the
     /// `y` / `n` of the dialog's questions are also read under a Cyrillic
     /// layout (doc/0011).
@@ -592,6 +634,22 @@ impl Dialog {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         if let Some(prompt) = self.prompt {
             return self.prompt_key(prompt, &layout::command_key(key));
+        }
+        if let Some(picker) = self.templates.as_mut() {
+            match picker.handle_key(key) {
+                PickerAction::None => {}
+                PickerAction::Close => self.templates = None,
+                PickerAction::Pick(text) => {
+                    self.templates = None;
+                    self.insert_template(&text);
+                }
+                PickerAction::Quit => {
+                    // The dialog's own Ctrl+C question (doc/0011).
+                    self.templates = None;
+                    self.prompt = Some(DialogPrompt::Quit);
+                }
+            }
+            return DialogAction::None;
         }
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             self.prompt = Some(DialogPrompt::Quit);
@@ -612,6 +670,7 @@ impl Dialog {
             KeyCode::Enter if ctrl || alt => return DialogAction::Dispatch { attach: true },
             KeyCode::Char('s' | 'S') if ctrl => return DialogAction::Dispatch { attach: false },
             KeyCode::Char('g' | 'G') if ctrl => return DialogAction::EditTask,
+            KeyCode::Char('p' | 'P') if ctrl => return DialogAction::OpenTemplates,
             KeyCode::Char('t' | 'T') if ctrl => {
                 if matches!(self.status, DialogStatus::Untrusted { .. }) {
                     return DialogAction::Trust;

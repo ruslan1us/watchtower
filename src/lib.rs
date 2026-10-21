@@ -53,6 +53,8 @@
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
 //!   also used for the editor and the trust flow.
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
+//! - [`templates`]: prompt templates from `<config dir>/templates` and the
+//!   reusable picker that inserts one (doc/0036).
 //! - [`tui`]: the terminal runtime and event loop.
 //! - [`args`]: command-line arguments.
 //! - [`status`]: `tower status [--json]`, one merged snapshot without the
@@ -93,6 +95,7 @@ pub mod settings;
 pub mod sidecar;
 pub mod status;
 pub mod subagents;
+pub mod templates;
 pub mod tui;
 pub mod ui;
 pub mod update;

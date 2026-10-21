@@ -685,6 +685,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             }
             Effect::OpenDialog => rt.jobs.projects(app.begin_project_scan()),
             Effect::ScanProjects(scan) => rt.jobs.projects(scan),
+            Effect::LoadTemplates(load) => rt.jobs.templates(load),
             Effect::ResumePast(req) => {
                 let termination = rt.termination;
                 let folder = paths::shorten_home(&req.folder.to_string_lossy(), app.home());

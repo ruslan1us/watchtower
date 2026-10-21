@@ -1,7 +1,7 @@
 # 0008. New-session dialog
 
-- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md)
-- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
+- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md) · template key added by [0036](0036-prompt-templates.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0036](0036-prompt-templates.md), [reference](reference/claude-code-cli.md)
 
 ## Context
 
@@ -37,6 +37,10 @@ Keys (source of truth: [0011](0011-keybindings.md)): `Tab` / `Shift+Tab` move be
 fields, `Enter` adds a new line in the task field, `Ctrl+G` opens the task in the editor,
 `Ctrl+S` dispatches, `Ctrl+Enter` (fallback `Alt+Enter`) dispatches and attaches, `Esc`
 cancels.
+
+*Amended by [0036](0036-prompt-templates.md):* `Ctrl+P` (from any field) opens the
+template picker over the dialog; a picked template fills a blank task field or goes in at
+the task cursor, and the task field takes the focus.
 
 Dispatch runs, with the project as working directory:
 

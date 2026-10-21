@@ -3,9 +3,9 @@
 //! the orchestrator's start, `stop`, `rm`, the hand-off sequence
 //! and the rename of a stopped session — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
-//! reloads, the project scan — each run on its own short-lived worker
-//! thread so the UI never blocks (doc/0001, doc/0002, doc/0004, doc/0008,
-//! doc/0009, doc/0027). Results come back over a channel as [`JobResult`]s;
+//! reloads, the project scan, the template load — each run on its own
+//! short-lived worker thread so the UI never blocks (doc/0001, doc/0002,
+//! doc/0004, doc/0008, doc/0009, doc/0027, doc/0036). Results come back over a channel as [`JobResult`]s;
 //! [`JobResult::apply`] hands them to the [`App`]. A hand-off and a rename
 //! also report each step as it starts ([`JobResult::HandoffStep`],
 //! [`JobResult::RenameStep`]).
@@ -51,6 +51,7 @@ use crate::rename::{self, RenameError, RenameStep, RenameTiming, Renamed};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 use crate::subagents::{self, Subagent};
+use crate::templates::{TemplateList, TemplateLoad};
 
 /// A finished background job.
 #[derive(Debug)]
@@ -91,6 +92,9 @@ pub enum JobResult {
     /// The running subagents by `sessionId`, read from tower's files
     /// (doc/0029).
     Subagents(HashMap<String, Vec<Subagent>>),
+    /// The templates folder listed for the picker of load `id`
+    /// (doc/0036).
+    Templates(u64, TemplateList),
 }
 
 impl JobResult {
@@ -124,6 +128,7 @@ impl JobResult {
                 app.subagents_read(found);
                 Vec::new()
             }
+            JobResult::Templates(id, list) => app.templates_loaded(id, list),
         }
     }
 }
@@ -404,6 +409,21 @@ impl Jobs {
         self.launch("projects", scan, fail, |_, _, scan| {
             let list = projects::discover(&scan.roots, &scan.extras, &scan.recent, &scan.home);
             JobResult::Projects(scan.id, list)
+        });
+    }
+
+    /// Lists the templates folder for a picker (doc/0036). A load that
+    /// panics or cannot start reports the folder as unreadable.
+    pub fn templates(&self, load: TemplateLoad) {
+        let fail = |load: TemplateLoad, err: CliError| {
+            let list = TemplateList {
+                error: Some(format!("the template load failed: {err}")),
+                ..TemplateList::default()
+            };
+            JobResult::Templates(load.id, list)
+        };
+        self.launch("templates", load, fail, |_, _, load| {
+            JobResult::Templates(load.id, load.run())
         });
     }
 

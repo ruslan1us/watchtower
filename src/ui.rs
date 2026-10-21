@@ -25,6 +25,7 @@ mod detail;
 mod dialog;
 mod settings;
 mod subtree;
+mod templates;
 mod theme;
 
 use theme::{Look, Theme};

@@ -63,6 +63,7 @@ use crate::sidecar::{
     StateTuple,
 };
 use crate::subagents::{self, Subagent};
+use crate::templates::{self, TemplateList, TemplateLoad, TemplatePicker};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
@@ -196,6 +197,10 @@ pub enum Effect {
     /// them): the job from [`App::start_subagent_read`], run on a worker
     /// thread, then [`App::subagents_read`] (doc/0029).
     ReadSubagents,
+    /// List the templates folder on a worker thread ([`TemplateLoad::run`])
+    /// for the picker that was just opened, then call
+    /// [`App::templates_loaded`] (doc/0036).
+    LoadTemplates(TemplateLoad),
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -1060,7 +1065,10 @@ pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
     ("Tab/Shift+Tab", "next / previous field"),
     ("Ctrl+S", "start in the background"),
     ("Ctrl+Enter, Alt+Enter", "start and attach"),
-    ("Ctrl+G", "edit the task in $VISUAL / $EDITOR"),
+    (
+        "Ctrl+G, Ctrl+P",
+        "task in $VISUAL / $EDITOR; insert a template",
+    ),
     ("Ctrl+T", "after \"not trusted\": open claude there, retry"),
     ("Esc", "cancel"),
 ];
@@ -1235,6 +1243,11 @@ pub struct App {
     root: bool,
     /// The orchestrator's folder, `<config dir>/orchestrator` (doc/0010).
     orchestrator_dir: PathBuf,
+    /// The templates folder, `<config dir>/templates` (doc/0036).
+    templates_dir: PathBuf,
+    /// Template loads started; a picker waits for the one it was opened
+    /// with.
+    template_loads: u64,
     /// The subagent settings file and folder, when enabled (doc/0029).
     subagent_paths: Option<SubagentPaths>,
     /// Running subagents by `sessionId`, from the last read.
@@ -1293,7 +1306,9 @@ impl App {
             })
             .collect();
         let canon = CanonCache::for_accounts(&config.accounts, &home);
-        let orchestrator_dir = orchestrator::dir(&paths::Dirs::new(home.clone(), None).config_dir);
+        let default_dir = paths::Dirs::new(home.clone(), None).config_dir;
+        let orchestrator_dir = orchestrator::dir(&default_dir);
+        let templates_dir = templates::dir(&default_dir);
         let theme = config.ui_theme;
         App {
             config,
@@ -1336,6 +1351,8 @@ impl App {
             scan: 0,
             root: dispatch::is_root(),
             orchestrator_dir,
+            templates_dir,
+            template_loads: 0,
             subagent_paths: None,
             subagents: HashMap::new(),
             subagent_io: SubagentIo::default(),
@@ -1362,9 +1379,53 @@ impl App {
     }
 
     /// Sets tower's config dir; the orchestrator runs in its
-    /// `orchestrator` folder (doc/0010). Without it, `~/.config/watchtower`.
+    /// `orchestrator` folder (doc/0010) and the templates are read from its
+    /// `templates` folder (doc/0036). Without it, `~/.config/watchtower`.
     pub fn set_config_dir(&mut self, config_dir: &std::path::Path) {
         self.orchestrator_dir = orchestrator::dir(config_dir);
+        self.templates_dir = templates::dir(config_dir);
+    }
+
+    /// The templates folder (doc/0036).
+    pub fn templates_dir(&self) -> &std::path::Path {
+        &self.templates_dir
+    }
+
+    /// A new template picker, still loading, and the effect that loads the
+    /// folder for it (doc/0036). The window that hosts the picker keeps it
+    /// and gives it its keys; [`App::templates_loaded`] fills it.
+    pub fn new_template_picker(&mut self) -> (TemplatePicker, Effect) {
+        self.template_loads += 1;
+        let id = self.template_loads;
+        let picker = TemplatePicker::new(id, self.templates_dir.clone(), &self.home);
+        let load = TemplateLoad {
+            id,
+            folder: self.templates_dir.clone(),
+        };
+        (picker, Effect::LoadTemplates(load))
+    }
+
+    /// The open template picker, whichever window hosts it.
+    fn template_picker_mut(&mut self) -> Option<&mut TemplatePicker> {
+        self.dialog.as_mut().and_then(|d| d.templates.as_mut())
+    }
+
+    /// Hands the finished load `id` to the open picker that waits for it;
+    /// a load for a picker closed meanwhile is dropped. Skipped files are
+    /// reported once, in the status line (doc/0036).
+    pub fn templates_loaded(&mut self, id: u64, list: TemplateList) -> Vec<Effect> {
+        let note = list.skipped_note();
+        let Some(picker) = self.template_picker_mut() else {
+            return Vec::new();
+        };
+        if picker.load_id() != id || !picker.is_loading() {
+            return Vec::new();
+        }
+        picker.set_list(list);
+        if let Some(note) = note {
+            self.set_message(note, Severity::Warning);
+        }
+        Vec::new()
     }
 
     /// The orchestrator's folder (doc/0010).
@@ -2782,6 +2843,13 @@ impl App {
         };
         match dialog.handle_key(key) {
             DialogAction::None => Vec::new(),
+            DialogAction::OpenTemplates => {
+                let (picker, effect) = self.new_template_picker();
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.templates = Some(picker);
+                }
+                vec![effect]
+            }
             DialogAction::Cancel => {
                 self.dialog = None;
                 self.set_message("new session cancelled", Severity::Info);

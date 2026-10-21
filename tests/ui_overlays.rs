@@ -24,6 +24,7 @@ use watchtower::orchestrator::StartError;
 use watchtower::poller::PollUpdate;
 use watchtower::projects::{Project, ProjectList};
 use watchtower::sidecar::{AccountSource, Sidecar};
+use watchtower::templates::{Template, TemplateList};
 
 /// The wall clock the screens are drawn at (Unix ms), so the spinner and
 /// the ages do not move between renders.
@@ -99,6 +100,23 @@ fn dialog_app(root: &Path) -> App {
     app.apply_poll(poll("main", "mixed-states.json"));
     app.open_dialog(projects(root, &["api", "demo-app", "web"]));
     app
+}
+
+/// Two templates for the picker (doc/0036).
+fn some_templates() -> TemplateList {
+    TemplateList {
+        templates: vec![
+            Template {
+                name: "fix-tests".into(),
+                text: "Fix the failing tests.".into(),
+            },
+            Template {
+                name: "review".into(),
+                text: "Review the diff.\nBe strict.".into(),
+            },
+        ],
+        ..TemplateList::default()
+    }
 }
 
 /// Every window, by name, in the minimal style with colour; the folder
@@ -255,6 +273,19 @@ config_dir = "~/.claude-spare"
         _ => None,
     });
     out.push(("dialog-starting", app));
+    for (name, list) in [
+        ("dialog-templates", some_templates()),
+        ("dialog-templates-empty", TemplateList::default()),
+    ] {
+        let mut app = dialog_app(root);
+        let effects = app.handle_key(ctrl('p'));
+        let [Effect::LoadTemplates(load)] = effects.as_slice() else {
+            panic!("{effects:?}")
+        };
+        app.templates_loaded(load.id, list);
+        app.handle_key(key(KeyCode::Down));
+        out.push((name, app));
+    }
     if let Some(job) = job {
         let mut app = dialog_app(root);
         app.handle_key(key(KeyCode::Tab));
@@ -425,8 +456,10 @@ const EXPECT: [Expect; 4] = [
 ];
 
 /// Windows and their titles.
-const TITLED: [(&str, &str); 14] = [
+const TITLED: [(&str, &str); 16] = [
     ("dialog", "New session"),
+    ("dialog-templates", "Templates"),
+    ("dialog-templates-empty", "Templates"),
     ("resume", "Resume a past conversation"),
     ("stop", "Stop session?"),
     ("remove", "Remove session?"),
@@ -495,6 +528,8 @@ fn selected_items_use_the_themes_selection_bar() {
         assert_selected(&buf, "▶ alt", e, "account");
         let (buf, _dir) = window("target", UiStyle::Dashboard, e.theme, true);
         assert_selected(&buf, "▶ alt", e, "target");
+        let (buf, _dir) = window("dialog-templates", UiStyle::Dashboard, e.theme, true);
+        assert_selected(&buf, "▶ review", e, "template");
     }
 }
 
@@ -599,6 +634,7 @@ fn without_colour_no_window_has_colour() {
             ("dialog", "▶ ~/workspace/api"),
             ("picker", "▶ alt"),
             ("target", "▶ alt"),
+            ("dialog-templates", "▶ review"),
         ] {
             let (buf, _dir) = window(name, UiStyle::Dashboard, theme, false);
             let (x, y) = cell_at(&buf, needle);
@@ -645,6 +681,8 @@ fn neutral_and_warm_paint_only_their_selection_behind_window_text() {
             ("picker", "Which account owns"),
             ("target", "Continue print-date"),
             ("resume", "Resume a past"),
+            ("dialog-templates", "Templates"),
+            ("dialog-templates-empty", "Templates"),
         ] {
             let (buf, _dir) = window(name, UiStyle::Dashboard, theme, true);
             // Inside the window: from its top-left corner to the bottom

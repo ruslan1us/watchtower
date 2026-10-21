@@ -262,6 +262,26 @@ does not parse is not applied; the status line shows the error until it is fixed
   logs_follow_secs = 0
   ```
 
+## Prompt templates
+
+Texts you type again and again (review instructions, say) can live as templates: one
+file per template in `~/.config/watchtower/templates/` (the `templates` folder next to
+your `config.toml`), named `<name>.md`. In the new-session dialog `Ctrl+P` opens a picker
+with the names and each template's first line; type to filter, `↑` / `↓` to choose,
+`Enter` inserts the text into the task (at the cursor, or as the whole task when it is
+empty), `Esc` closes the picker.
+
+```text
+~/.config/watchtower/templates/
+├── review.md          # "Review the diff for bugs and missing tests. …"
+└── release-notes.md
+```
+
+Tower only reads the folder, afresh each time the picker opens. Only regular `.md` files
+directly in it count; hidden files and subfolders are ignored, and symlinks, files over
+64 KiB, empty files and files that are not UTF-8 are skipped, with a note in the status
+line ([0036](doc/0036-prompt-templates.md)).
+
 ## Keys
 
 Session list ([0011](doc/0011-keybindings.md)):
@@ -323,6 +343,7 @@ New-session dialog ([0008](doc/0008-new-session-dialog.md)):
 | `←` / `→`, `↑` / `↓` | Move the cursor or change a choice |
 | `Enter` | New line in the task field; next field elsewhere |
 | `Ctrl+G` | Edit the task in `$VISUAL`, else `$EDITOR` |
+| `Ctrl+P` | Insert a [prompt template](#prompt-templates) into the task |
 | `Ctrl+S` | Start in the background |
 | `Ctrl+Enter`, `Alt+Enter` | Start and attach |
 | `Ctrl+T` | After `Workspace not trusted`: run the account's command in the folder to accept trust, then retry |
@@ -380,6 +401,8 @@ Next to the config, in `~/.config/watchtower/`:
   `config.toml.lock`: the lock held while tower saves the config
   ([0022](doc/0022-tower-writes-its-own-config.md)).
 - `orchestrator/`: the orchestrator's folder.
+- `templates/`: your prompt templates, if you add any; tower only reads them
+  ([0036](doc/0036-prompt-templates.md)).
 
 ## Safety notes
 

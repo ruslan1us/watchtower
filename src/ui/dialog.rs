@@ -1,6 +1,7 @@
-//! Rendering of the new-session dialog (doc/0008), the resume window of
-//! `R` (doc/0019) and the rename window of `e` (doc/0027). Pure drawing
-//! from the [`Dialog`], [`ResumeWindow`] and [`RenameWindow`] state.
+//! Rendering of the new-session dialog (doc/0008), with its template
+//! picker over it (doc/0036), the resume window of `R` (doc/0019) and the
+//! rename window of `e` (doc/0027). Pure drawing from the [`Dialog`],
+//! [`ResumeWindow`] and [`RenameWindow`] state.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -301,7 +302,8 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     let width = usize::from(w.saturating_sub(2)).max(1);
     let value_w = width.saturating_sub(usize::from(LABEL_W)).max(1);
     let focused = dialog.field;
-    let editing = dialog.prompt.is_none() && !dialog.is_starting();
+    // The template picker over the dialog has the keys and the cursor.
+    let editing = dialog.prompt.is_none() && !dialog.is_starting() && dialog.templates.is_none();
 
     // Messages below the fields, wrapped to the dialog width.
     let mut messages: Vec<Line> = Vec::new();
@@ -369,7 +371,8 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
         "Enter next field"
     };
     let footer_text = format!(
-        "Tab/Shift+Tab field · {enter_hint} · Ctrl+S start · {} start & attach · Ctrl+G editor",
+        "Tab/Shift+Tab field · {enter_hint} · Ctrl+S start · {} start & attach · Ctrl+G editor \
+         · Ctrl+P template",
         attach_key(app)
     );
     let footer: Vec<String> = wrap(&footer_text, width);
@@ -456,9 +459,10 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     // Task: label row, then the wrapped text.
     let mut spans = vec![label(Field::Task, focused, look)];
     if dialog.task.is_blank() {
-        spans.extend(
-            look.hint_spans("describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR"),
-        );
+        spans.extend(look.hint_spans(
+            "describe the task · Enter new line · Ctrl+G opens $VISUAL / $EDITOR · Ctrl+P \
+                 inserts a template",
+        ));
     } else {
         spans.push(Span::styled("", look.hint()));
     }
@@ -558,6 +562,9 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
+    }
+    if let Some(picker) = &dialog.templates {
+        super::templates::draw_picker(p.frame, picker, area, look);
     }
 }
 
