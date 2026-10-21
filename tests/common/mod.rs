@@ -139,7 +139,10 @@ pub fn project_list(root: &Path, names: &[&str]) -> ProjectList {
     for name in names {
         std::fs::create_dir_all(root.join(name).join(".git")).unwrap();
     }
-    projects::discover(&[root.to_path_buf()], &[], &[], Path::new(HOME))
+    // `root` stands in for the home folder, so projects show as `~/<name>`:
+    // the temp folder's random name must not reach the filter, where a
+    // query like "ap" could match it.
+    projects::discover(&[root.to_path_buf()], &[], &[], root)
 }
 
 /// A key without modifiers.
