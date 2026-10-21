@@ -46,12 +46,13 @@ This directory records the design decisions behind it, one file per decision.
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 | 0027 | [Rename a session](0027-rename-sessions.md) | Accepted |
 | 0028 | [Scrolling the logs panel](0028-scrolling-the-logs-panel.md) | Accepted (paused panel amended by 0030) |
-| 0029 | [Tracking the subagents of sessions tower starts](0029-tracking-subagents.md) | Accepted |
+| 0029 | [Tracking the subagents of sessions tower starts](0029-tracking-subagents.md) | Accepted (continued subagents and the `stopped_agents` field amended by 0035) |
 | 0030 | [Following the logs stream across fetches](0030-continuous-logs-stream.md) | Accepted (interval and off switch amended by 0031) |
 | 0031 | [The background logs-follow interval](0031-logs-follow-interval.md) | Accepted |
 | 0032 | [A background task that outlives a finished turn](0032-background-task-after-a-finished-turn.md) | Accepted |
 | 0033 | [Hand-off without a prompt](0033-hand-off-without-a-prompt.md) | Accepted |
 | 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
+| 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

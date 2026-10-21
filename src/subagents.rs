@@ -58,7 +58,9 @@ const MAX_DRAIN: u64 = 16 << 20;
 pub const MAX_AGENTS: usize = 64;
 
 /// The most recently stopped agent ids one file remembers, so a launch
-/// reported after its agent already stopped is not taken as running.
+/// reported after its agent already stopped is not taken as running. The
+/// same number of stopped agents keep their type, description and
+/// background flag for a continuation (doc/0035).
 pub const MAX_STOPPED: usize = 64;
 
 /// The longest description kept, in characters.
@@ -270,6 +272,29 @@ pub struct SessionFile {
     /// Ids of agents seen stopping, newest last, at most [`MAX_STOPPED`].
     #[serde(default)]
     pub stopped: Vec<String>,
+    /// What the agents seen stopping were, newest last, at most
+    /// [`MAX_STOPPED`], so one continued with `SendMessage` shows its
+    /// description again (doc/0035). Optional and left out when empty: a
+    /// reader without the field (tower 0.4.x) ignores it, since unknown
+    /// fields are ignored, and a file without it reads as empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stopped_agents: Vec<StoppedAgent>,
+}
+
+/// A stopped agent as the file remembers it (doc/0035).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoppedAgent {
+    /// The agent id.
+    pub id: String,
+    /// The agent type; empty while unknown.
+    #[serde(rename = "type", default)]
+    pub agent_type: String,
+    /// The description, when known.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Whether it ran in the background.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// One running agent as the file stores it.
@@ -438,11 +463,51 @@ impl SessionFile {
         self.stopped.iter().any(|s| s == id)
     }
 
-    fn push_stopped(&mut self, id: String) {
-        self.stopped.retain(|s| *s != id);
-        self.stopped.push(id);
+    /// Remembers `record` as stopped: its id in `stopped`, its type,
+    /// description and background flag in `stopped_agents`.
+    fn push_stopped(&mut self, record: AgentRecord) {
+        self.stopped.retain(|s| *s != record.id);
+        self.stopped.push(record.id.clone());
         let extra = self.stopped.len().saturating_sub(MAX_STOPPED);
         self.stopped.drain(..extra);
+        self.stopped_agents.retain(|s| s.id != record.id);
+        self.stopped_agents.push(StoppedAgent {
+            id: record.id,
+            agent_type: record.agent_type,
+            description: record.description,
+            background: record.background,
+        });
+        let extra = self.stopped_agents.len().saturating_sub(MAX_STOPPED);
+        self.stopped_agents.drain(..extra);
+    }
+
+    /// Forgets that `id` stopped, returning what was remembered of it.
+    fn take_stopped(&mut self, id: &str) -> Option<StoppedAgent> {
+        self.stopped.retain(|s| s != id);
+        let i = self.stopped_agents.iter().position(|s| s.id == id)?;
+        Some(self.stopped_agents.remove(i))
+    }
+
+    /// Fills a missing description or type of agents in the file from the
+    /// running entries of a `background_tasks` snapshot. Drops nothing.
+    fn fill_from(&mut self, running: &HashMap<&str, &Task>) -> bool {
+        let mut changed = false;
+        for a in &mut self.agents {
+            let Some(t) = running.get(a.id.as_str()) else {
+                continue;
+            };
+            if a.description.is_none() && t.description.is_some() {
+                a.description = t.description.clone();
+                changed = true;
+            }
+            if a.agent_type.is_empty()
+                && let Some(ty) = &t.agent_type
+            {
+                a.agent_type = ty.clone();
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn add(&mut self, record: AgentRecord) {
@@ -458,18 +523,42 @@ impl SessionFile {
     /// Applies one hook event. Returns whether anything changed.
     ///
     /// - A start or launch adds the agent, or fills in its type and
-    ///   description; one for an agent seen stopping is ignored.
-    /// - A stop of an agent not in the file is ignored (Claude Code's own
+    ///   description. A launch for an agent seen stopping is ignored (it
+    ///   was reported after its agent ended).
+    /// - A start for an agent seen stopping is a continuation (`SendMessage`
+    ///   resumes a stopped agent under the same id, doc/0035): the agent
+    ///   runs again from `now_ms`, with the description and background flag
+    ///   it had when it stopped. Claude Code runs `SubagentStart` hooks
+    ///   before the agent's turn, so a start never follows the stop of the
+    ///   same run.
+    /// - A stop of an agent not in the file drops nothing (Claude Code's own
     ///   helpers stop without a start). Otherwise the agent is dropped, and
     ///   when the payload lists `background_tasks`, background agents not
-    ///   running there are dropped too and the others get descriptions and
-    ///   types from it.
+    ///   running there are dropped too.
+    /// - Either way, agents in the file running in `background_tasks` get
+    ///   a missing description and type from it.
     /// - A finished foreground agent is dropped.
     pub fn apply(&mut self, event: Event, now_ms: i64) -> bool {
         match event {
             Event::Start { id, agent_type } => {
                 if self.was_stopped(&id) {
-                    return false;
+                    let before = self.take_stopped(&id);
+                    if let Some(i) = self.position(&id) {
+                        // Not expected: a stopped agent is never in `agents`.
+                        self.agents.remove(i);
+                    }
+                    let (description, background) = before
+                        .map(|s| (s.description, s.background))
+                        .unwrap_or_default();
+                    self.add(AgentRecord {
+                        id,
+                        agent_type,
+                        description,
+                        started_ms: now_ms,
+                        status: RUNNING.to_owned(),
+                        background,
+                    });
+                    return true;
                 }
                 match self.position(&id) {
                     Some(i) if self.agents[i].agent_type.is_empty() => {
@@ -530,39 +619,30 @@ impl SessionFile {
                 let Some(i) = self.position(&id) else {
                     return false;
                 };
-                self.agents.remove(i);
-                self.push_stopped(id);
+                let record = self.agents.remove(i);
+                self.push_stopped(record);
                 true
             }
             Event::Stop { id, tasks } => {
-                let Some(i) = self.position(&id) else {
-                    return false;
+                let known = self.position(&id).map(|i| self.agents.remove(i));
+                let stopped = known.is_some();
+                if let Some(record) = known {
+                    self.push_stopped(record);
+                }
+                let Some(tasks) = tasks else {
+                    return stopped;
                 };
-                self.agents.remove(i);
-                self.push_stopped(id);
-                if let Some(tasks) = tasks {
-                    let running: HashMap<&str, &Task> = tasks
-                        .iter()
-                        .filter(|t| t.running)
-                        .map(|t| (t.id.as_str(), t))
-                        .collect();
+                let running: HashMap<&str, &Task> = tasks
+                    .iter()
+                    .filter(|t| t.running)
+                    .map(|t| (t.id.as_str(), t))
+                    .collect();
+                if stopped {
                     self.agents
                         .retain(|a| !a.background || running.contains_key(a.id.as_str()));
-                    for a in &mut self.agents {
-                        let Some(t) = running.get(a.id.as_str()) else {
-                            continue;
-                        };
-                        if a.description.is_none() {
-                            a.description = t.description.clone();
-                        }
-                        if a.agent_type.is_empty()
-                            && let Some(ty) = &t.agent_type
-                        {
-                            a.agent_type = ty.clone();
-                        }
-                    }
                 }
-                true
+                let filled = self.fill_from(&running);
+                stopped || filled
             }
         }
     }
@@ -805,5 +885,53 @@ mod tests {
         assert_eq!(clean("a\u{202e}b", 10).as_deref(), Some("ab"));
         assert_eq!(clean(" \n ", 10), None);
         assert_eq!(clean("abcdefghij", 5).as_deref(), Some("abcd…"));
+    }
+
+    fn record(id: &str, description: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            id: id.into(),
+            agent_type: "general-purpose".into(),
+            description: description.map(Into::into),
+            started_ms: 1,
+            status: RUNNING.into(),
+            background: true,
+        }
+    }
+
+    #[test]
+    fn stopped_memory_is_pushed_and_taken_together() {
+        let mut f = SessionFile::default();
+        f.push_stopped(record("a1", Some("one")));
+        f.push_stopped(record("b2", None));
+        // Stopping again moves it to the end, once.
+        f.push_stopped(record("a1", Some("uno")));
+        assert_eq!(f.stopped, ["b2", "a1"]);
+        let memory: Vec<_> = f.stopped_agents.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(memory, ["b2", "a1"]);
+        let a1 = f.take_stopped("a1").unwrap();
+        assert_eq!(a1.description.as_deref(), Some("uno"));
+        assert!(a1.background);
+        assert_eq!(f.stopped, ["b2"]);
+        // An id only in `stopped` (a file of the old format) is forgotten
+        // there too.
+        f.stopped.push("c3".into());
+        assert_eq!(f.take_stopped("c3"), None);
+        assert_eq!(f.stopped, ["b2"]);
+    }
+
+    #[test]
+    fn a_continuation_replaces_a_stale_running_copy() {
+        let mut f = SessionFile::default();
+        f.push_stopped(record("a1", Some("one")));
+        f.agents.push(record("a1", None));
+        let start = Event::Start {
+            id: "a1".into(),
+            agent_type: "Explore".into(),
+        };
+        assert!(f.apply(start, 9));
+        assert_eq!(f.agents.len(), 1);
+        assert_eq!(f.agents[0].started_ms, 9);
+        assert_eq!(f.agents[0].description.as_deref(), Some("one"));
+        assert_eq!(f.agents[0].agent_type, "Explore");
     }
 }

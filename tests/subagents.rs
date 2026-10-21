@@ -2,7 +2,8 @@
 //! the settings file passed with `--settings`, the `--settings` flag on the
 //! sessions tower starts, and reading and pruning in the TUI. The hook runs
 //! as the real `tower hook` binary where its silence and exit code matter.
-//! Payloads are made up, with the shape observed on Claude Code 2.1.303.
+//! Payloads are made up, with the shape observed on Claude Code 2.1.303
+//! (and 2.1.306 for a subagent continued with `SendMessage`, doc/0035).
 
 mod common;
 #[path = "support/fake_claude.rs"]
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use common::{HOME, NoEnviron, ch, ctrl, key, project_list, type_text};
 use fake_claude::{Fake, cat, lock};
 use ratatui::crossterm::event::KeyCode;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use watchtower::app::{App, Effect};
 use watchtower::cli::CliRunner;
@@ -27,8 +29,9 @@ use watchtower::listing::{Kind, Listing, Session, State, Status};
 use watchtower::poller::PollUpdate;
 use watchtower::sidecar::Sidecar;
 use watchtower::subagents::{
-    self, Event, MAX_AGENTS, MAX_PAYLOAD, SessionFile, Subagent, Task, clean, ensure_settings,
-    hook_command, is_current, parse, prune, read, read_many, record, settings_json,
+    self, Event, MAX_AGENTS, MAX_PAYLOAD, MAX_STOPPED, SessionFile, Subagent, Task, clean,
+    ensure_settings, hook_command, is_current, parse, prune, read, read_many, record,
+    settings_json,
 };
 
 const SID: &str = "1a2b3c4d-0000-4000-8000-000000000000";
@@ -284,8 +287,261 @@ fn start_launch_and_stop_reconcile_with_background_tasks() {
     assert!(f.agents.is_empty(), "{:?}", f.agents);
     // A launch reported after its agent stopped is not taken as running.
     assert!(!f.apply(event(&launched("b2", "beta waiter")), 800));
-    assert!(!f.apply(event(&start("b2", "general-purpose")), 800));
     assert!(f.agents.is_empty());
+    // A start after a stop is a continuation (doc/0035).
+    assert!(f.apply(event(&start("b2", "general-purpose")), 900));
+    assert_eq!(ids(&f), ["b2"]);
+}
+
+// ---- a subagent continued with SendMessage (doc/0035) ----------------------------
+
+const PROBE: &str = "a5e6d7c8b9a001122";
+const HELPER: &str = "a7f8e9d0c1b233445";
+
+fn start_prompt(agent: &str, prompt_id: &str) -> Value {
+    let mut v = start(agent, "general-purpose");
+    v["prompt_id"] = json!(prompt_id);
+    v
+}
+
+fn send_message(agent: &str) -> Value {
+    json!({
+        "session_id": SID,
+        "transcript_path": "/home/user/.claude/projects/x/transcript.jsonl",
+        "cwd": "/home/user/workspace/demo-app",
+        "hook_event_name": "PostToolUse",
+        "prompt_id": "p2",
+        "tool_name": "SendMessage",
+        "tool_input": {
+            "to": agent,
+            "recipient": agent,
+            "recipient_kind": "agent",
+            "type": "message",
+            "summary": "continue",
+            "message": "a message that is never stored",
+            "content": "a message that is never stored"
+        },
+        "tool_response": {}
+    })
+}
+
+/// A `SubagentStop` as 2.1.306 sends it: `background_tasks` lists the
+/// probe as running, also in the probe's own stop.
+fn probe_stop(agent: &str, agent_type: &str) -> Value {
+    let mut v = stop(
+        agent,
+        agent_type,
+        json!([{
+            "id": PROBE,
+            "type": "subagent",
+            "status": "running",
+            "description": "probe agent"
+        }]),
+    );
+    v["session_crons"] = json!([]);
+    v
+}
+
+fn launched_probe() -> Value {
+    let mut v = launched(PROBE, "probe agent");
+    v["tool_response"]["isAsync"] = json!(true);
+    v["tool_response"]["resolvedModel"] = json!("a-model");
+    v
+}
+
+/// Records `v` through the file, as the hook does.
+fn record_payload(sub: &Path, v: &Value, now_ms: i64) {
+    if let Some((sid, ev)) = parse(&bytes(v)) {
+        record(sub, &sid, ev, now_ms).unwrap();
+    }
+}
+
+#[test]
+fn a_subagent_continued_with_send_message_shows_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("subagents");
+    // 1-3: launched in the background, then finished.
+    record_payload(&sub, &start_prompt(PROBE, "p1"), 1_000);
+    record_payload(&sub, &launched_probe(), 1_100);
+    assert_eq!(
+        read(&sub, SID)[0].description.as_deref(),
+        Some("probe agent")
+    );
+    record_payload(&sub, &probe_stop(PROBE, "general-purpose"), 2_000);
+    assert!(read(&sub, SID).is_empty(), "stopped");
+    // 4: the SendMessage itself is not an event tower records.
+    assert_eq!(parse(&bytes(&send_message(PROBE))), None);
+    // 5: the continued run starts under the same id.
+    record_payload(&sub, &start_prompt(PROBE, "p2"), 3_000);
+    let want = [Subagent {
+        id: PROBE.into(),
+        agent_type: "general-purpose".into(),
+        description: Some("probe agent".into()),
+        started_ms: 3_000,
+    }];
+    assert_eq!(read(&sub, SID), want, "running again, with its description");
+    let file: SessionFile =
+        serde_json::from_str(&std::fs::read_to_string(sub.join(format!("{SID}.json"))).unwrap())
+            .unwrap();
+    assert!(file.stopped.is_empty(), "{:?}", file.stopped);
+    assert!(file.agents[0].background, "still a background agent");
+    // 6: a helper stops, never started; the probe stays.
+    record_payload(&sub, &probe_stop(HELPER, ""), 3_500);
+    assert_eq!(read(&sub, SID), want);
+    // 7: the continued run ends.
+    record_payload(&sub, &probe_stop(PROBE, "general-purpose"), 63_000);
+    assert!(read(&sub, SID).is_empty());
+    // A launch reported after that stop is still ignored.
+    record_payload(&sub, &launched_probe(), 64_000);
+    assert!(read(&sub, SID).is_empty());
+}
+
+#[test]
+fn a_late_launch_after_a_stop_is_ignored_but_a_start_continues() {
+    let mut f = SessionFile::default();
+    f.apply(event(&start("a1", "general-purpose")), 100);
+    f.apply(event(&stop("a1", "general-purpose", json!([]))), 200);
+    assert!(!f.apply(event(&launched("a1", "alpha")), 300));
+    assert!(f.agents.is_empty());
+    assert_eq!(f.stopped, ["a1"]);
+    // A foreground agent continued: no description, not background.
+    assert!(f.apply(event(&start("a1", "Explore")), 400));
+    assert_eq!(ids(&f), ["a1"]);
+    assert_eq!(f.agents[0].agent_type, "Explore", "the start's type");
+    assert_eq!(f.agents[0].description, None);
+    assert!(!f.agents[0].background);
+    assert_eq!(f.agents[0].started_ms, 400);
+    assert!(f.stopped.is_empty() && f.stopped_agents.is_empty());
+    // Now running, a launch completes it.
+    assert!(f.apply(event(&launched("a1", "alpha")), 500));
+    assert_eq!(f.agents[0].description.as_deref(), Some("alpha"));
+}
+
+#[test]
+fn any_stop_fills_missing_descriptions_without_dropping() {
+    let mut f = SessionFile::default();
+    f.apply(event(&start(PROBE, "general-purpose")), 100);
+    f.apply(event(&launched("b2", "beta")), 200);
+    // A helper's stop lists the probe but not b2, a background agent: b2
+    // stays (only the stop of an agent in the file drops), the probe gets
+    // its description.
+    assert!(f.apply(event(&probe_stop(HELPER, "")), 300));
+    assert_eq!(ids(&f), [PROBE, "b2"]);
+    assert_eq!(f.agents[0].description.as_deref(), Some("probe agent"));
+    assert!(f.stopped.is_empty());
+    // Nothing more to fill: nothing changes.
+    assert!(!f.apply(event(&probe_stop(HELPER, "")), 400));
+    // An ended entry fills nothing.
+    let mut g = SessionFile::default();
+    g.apply(event(&start("c3", "general-purpose")), 100);
+    let ended = json!([task("c3", "gamma", "completed")]);
+    assert!(!g.apply(event(&stop(HELPER, "", ended)), 200));
+    assert_eq!(g.agents[0].description, None);
+}
+
+#[test]
+fn stopped_agents_are_remembered_within_a_bound() {
+    let mut f = SessionFile::default();
+    let n = MAX_STOPPED + 6;
+    for i in 0..n {
+        let id = format!("a{i}");
+        f.apply(event(&launched(&id, &format!("agent {i}"))), i as i64);
+        f.apply(event(&stop(&id, "general-purpose", json!([]))), i as i64);
+    }
+    assert!(f.agents.is_empty());
+    assert_eq!(f.stopped.len(), MAX_STOPPED);
+    assert_eq!(f.stopped_agents.len(), MAX_STOPPED);
+    assert_eq!(f.stopped[0], "a6", "the oldest went");
+    assert_eq!(f.stopped_agents[0].id, "a6");
+    let last = f.stopped_agents.last().unwrap();
+    assert_eq!(last.id, format!("a{}", n - 1));
+    assert_eq!(
+        last.description.as_deref(),
+        Some(&*format!("agent {}", n - 1))
+    );
+    assert!(last.background);
+    // A forgotten agent's start is a plain new start.
+    assert!(f.apply(event(&start("a0", "general-purpose")), 1_000));
+    assert_eq!(f.agents[0].description, None);
+    // A remembered one comes back with its description.
+    assert!(f.apply(event(&start("a6", "general-purpose")), 1_001));
+    assert_eq!(f.agents[1].description.as_deref(), Some("agent 6"));
+    assert_eq!(f.stopped.len(), MAX_STOPPED - 1);
+    assert_eq!(f.stopped_agents.len(), MAX_STOPPED - 1);
+}
+
+/// `SessionFile` as tower 0.4.2 declares it: a TUI of that version reads
+/// files an updated hook binary writes.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OldSessionFile {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    agents: Vec<OldAgentRecord>,
+    #[serde(default)]
+    stopped: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OldAgentRecord {
+    id: String,
+    #[serde(rename = "type", default)]
+    agent_type: String,
+    #[serde(default)]
+    description: Option<String>,
+    started_ms: i64,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    background: bool,
+}
+
+#[test]
+fn the_file_format_stays_readable_both_ways() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("subagents");
+    std::fs::create_dir(&sub).unwrap();
+    let path = sub.join(format!("{SID}.json"));
+    // A file of the old format: the probe stopped, nothing remembered.
+    let old = json!({
+        "version": 1,
+        "agents": [{
+            "id": "b2", "type": "Explore", "description": "beta",
+            "started_ms": 50, "status": "running", "background": false
+        }],
+        "stopped": [PROBE]
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+    assert_eq!(read(&sub, SID).len(), 1);
+    // Its continuation runs, its description comes from a later snapshot.
+    record_payload(&sub, &start_prompt(PROBE, "p2"), 100);
+    assert_eq!(read(&sub, SID)[1].description, None);
+    record_payload(&sub, &probe_stop(HELPER, ""), 200);
+    assert_eq!(
+        read(&sub, SID)[1].description.as_deref(),
+        Some("probe agent")
+    );
+    // A stop writes the new field; the version stays 1.
+    record_payload(&sub, &probe_stop(PROBE, "general-purpose"), 300);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["version"], 1);
+    assert_eq!(
+        v["stopped_agents"],
+        json!([{
+            "id": PROBE, "type": "general-purpose", "description": "probe agent",
+            "background": false
+        }])
+    );
+    // The old reader accepts it and sees the same running agents.
+    let parsed: OldSessionFile = serde_json::from_str(&text).expect("old reader");
+    assert_eq!(parsed.version, 1);
+    assert_eq!(parsed.stopped, [PROBE]);
+    let running: Vec<&str> = parsed.agents.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(running, ["b2"]);
+    assert_eq!(read(&sub, SID).len(), 1);
 }
 
 #[test]

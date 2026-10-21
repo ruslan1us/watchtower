@@ -426,10 +426,14 @@ Verified with Claude Code 2.1.303:
   screen shows "Waiting for 1 background agent to finish". The parent turns `done` /
   `idle` only after it has relayed the subagent's result.
 - Attached, the subagents are listed under "↓ to manage" and in `/tasks`.
+- A finished subagent can be continued with the parent's `SendMessage` tool; it runs
+  again under the same agent id (verified 2.1.306, see
+  [Hooks passed with `--settings`](#hooks-passed-with---settings)).
 
 Not verified: what a subagent's permission prompt looks like in the listing.
 
-How Watchtower uses it: [0029](../0029-tracking-subagents.md).
+How Watchtower uses it: [0029](../0029-tracking-subagents.md),
+[0035](../0035-continued-subagents.md).
 
 ## Background shells and the turn
 
@@ -472,6 +476,28 @@ https://code.claude.com/docs/en/hooks):
   the agent that is stopping.
 - Claude Code's internal helpers also emit `SubagentStop`, with `agent_type: ""` and no
   `SubagentStart` before it.
+- A finished subagent continued with `SendMessage` (verified 2.1.306, WSL): the main
+  thread launched one `general-purpose` agent in the background, it finished, and
+  the main thread sent it a message. The hooks fired in this order:
+  1. `SubagentStart` `{agent_id: A, agent_type: "general-purpose", prompt_id: P1}`.
+  2. `PostToolUse` `tool_name: "Agent"`, `tool_input {description, subagent_type,
+     prompt}`, `tool_response {isAsync: true, status: "async_launched", agentId: A,
+     description, resolvedModel, prompt}`.
+  3. `SubagentStop` `{agent_id: A, agent_type: "general-purpose", stop_hook_active:
+     false, background_tasks: [{id: A, type: "subagent", status: "running",
+     description}], session_crons: []}`: the stopping agent is listed as `running`.
+  4. `PostToolUse` `tool_name: "SendMessage"`, `tool_input {to: A, recipient: A,
+     recipient_kind: "agent", type: "message", summary, message, content}`
+     (`prompt_id` P2).
+  5. `SubagentStart` `{agent_id: A, agent_type: "general-purpose", prompt_id: P2}`: the
+     continued run fires a start again with the **same** `agent_id`.
+  6. `SubagentStop` `{agent_id: H, agent_type: "", last_assistant_message,
+     background_tasks: [{id: A, status: "running", description, …}]}`: a helper,
+     never started, whose snapshot lists A.
+  7. `SubagentStop` of A when the continued run ended, its `background_tasks` again
+     listing A as `running`.
+
+  The `background_tasks` entries of this run had no `agent_type` key.
 - Hooks run concurrently: two subagents launched together fire their hooks at the same
   time.
 - While subagents run, the parent row stays `state: working` / `status: busy`; it turns

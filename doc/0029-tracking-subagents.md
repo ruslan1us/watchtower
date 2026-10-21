@@ -1,6 +1,6 @@
 # 0029. Tracking the subagents of sessions tower starts
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · a start of a stopped id taken as a continuation, stopped agents' descriptions remembered and filled from any stop's snapshot by [0035](0035-continued-subagents.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0019](0019-resume-past-sessions.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md), [0024](0024-settings-window.md), [reference](reference/claude-code-cli.md#subagents-in-background-sessions)
 
 ## Context
