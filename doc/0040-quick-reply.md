@@ -29,10 +29,12 @@ list, the logs panel and the Settings window.
 
 **Offered** for background rows with a short id and a `sessionId` that are:
 Ready for review (`done` / `idle`); blocked with `status: idle` and no
-`waitingFor` (a question that ended the turn); `failed` / `idle`; the
-orchestrator under the same rules; and any row without a live process
-(stopped and finished, failed, stopped mid-turn). **Not offered**, with a
-status-line note instead: `state: working`; `status: busy`, including
+`waitingFor` (a question that ended the turn); `failed` / `idle`;
+`working` / `idle`, the state a wake without a prompt leaves
+([0033](0033-hand-off-without-a-prompt.md)); the orchestrator under the
+same rules; and any row without a live process (stopped and finished,
+failed, stopped mid-turn). **Not offered**, with a status-line note
+instead: `status: busy` (a running turn), including
 `done · bg task` ([0032](0032-background-task-after-a-finished-turn.md));
 `status: waiting` or any `waitingFor` (`… attach to answer it (Enter)`); a
 live row without `status`; interactive rows; an unknown owner (`?`) while
@@ -99,7 +101,9 @@ until its reply reports back.
 - Quitting tower while a reply runs does not wait for it: the session may
   stay stopped without the text, and is then an ordinary stopped row.
 - A row that is `working` / `idle` after a wake without a prompt
-  ([0033](0033-hand-off-without-a-prompt.md)) is not offered; attach there.
+  ([0033](0033-hand-off-without-a-prompt.md)) is offered: no turn runs, so
+  stopping it interrupts nothing (owner decision, 2026-10-21). A `working`
+  row whose status is `busy` or missing is still refused.
 
 ## Alternatives considered
 

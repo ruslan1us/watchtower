@@ -51,8 +51,9 @@ pub fn text_to_send(typed: &str) -> Option<String> {
 /// and a `sessionId` that either have no live process (stopped, finished,
 /// failed), or are live and idle at the end of a turn: `done` / `idle`
 /// (Ready for review), `blocked` / `idle` with no `waitingFor` (a question
-/// that ended the turn) and `failed` / `idle`. The orchestrator follows the
-/// same rules. Owner, group and running-job checks are the app's.
+/// that ended the turn), `failed` / `idle`, and `working` / `idle` (woken
+/// without a prompt, doc/0033). The orchestrator follows the same rules.
+/// Owner, group and running-job checks are the app's.
 pub fn refusal(s: &Session) -> Option<String> {
     let name = s.display_name();
     if s.is_interactive() {
@@ -92,17 +93,12 @@ pub fn refusal(s: &Session) -> Option<String> {
             )
         });
     }
-    if s.state == Some(State::Working) {
-        return Some(format!(
-            "{name} is working; wait until its turn ends, or attach to send your prompt there"
-        ));
-    }
     let idle = s.status == Some(Status::Idle);
-    let ended = matches!(
+    let offered = matches!(
         s.state,
-        Some(State::Done) | Some(State::Blocked) | Some(State::Failed)
+        Some(State::Done) | Some(State::Blocked) | Some(State::Failed) | Some(State::Working)
     );
-    if idle && ended {
+    if idle && offered {
         return None;
     }
     Some(format!(

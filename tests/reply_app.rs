@@ -46,6 +46,8 @@ fn cases() -> Vec<(String, &'static str, Option<&'static str>)> {
         c(1, "ready-done", "done", IDLE, None),
         c(2, "asked-question", "blocked", IDLE, None),
         c(3, "failed-live", "failed", IDLE, None),
+        // Woken without a prompt (doc/0033): alive, no turn running.
+        c(10, "working-idle", "working", IDLE, None),
         // No live process: stopped and finished, failed, mid-turn, stopped.
         c(4, "stopped-done", "done", "", None),
         c(5, "stopped-failed", "failed", "", None),
@@ -59,13 +61,6 @@ fn cases() -> Vec<(String, &'static str, Option<&'static str>)> {
             "working",
             BUSY,
             Some("would interrupt its turn"),
-        ),
-        c(
-            10,
-            "working-idle",
-            "working",
-            IDLE,
-            Some("is working; wait until its turn ends"),
         ),
         c(
             11,

@@ -322,9 +322,9 @@ the command of the account that owns the session, and the session keeps its id:
 
 The window says which of the two will happen. Claude Code only takes a prompt this way on a
 stopped session; on a running one it would start a copy, which tower reports by its id
-instead of the reply. `t` is not offered while a session works, is busy (also `done · bg
-task`), or waits on a permission prompt or a question dialog: attach to answer those
-(`Enter`). The status line shows `stopping <name>…`, `waking <name> with your text…` and
+instead of the reply. `t` is not offered while a turn runs (also `done · bg task`), or
+while a session waits on a permission prompt or a question dialog: attach to answer those
+(`Enter`). A session woken without a prompt (`working · idle`) is offered. The status line shows `stopping <name>…`, `waking <name> with your text…` and
 `sent to <name>` ([0040](doc/0040-quick-reply.md)).
 
 ## Keys
