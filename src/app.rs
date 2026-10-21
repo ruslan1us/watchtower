@@ -999,6 +999,9 @@ pub enum Severity {
 pub struct StatusSegment {
     pub text: String,
     pub severity: Severity,
+    /// The refresh time (`refreshed … ago`, `loading…`): the status line
+    /// keeps it last and drops it first (doc/0020).
+    pub refresh: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2071,6 +2074,7 @@ impl App {
                     }
                 ),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         let hidden = if self.show_interactive {
@@ -2085,6 +2089,7 @@ impl App {
             out.push(StatusSegment {
                 text: format!("{hidden} interactive hidden (i shows)"),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         // A running hand-off stays visible until it reports back.
@@ -2092,6 +2097,7 @@ impl App {
             out.push(StatusSegment {
                 text: h.text.clone(),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         // And a rename of a stopped session (doc/0027).
@@ -2099,6 +2105,7 @@ impl App {
             out.push(StatusSegment {
                 text: r.text.clone(),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         // And every quick reply on its way (doc/0040).
@@ -2106,6 +2113,7 @@ impl App {
             out.push(StatusSegment {
                 text: r.text.clone(),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         // So is an attach waiting for its refresh (doc/0005).
@@ -2113,6 +2121,7 @@ impl App {
             out.push(StatusSegment {
                 text: format!("checking {}… (Esc cancels)", p.request.name),
                 severity: Severity::Info,
+                refresh: false,
             });
         }
         // And windows waiting for the open one to close (doc/0011).
@@ -2126,6 +2135,7 @@ impl App {
             out.push(StatusSegment {
                 text: format!("{what}; it opens when this one closes"),
                 severity: Severity::Warning,
+                refresh: false,
             });
         }
         if let Some(m) = &self.message
@@ -2134,6 +2144,7 @@ impl App {
             out.push(StatusSegment {
                 text: m.text.clone(),
                 severity: m.severity,
+                refresh: false,
             });
         }
         let refreshed = match self.last_refresh {
@@ -2147,6 +2158,7 @@ impl App {
         out.push(StatusSegment {
             text: refreshed,
             severity: Severity::Info,
+            refresh: true,
         });
         for p in &self.polls {
             if let Some(err) = &p.error {
@@ -2158,12 +2170,14 @@ impl App {
                 out.push(StatusSegment {
                     text: format!("{}: {}{kept}", p.name, one_line(err)),
                     severity: Severity::Error,
+                    refresh: false,
                 });
             }
             for w in &p.warnings {
                 out.push(StatusSegment {
                     text: format!("{}: {}", p.name, one_line(w)),
                     severity: Severity::Warning,
+                    refresh: false,
                 });
             }
         }
@@ -2171,24 +2185,28 @@ impl App {
             out.push(StatusSegment {
                 text: err.clone(),
                 severity: Severity::Warning,
+                refresh: false,
             });
         }
         if let Some(err) = &self.config_io.error {
             out.push(StatusSegment {
                 text: err.clone(),
                 severity: Severity::Error,
+                refresh: false,
             });
         }
         if let Some(note) = self.config_io.restart_note {
             out.push(StatusSegment {
                 text: note.to_owned(),
                 severity: Severity::Warning,
+                refresh: false,
             });
         }
         for w in &self.warnings {
             out.push(StatusSegment {
                 text: one_line(w),
                 severity: Severity::Warning,
+                refresh: false,
             });
         }
         out

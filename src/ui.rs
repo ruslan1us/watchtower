@@ -940,12 +940,6 @@ pub(crate) fn status_pieces(app: &App, now: Instant, width: usize) -> Vec<Status
 /// Whether `text` is the status line's refresh segment (`refreshed 3s
 /// ago`, `no successful refresh yet`, `loading…`; see
 /// [`App::status_segments`]), which gives way to every other segment.
-fn is_refresh_segment(text: &str) -> bool {
-    (text.starts_with("refreshed ") && text.ends_with(" ago"))
-        || text == "no successful refresh yet"
-        || text == "loading…"
-}
-
 /// The status line's pieces in `width` columns: the counter, then whole
 /// segments by priority (errors, then the view's state, progress and
 /// messages, then warnings, each in [`App::status_segments`] order, and
@@ -960,7 +954,7 @@ pub(crate) fn fit_status(
     width: usize,
 ) -> Vec<StatusPiece> {
     let rank = |s: &StatusSegment| match s.severity {
-        _ if is_refresh_segment(&s.text) => 3,
+        _ if s.refresh => 3,
         Severity::Error => 0,
         Severity::Info => 1,
         Severity::Warning => 2,
@@ -1603,6 +1597,7 @@ mod tests {
         StatusSegment {
             text: text.to_owned(),
             severity,
+            refresh: text.starts_with("refreshed "),
         }
     }
 
