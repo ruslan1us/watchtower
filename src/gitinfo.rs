@@ -150,7 +150,9 @@ impl GitSummary {
         }
     }
 
-    /// ` · 3 changed · ↑2`: everything after the branch.
+    /// ` · 3 changed · ↑2`: everything after the branch. Zero counts are
+    /// left out (doc/0041): `↑N` and `↓M` only when above 0, so a branch
+    /// level with its upstream reads `main · clean`.
     fn tail(&self) -> String {
         let changed = match self.changed {
             0 => "clean".to_owned(),
@@ -159,15 +161,37 @@ impl GitSummary {
         let upstream = match self.upstream {
             Upstream::None => "no upstream".to_owned(),
             Upstream::Gone => "upstream gone".to_owned(),
-            Upstream::Tracking { ahead, behind: 0 } => format!("↑{ahead}"),
-            Upstream::Tracking { ahead, behind } => format!("↑{ahead} ↓{behind}"),
+            Upstream::Tracking { ahead, behind } => {
+                let mut counts = Vec::new();
+                if ahead > 0 {
+                    counts.push(format!("↑{ahead}"));
+                }
+                if behind > 0 {
+                    counts.push(format!("↓{behind}"));
+                }
+                counts.join(" ")
+            }
         };
-        format!(" · {changed} · {upstream}")
+        if upstream.is_empty() {
+            format!(" · {changed}")
+        } else {
+            format!(" · {changed} · {upstream}")
+        }
     }
 
     /// The whole line: `feature/login · 3 changed · ↑2`.
     pub fn text(&self) -> String {
         format!("{}{}", self.head_text(), self.tail())
+    }
+
+    /// [`GitSummary::text`] with control characters shown as `?`: the
+    /// whole line, for a place that wraps it (the side panel, doc/0041).
+    pub fn shown(&self) -> String {
+        format!(
+            "{}{}",
+            crate::attach::printable(&self.head_text()),
+            self.tail()
+        )
     }
 
     /// [`GitSummary::text`] in at most `width` columns: a long branch name

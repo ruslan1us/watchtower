@@ -1773,7 +1773,10 @@ fn check_frame_all(f: &Frame) -> Vec<(Finding, Option<(usize, usize)>)> {
             let b = box_at(&bs, x, y);
             let edge = b.map_or(row.len(), |b| b.x1);
             if next == Some('…') {
+                // A title on the top border is no value: the panel shows
+                // a shortened title's whole text in its body (doc/0041).
                 if let Some(b) = b
+                    && y > b.y0
                     && is_kv_panel(f, &b)
                     && blank_rows(f, &b) > 0
                 {
@@ -2200,11 +2203,9 @@ invariants! {
     hint_row_picker: HintRow, "picker-";
     hint_row_resume: HintRow, "resume-";
     hint_row_settings: HintRow, "settings-";
-    #[ignore = "F-C2, F-C3"]
     cut_list: Cut, "list-";
     #[ignore = "F-F1"]
     cut_status: Cut, "status-";
-    #[ignore = "F-C3"]
     cut_filter: Cut, "filter-";
     cut_logs: Cut, "logs-";
     cut_help: Cut, "help-";
@@ -2219,11 +2220,10 @@ invariants! {
     cut_picker: Cut, "picker-";
     cut_resume: Cut, "resume-";
     cut_settings: Cut, "settings-";
-    #[ignore = "F-C2, F-C3, F-C4, F-E4"]
+    #[ignore = "F-E4"]
     mid_word_list: MidWord, "list-";
-    #[ignore = "F-C3, F-F1"]
+    #[ignore = "F-F1"]
     mid_word_status: MidWord, "status-";
-    #[ignore = "F-C2, F-C3, F-C4"]
     mid_word_filter: MidWord, "filter-";
     mid_word_logs: MidWord, "logs-";
     mid_word_help: MidWord, "help-";
@@ -2238,7 +2238,6 @@ invariants! {
     mid_word_picker: MidWord, "picker-";
     mid_word_resume: MidWord, "resume-";
     mid_word_settings: MidWord, "settings-";
-    #[ignore = "F-C1"]
     could_wrap_list: CouldWrap, "list-";
     could_wrap_status: CouldWrap, "status-";
     could_wrap_filter: CouldWrap, "filter-";
@@ -2255,7 +2254,6 @@ invariants! {
     could_wrap_picker: CouldWrap, "picker-";
     could_wrap_resume: CouldWrap, "resume-";
     could_wrap_settings: CouldWrap, "settings-";
-    #[ignore = "F-D1"]
     odd_list: Odd, "list-";
     odd_status: Odd, "status-";
     #[ignore = "F-F1"]
@@ -2331,7 +2329,6 @@ fn the_light_theme_draws_the_same_text_as_neutral() {
 }
 
 #[test]
-#[ignore = "F-C5"]
 fn the_details_keys_row_keeps_every_key_that_fits() {
     // print-date offers Enter, Space, a, s and ! (doc/0020, doc/0037).
     for (w, h) in [(140, 40), (160, 45), (250, 60)] {

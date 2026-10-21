@@ -231,7 +231,10 @@ does not parse is not applied; the status line shows the error until it is fixed
   a strip under the list below that; the logs panel takes its place while open). When the
   session's folder is a git work tree, the panel has a `git` line with the branch, the
   number of changed files and the commits not pushed yet, e.g.
-  `git  feature/login · 3 changed · ↑2` ([0037](doc/0037-git-summary-and-shell.md)). It needs
+  `git  feature/login · 3 changed · ↑2`, or `git  main · clean` when there is nothing
+  to push or pull ([0037](doc/0037-git-summary-and-shell.md)). In the side panel long
+  names, folders and branches wrap onto the free rows; the strip cuts them with `…`
+  ([0041](doc/0041-details-panel-values-wrap.md)). It needs
   at least 80×24 and uses the plain layout on a smaller terminal. For the plain
   single-column list, switch back to `"minimal"`:
 

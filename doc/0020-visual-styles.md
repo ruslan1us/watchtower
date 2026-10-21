@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21 · values wrap, titles cut with `…`, two-row key line by [0041](0041-details-panel-values-wrap.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -58,7 +58,12 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
   three-line strip under the list, shown from 26 rows. *Amended by
   [0037](0037-git-summary-and-shell.md):* a `git` line (branch, changed
   files, commits not pushed) follows the folder when the folder is a git
-  work tree, and the strip has a fourth line for it.
+  work tree, and the strip has a fourth line for it. *Amended by
+  [0041](0041-details-panel-values-wrap.md):* in the side panel the name,
+  status, folder and `git` values wrap onto up to 3 rows each, using only
+  free rows; the strip's halves and both titles are cut with `…`, and a
+  shortened side-panel title puts the full name in a `name` line; the keys
+  may take a second row.
 - The logs panel ([0009](0009-stop-remove-and-logs.md)), while open, takes
   the detail panel's place by the same rule: right of the list from 130
   columns, under it below that, half the space either way.

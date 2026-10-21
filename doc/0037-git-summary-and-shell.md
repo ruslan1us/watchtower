@@ -1,6 +1,6 @@
 # 0037. Git summary in the details panel and a shell in the session's folder
 
-- Status: Accepted · 2026-10-21
+- Status: Accepted · 2026-10-21 · the side-panel `git` line (wrapped), the long-branch rule, zero counts and the details key line amended by [0041](0041-details-panel-values-wrap.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 - Amends: [0001](0001-thin-wrapper-over-claude-cli.md) (what tower reads outside the CLI), [0011](0011-keybindings.md) (the `!` key), [0020](0020-visual-styles.md) (detail panel content, strip height)
 
@@ -29,13 +29,19 @@ panel shows one line, e.g. `git       feature/login · 3 changed · ↑2`:
 - the commits not pushed to the upstream, `↑N`, with ` ↓M` added when the
   upstream has commits the branch lacks; `no upstream` without one,
   `upstream gone` when the configured upstream ref no longer exists.
+  *Amended by [0041](0041-details-panel-values-wrap.md):* zero counts are
+  omitted, `↑N` and `↓M` only when above 0; with both 0 the line reads
+  `feature/x · clean`.
 
 The side panel shows it under `folder`. The strip under the list (80–129
 columns, from 26 rows) has four lines now, the fourth being the `git` line
 across the full width; it stays empty when there is no summary, so the
 layout does not jump when the selection moves. A long branch name is cut
 with `…` first, so the counts stay readable; control characters are drawn
-as `?`. Group headers, the minimal style, the dashboard's minimal fallback
+as `?`. *Amended by [0041](0041-details-panel-values-wrap.md):* in the
+side panel the summary wraps onto up to 3 rows and the branch is not
+shortened while it fits them; the cut-branch-first rule holds for the
+strip and for a branch too long for 3 rows. Group headers, the minimal style, the dashboard's minimal fallback
 below 80×24 and an open logs panel show no `git` line. The line is omitted
 when the folder is not inside a git work tree, git is missing, the folder
 is gone, or the call fails, times out or prints something else. The colours
@@ -105,7 +111,9 @@ nothing is added.
 ([0011](0011-keybindings.md)); text fields take it as a character and the
 Cyrillic mapping leaves it alone. `t` stays reserved for another feature.
 The footer shows `! shell` after `e rename`, the details panel's key line
-`! shell` when it has room, and the help line `!, c, r, ?` reads `shell in
+`! shell` when it has room (*amended by
+[0041](0041-details-panel-values-wrap.md):* that line may take a second
+row, and `! shell` comes before `a hand-off`), and the help line `!, c, r, ?` reads `shell in
 the folder; settings; refresh now; help`, so the help still fits 24 rows.
 
 ## Consequences

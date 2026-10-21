@@ -37,7 +37,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted (`/proc` reads amended by 0025) |
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted (`--settings` added by 0039) |
-| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21) |
+| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21; values wrap, titles cut and a two-row key line by 0041) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038) |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031; `[ui] color_depth` by 0038) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
@@ -49,15 +49,16 @@ This directory records the design decisions behind it, one file per decision.
 | 0029 | [Tracking the subagents of sessions tower starts](0029-tracking-subagents.md) | Accepted (continued subagents and the `stopped_agents` field amended by 0035; `R` gets `--settings` by 0039) |
 | 0030 | [Following the logs stream across fetches](0030-continuous-logs-stream.md) | Accepted (interval and off switch amended by 0031) |
 | 0031 | [The background logs-follow interval](0031-logs-follow-interval.md) | Accepted |
-| 0032 | [A background task that outlives a finished turn](0032-background-task-after-a-finished-turn.md) | Accepted |
+| 0032 | [A background task that outlives a finished turn](0032-background-task-after-a-finished-turn.md) | Accepted (status sentence wrapping amended by 0041) |
 | 0033 | [Hand-off without a prompt](0033-hand-off-without-a-prompt.md) | Accepted |
 | 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
 | 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
 | 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted (picker also used by 0040) |
-| 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted |
+| 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted (side-panel `git` wrapping, long-branch rule, zero counts and key line amended by 0041) |
 | 0038 | [Light themes, a 16-colour theme and the colour depth](0038-light-and-16-colour-themes.md) | Accepted |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
 | 0040 | [Quick reply](0040-quick-reply.md) | Accepted |
+| 0041 | [Long values in the details panel wrap](0041-details-panel-values-wrap.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

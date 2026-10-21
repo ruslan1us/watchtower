@@ -136,7 +136,11 @@ fn untracked_files_count_and_ignored_ones_do_not() {
 fn renamed_copied_and_unmerged_entries_count_once_each() {
     let s = parse_status(RENAMES).unwrap();
     assert_eq!(s.changed, 3);
-    assert_eq!(s.text(), "topic · 3 changed · ↑0");
+    assert_eq!(
+        s.text(),
+        "topic · 3 changed",
+        "level with its upstream: no counts"
+    );
 }
 
 #[test]
@@ -151,6 +155,42 @@ fn an_upstream_that_is_gone() {
     let s = parse_status(UPSTREAM_GONE).unwrap();
     assert_eq!(s.upstream, Upstream::Gone);
     assert_eq!(s.text(), "old-topic · clean · upstream gone");
+}
+
+fn tracking(head: &str, changed: usize, ahead: u32, behind: u32) -> GitSummary {
+    GitSummary {
+        head: Head::Branch(head.into()),
+        changed,
+        upstream: Upstream::Tracking { ahead, behind },
+    }
+}
+
+#[test]
+fn zero_counts_are_left_out() {
+    // doc/0041: `↑N` and `↓M` only when above 0.
+    assert_eq!(tracking("feature/x", 0, 0, 0).text(), "feature/x · clean");
+    assert_eq!(tracking("main", 2, 4, 0).text(), "main · 2 changed · ↑4");
+    assert_eq!(tracking("main", 0, 0, 5).text(), "main · clean · ↓5");
+    assert_eq!(tracking("main", 0, 1, 2).text(), "main · clean · ↑1 ↓2");
+    // The fitted line follows the same rule.
+    assert_eq!(tracking("main", 0, 0, 0).fitted(80), "main · clean");
+    assert_eq!(
+        tracking("feature/a-very-long-branch-name", 0, 0, 0).fitted(16),
+        "feature… · clean"
+    );
+}
+
+#[test]
+fn the_shown_text_is_the_whole_line_with_control_characters_as_question_marks() {
+    let s = GitSummary {
+        head: Head::Branch("feature/a-very-long-branch-name-that-goes-on\u{7}".into()),
+        changed: 1,
+        upstream: Upstream::None,
+    };
+    assert_eq!(
+        s.shown(),
+        "feature/a-very-long-branch-name-that-goes-on? · 1 changed · no upstream"
+    );
 }
 
 #[test]

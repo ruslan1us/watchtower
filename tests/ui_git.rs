@@ -1,5 +1,5 @@
 //! The `git` line of the dashboard's details panel (doc/0037): in the side
-//! panel and the strip, in two themes, cut on a narrow terminal, absent
+//! panel (wrapped, doc/0041) and the strip (cut), in two themes, absent
 //! without a summary and in the minimal style. The summaries are fed in as
 //! a finished job would; no git runs here.
 
@@ -153,20 +153,70 @@ fn a_narrow_strip_cuts_the_branch_and_keeps_the_counts() {
     assert_eq!(unicode_width::UnicodeWidthStr::width(row.as_str()), 80);
 }
 
+/// The side panel's rows from the `git` line on, from its value column.
+fn git_rows(l: &[String]) -> Vec<String> {
+    let y = l
+        .iter()
+        .position(|x| x.contains("git       "))
+        .unwrap_or_else(|| panic!("{}", l.join("\n")));
+    let byte = l[y].find("git       ").unwrap();
+    let at = l[y][..byte].chars().count() + "git       ".len();
+    l[y..]
+        .iter()
+        .map(|x| {
+            let rest: String = x.chars().skip(at).collect();
+            rest.trim_end_matches([' ', '│']).to_owned()
+        })
+        .collect()
+}
+
 #[test]
-fn a_long_branch_in_the_side_panel_is_cut_too() {
+fn a_long_branch_in_the_side_panel_wraps_and_is_not_shortened() {
     let mut app = app(UiTheme::Neutral);
     feed(
         &mut app,
         API,
         "feature/a-branch-name-longer-than-the-side-panel",
     );
-    let l = lines(&render(&mut app, 160, 40));
-    let row = l
-        .iter()
-        .find(|x| x.contains("git       feature/a-"))
-        .unwrap();
-    assert!(row.contains("… · 3 changed · ↑2"), "{row}");
+    let rows = git_rows(&lines(&render(&mut app, 160, 40)));
+    assert_eq!(rows[0], "feature/a-branch-name-longer-than-", "{rows:#?}");
+    assert_eq!(rows[1], "the-side-panel · 3 changed · ↑2", "{rows:#?}");
+    assert!(
+        rows[2].contains("main  claude"),
+        "the account next: {rows:#?}"
+    );
+}
+
+#[test]
+fn a_branch_too_long_for_three_rows_is_cut_and_keeps_the_counts() {
+    let mut app = app(UiTheme::Neutral);
+    let branch = "feature/".to_owned() + &"very-long-part-".repeat(10) + "end";
+    feed(&mut app, API, &branch);
+    let rows = git_rows(&lines(&render(&mut app, 160, 40)));
+    assert!(rows[0].starts_with("feature/very-long-part-"), "{rows:#?}");
+    assert!(rows[2].ends_with("… · 3 changed · ↑2"), "{rows:#?}");
+    assert!(rows[3].contains("main  claude"), "three rows: {rows:#?}");
+}
+
+#[test]
+fn a_branch_level_with_its_upstream_shows_no_counts() {
+    let mut app = app(UiTheme::Neutral);
+    app.git_finished(
+        GitJob { cwd: API.into() },
+        GitState::Summary(GitSummary {
+            head: Head::Branch("feature/x".into()),
+            changed: 0,
+            upstream: Upstream::Tracking {
+                ahead: 0,
+                behind: 0,
+            },
+        }),
+    );
+    for (w, h) in [(160, 40), (100, 30)] {
+        let screen = lines(&render(&mut app, w, h)).join("\n");
+        assert!(screen.contains("git       feature/x · clean "), "{screen}");
+        assert!(!screen.contains('↑') && !screen.contains('↓'), "{screen}");
+    }
 }
 
 #[test]

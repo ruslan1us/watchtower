@@ -1,6 +1,6 @@
 # 0032. A background task that outlives a finished turn
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · how the status sentence wraps amended by [0041](0041-details-panel-values-wrap.md)
 - Amends: the row content, styles and detail panel of [0006](0006-session-states-and-grouping.md) and [0020](0020-visual-styles.md)
 - Related: [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0010](0010-orchestrator.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [reference](reference/claude-code-cli.md#background-shells-and-the-turn)
 
@@ -32,7 +32,10 @@ so it looked finished and working at once.
 - **Detail panel** (dashboard side panel): the status line reads
   `busy — a background task (e.g. a shell) is still running; Claude Code may
   continue this session when it ends`, wrapped at spaces to the panel width
-  and continued under the value column. The three-line strip shows the compact
+  and continued under the value column. *Amended by
+  [0041](0041-details-panel-values-wrap.md):* it wraps like the panel's other
+  values (also after `/` and `-`), whole while the panel has the rows and cut
+  with `…` in a short panel. The three-line strip shows the compact
   `busy (bg task)` in its `state · status · changed` line. The minimal style has
   no detail panel; its STATE column carries the same meaning.
 - **Attention is unchanged.** No new highlight rule: a `done` + `busy` row is
