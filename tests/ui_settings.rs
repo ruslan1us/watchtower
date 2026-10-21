@@ -133,10 +133,10 @@ fn the_theme_pick_previews_the_whole_window() {
             "previewing theme warm   no unsaved changes │",
             "│▌*  theme                        ‹ warm ›  preview",
             "╭ theme ─",
-            "neutral                    greys; colour only for states         saved│",
-            "│▌ warm                       warm greys and a clay accent",
-            "terminal                   your terminal's 16 colours",
-            "tokyo-night                tower 0.2's blue-grey palette",
+            "neutral                     greys; colour only for states       saved │",
+            "│▌ warm                        warm greys and a clay accent",
+            "terminal                    your terminal's 16 colours",
+            "tokyo-night                 tower 0.2's blue-grey palette",
             "╰ ↑↓ preview   Enter keep   Esc revert to neutral ─",
         ],
     );
@@ -368,4 +368,234 @@ fn the_questions_render() {
         &s,
         &["Settings keys", "Ctrl+S", "save; the window stays open"],
     );
+}
+
+/// A config with long values: a long model name and prompt, a long
+/// account and long project roots.
+const LONG_CONFIG: &str = r#"default_account = "main"
+default_model = "claude-opus-4-1-20250805-experimental-long-context"
+handoff_prompt = "Continue where you left off: re-run the failing tests and fix them"
+project_roots = ["~/workspace", "~/old-projects-from-the-previous-laptop-backup", "~/clients/very-long-client-name-holdings/repositories"]
+
+[[accounts]]
+name = "main"
+command = "claude"
+group = "work"
+
+[[accounts]]
+name = "alternative-account"
+command = "claude-alternative-wrapper"
+config_dir = "~/.config/claude-code-alternative-profile"
+group = "personal-sandbox"
+"#;
+
+const LONG_MODEL: &str = "claude-opus-4-1-20250805-experimental-long-context";
+const LONG_PROMPT: &str = "\"Continue where you left off: re-run the failing tests and fix them\"";
+
+fn opened_long() -> (Env, App) {
+    let env = env(Some(LONG_CONFIG));
+    let mut app = app_for(&env);
+    app.set_theme(UiTheme::Neutral);
+    open(&mut app);
+    (env, app)
+}
+
+/// The text of the list panel's row holding `needle`, between its borders.
+fn list_row(lines: &[String], needle: &str) -> String {
+    let line = line_with(lines, needle);
+    line.split('│').nth(1).unwrap_or("").to_owned()
+}
+
+/// No `…` glued to the next value, and one free column before the border.
+fn spaced(row: &str, at: (u16, u16)) {
+    let cs: Vec<char> = row.chars().collect();
+    assert!(
+        !cs.windows(2).any(|p| p[0] == '…' && p[1] != ' '),
+        "{at:?}: a cut value runs into the next: {row:?}"
+    );
+    assert!(row.ends_with(' '), "{at:?}: touches the border: {row:?}");
+}
+
+#[test]
+fn a_long_selected_choice_is_fitted_with_its_arrows() {
+    let (_env, mut app) = opened_long();
+    select(&mut app, "default model");
+    for (w, h) in [(80, 24), (100, 30), (160, 45)] {
+        let s = screen(&mut app, w, h);
+        let row = list_row(&s, "default model  ");
+        spaced(&row, (w, h));
+        if w == 80 {
+            assert!(
+                row.ends_with("… › ") && row.contains("‹ claude-opus-4-1-2025"),
+                "{w}x{h}: {row:?}"
+            );
+        } else {
+            assert!(row.contains(&format!("‹ {LONG_MODEL} ›")), "{row:?}");
+        }
+    }
+}
+
+#[test]
+fn unselected_values_use_the_whole_row() {
+    let (_env, mut app) = opened_long();
+    select(&mut app, "style");
+    for (w, h) in [(80, 24), (100, 30), (160, 45)] {
+        let s = screen(&mut app, w, h);
+        let model = list_row(&s, "default model  ");
+        let prompt = list_row(&s, "hand-off prompt  ");
+        let roots = list_row(&s, "project roots  ");
+        for row in [&model, &prompt, &roots] {
+            spaced(row, (w, h));
+            if row.contains('…') {
+                // Cut only at the row's end: one padding column after it.
+                let after = row.split('…').nth(1).unwrap();
+                assert!(
+                    after == " " || after == "  3 folders ▸ ",
+                    "{w}x{h}: room left after the cut: {row:?}"
+                );
+            }
+        }
+        assert!(roots.contains("  3 folders ▸"), "{roots:?}");
+        if w == 80 {
+            assert!(
+                prompt.contains("\"Continue where you left off: re-run the fai… "),
+                "{prompt:?}"
+            );
+        } else if w == 100 {
+            assert!(
+                prompt.contains("re-run the failing tests and fix t… "),
+                "{prompt:?}"
+            );
+        } else {
+            assert!(prompt.contains(LONG_PROMPT), "{prompt:?}");
+        }
+        if w == 80 {
+            assert!(
+                model.ends_with(" claude-opus-4-1-20250805-experimental-long-c… "),
+                "{model:?}"
+            );
+        } else {
+            assert!(model.contains(LONG_MODEL), "{w}x{h}: {model:?}");
+        }
+        if w == 160 {
+            assert!(
+                roots.ends_with(
+                    "~/workspace, ~/old-projects-from-the-previous-laptop-backup,…  3 folders ▸ "
+                ),
+                "{roots:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn account_columns_follow_their_values() {
+    let (_env, mut app) = opened_long();
+    press(&mut app, key(KeyCode::End));
+    for (w, h) in [(80, 24), (100, 30), (160, 45)] {
+        let s = screen(&mut app, w, h);
+        let main = list_row(&s, "│    main ");
+        let alt = list_row(&s, "altern");
+        spaced(&main, (w, h));
+        spaced(&alt, (w, h));
+        assert!(main.contains(" default account "), "{w}x{h}: {main:?}");
+        // The columns line up: each value starts where the other row's does.
+        let starts = |row: &str| -> Vec<usize> {
+            let cs: Vec<char> = row.chars().collect();
+            (4..cs.len())
+                .filter(|i| cs[*i] != ' ' && cs[*i - 1] == ' ')
+                .take(4)
+                .collect()
+        };
+        assert_eq!(starts(&main), starts(&alt), "{w}x{h}:\n{main}\n{alt}");
+        let expected = match w {
+            80 => "alternative-… claude-alter… ~/.config/clau… personal-san…",
+            // The config dir gives way first, then the widest column.
+            100 => "alternative-account claude-alternative-wrap… ~/.config/clau… personal-sandbox",
+            _ => {
+                "alternative-account claude-alternative-wrapper ~/.config/claude-code-… \
+                 personal-sandbox"
+            }
+        };
+        assert!(alt.contains(expected), "{w}x{h}: {alt:?}");
+    }
+}
+
+#[test]
+fn the_folder_list_sizes_its_columns_from_the_folders() {
+    let (_env, mut app) = opened_long();
+    select(&mut app, "project roots");
+    press(&mut app, key(KeyCode::Enter));
+    for (w, h) in [(80, 24), (100, 30), (160, 45)] {
+        let s = screen(&mut app, w, h);
+        let rows: Vec<String> = s
+            .iter()
+            .filter(|l| l.contains("✓ 3 git clones") || l.contains("skipped when"))
+            .map(|l| l.split('│').find(|p| p.contains("~/")).unwrap().to_owned())
+            .collect();
+        assert_eq!(rows.len(), 3, "{w}x{h}:\n{}", s.join("\n"));
+        for row in &rows {
+            spaced(row, (w, h));
+        }
+        for row in &rows[1..] {
+            assert!(
+                row.contains(" not found; skipped when scanning "),
+                "{w}x{h}: {row:?}"
+            );
+        }
+        let clients = &rows[2];
+        if w == 80 {
+            assert!(clients.contains("… not found"), "{w}x{h}: {clients:?}");
+        } else {
+            assert!(
+                clients.contains("~/clients/very-long-client-name-holdings/repositories "),
+                "{w}x{h}: the window grows for the folders: {clients:?}"
+            );
+        }
+    }
+}
+
+/// The width of the window whose top border, on the row holding `row`,
+/// starts with `title`.
+fn window_width(lines: &[String], row: &str, title: &str) -> usize {
+    let line = line_with(lines, row);
+    let from = line.find(title).unwrap();
+    let rest = &line[from..];
+    rest.chars().take_while(|c| *c != '╮').count() + 1
+}
+
+/// The mock's screens are unchanged on a large terminal: columns sized from
+/// short values keep their widths.
+#[test]
+fn short_values_keep_the_mock_layout_at_160x45() {
+    let (_env, mut app) = opened_with(UiTheme::Neutral, UiStyle::Dashboard);
+    overview(&mut app);
+    let s = screen(&mut app, 160, 45);
+    has_all(
+        &s,
+        &[
+            "│▌   style                        ‹ dashboard ›  default",
+            "│    theme                        neutral  default",
+            "│    default account              main  (work)  default",
+            "│ *  default effort               high",
+            "│    project roots                ~/workspace, ~/old-projects  2 folders ▸",
+            "│    hand-off prompt              \"continue\"  default",
+            "│    allow cross-group hand-off   [ ] off  default",
+            "│    main    claude       ~/.claude       work        default account",
+            "│    alt     claude-alt   ~/.claude-alt   personal",
+        ],
+    );
+    let style = line_with(&s, "‹ dashboard ›");
+    assert!(style.contains("Enter pick   ←→ change │"), "{style}");
+    select(&mut app, "project roots");
+    press(&mut app, key(KeyCode::Enter));
+    let s = screen(&mut app, 160, 45);
+    has_all(
+        &s,
+        &[
+            "│▌   ~/workspace             ✓ 3 git clones",
+            "│    ~/old-projects          not found; skipped when scanning",
+        ],
+    );
+    assert_eq!(window_width(&s, "─ 2 folders ╮", "╭ project roots ─"), 78);
 }

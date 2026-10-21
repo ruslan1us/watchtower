@@ -2183,7 +2183,6 @@ invariants! {
     pad_picker: Pad, "picker-";
     #[ignore = "F-J1, F-J2"]
     pad_resume: Pad, "resume-";
-    #[ignore = "F-I5"]
     pad_settings: Pad, "settings-";
     hint_row_list: HintRow, "list-";
     hint_row_status: HintRow, "status-";
@@ -2241,7 +2240,6 @@ invariants! {
     mid_word_trust: MidWord, "trust-";
     mid_word_picker: MidWord, "picker-";
     mid_word_resume: MidWord, "resume-";
-    #[ignore = "F-I1"]
     mid_word_settings: MidWord, "settings-";
     #[ignore = "F-C1"]
     could_wrap_list: CouldWrap, "list-";
@@ -2365,7 +2363,6 @@ fn the_dialog_model_field_shows_a_long_model_name() {
 }
 
 #[test]
-#[ignore = "F-I2"]
 fn settings_values_use_the_width_of_their_row() {
     for (w, h) in [(80, 24), (140, 40), (250, 60)] {
         let rows = rows_of(frame("settings-style", "dash-neutral", w, h));
@@ -2384,7 +2381,6 @@ fn settings_values_use_the_width_of_their_row() {
 }
 
 #[test]
-#[ignore = "F-I3"]
 fn settings_account_rows_show_whole_values_when_there_is_room() {
     let rows = rows_of(frame("settings-accounts", "dash-neutral", 160, 45));
     let row = rows
@@ -2401,7 +2397,6 @@ fn settings_account_rows_show_whole_values_when_there_is_room() {
 }
 
 #[test]
-#[ignore = "F-I4"]
 fn the_folder_list_keeps_a_gap_after_each_folder() {
     for (w, h) in [(80, 24), (120, 36), (250, 60)] {
         for row in rows_of(frame("settings-roots-editor", "dash-neutral", w, h)) {

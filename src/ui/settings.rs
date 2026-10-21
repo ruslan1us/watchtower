@@ -17,7 +17,7 @@ use super::dialog::input_window;
 use super::theme::{Lb, Look, palette};
 use super::{centered, fit, wrap};
 use crate::app::App;
-use crate::config::{ColorDepth, UiTheme};
+use crate::config::{Account, ColorDepth, UiTheme};
 use crate::config_edit::{Section, SettingKey, SettingKind, SettingValue};
 use crate::settings::{
     ListEditor, Mode, NoticeKind, OTHER, Pick, Row, SettingsWindow, change_text, shown_value,
@@ -334,7 +334,7 @@ fn draw_list(
         l.push(" ", look.text())
             .push(label, look.strong())
             .push("  ", look.text());
-        let room = w.saturating_sub(l.w);
+        let room = w.saturating_sub(l.w + 1);
         l.push(fit(help, room), look.secondary());
         put(frame, row(inner, inner.height - 1), l.line());
     }
@@ -435,7 +435,8 @@ fn draw_setting(
             look.key()
         };
         let err_w = input.error.as_ref().map_or(0, |e| e.width() + 4);
-        let room = w.saturating_sub(l.w + 4 + err_w).max(4);
+        // The field and its message stay one column clear of the border.
+        let room = w.saturating_sub(l.w + 4 + err_w + 1).max(4);
         let field_w = (input.input.text().width() + 1).clamp(12.min(room), room);
         let (shown, col) = input_window(&input.input, field_w);
         l.push("[ ", bar(border));
@@ -460,49 +461,73 @@ fn draw_setting(
     } else {
         plain
     };
-    let room = w.saturating_sub(l.w + 14);
-    match (&setting.kind, value) {
-        (SettingKind::Choice { .. } | SettingKind::Steps { .. }, _) if selected => {
-            l.push("‹ ", bar(look.hint()))
-                .push(shown_value(key, value), plain.add_modifier(Modifier::BOLD))
-                .push(" ›", bar(look.hint()));
-        }
-        (SettingKind::Paths, SettingValue::Paths(paths)) => {
-            let shown = fit(&value.display(), room.clamp(8, 40));
-            l.push(shown.trim_end().to_owned(), value_st);
-            l.push(
-                format!("  {} ▸", plural(paths.len(), "folder", "folders")),
-                bar(look.hint()),
-            );
-        }
-        (SettingKind::Bool, SettingValue::Bool(on)) => {
-            l.push(
-                if *on { "[x] " } else { "[ ] " },
-                bar(if *on { look.warning() } else { look.hint() }),
-            );
-            l.push(shown_value(key, value), value_st);
-        }
-        _ => {
-            let shown = fit(&shown_value(key, value), room.max(8));
-            l.push(shown.trim_end().to_owned(), value_st);
-        }
+    // What follows the value: the folder count, the default account's
+    // group, then `preview` or `default`.
+    let mut tail: Vec<(String, Style)> = Vec::new();
+    if let (SettingKind::Paths, SettingValue::Paths(paths)) = (&setting.kind, value) {
+        tail.push((
+            format!("  {} ▸", plural(paths.len(), "folder", "folders")),
+            bar(look.hint()),
+        ));
     }
     if key == SettingKey::DefaultAccount
         && let SettingValue::Text(name) = value
         && let Some(account) = win.session.accounts().iter().find(|a| a.name == *name)
         && !account.group.is_empty()
     {
-        l.push(format!("  ({})", account.group), bar(look.hint()));
+        tail.push((format!("  ({})", account.group), bar(look.hint())));
     }
     let picking = matches!(&win.mode, Mode::Pick(p) if p.key == key);
     if picking && key.previewed() {
-        l.push("  preview", bar(look.warning()));
+        tail.push(("  preview".to_owned(), bar(look.warning())));
     } else if is_default && value.display() != "default" {
-        l.push("  default", bar(look.hint()));
+        tail.push(("  default".to_owned(), bar(look.hint())));
+    }
+    let tail_w: usize = tail.iter().map(|(t, _)| t.width()).sum();
+    // The value whole, with its `‹ ›` on the selected row of a choice, and
+    // the key hint on the selected row when both fit; else the value whole
+    // without the hint; else the value cut to the row, one column clear of
+    // the border.
+    let arrows = matches!(
+        setting.kind,
+        SettingKind::Choice { .. } | SettingKind::Steps { .. }
+    ) && selected;
+    let (lead, text) = match (&setting.kind, value) {
+        (SettingKind::Paths, _) => ("", value.display()),
+        (SettingKind::Bool, SettingValue::Bool(on)) => {
+            (if *on { "[x] " } else { "[ ] " }, shown_value(key, value))
+        }
+        _ => ("", shown_value(key, value)),
+    };
+    let decor = lead.width() + if arrows { 4 } else { 0 };
+    let whole = l.w + decor + text.width() + tail_w;
+    let hint = if selected {
+        row_hint(&setting.kind)
+    } else {
+        ""
+    };
+    let show_hint = selected && whole + 2 + hint.width() <= w;
+    let room = w.saturating_sub(l.w + decor + tail_w + 1);
+    let text = if whole < w {
+        text
+    } else {
+        fit(&text, room.max(8)).trim_end().to_owned()
+    };
+    if arrows {
+        l.push("‹ ", bar(look.hint()))
+            .push(text, plain.add_modifier(Modifier::BOLD))
+            .push(" ›", bar(look.hint()));
+    } else if let (SettingKind::Bool, SettingValue::Bool(on)) = (&setting.kind, value) {
+        l.push(lead, bar(if *on { look.warning() } else { look.hint() }));
+        l.push(text, value_st);
+    } else {
+        l.push(text, value_st);
+    }
+    for (t, st) in tail {
+        l.push(t, st);
     }
     if selected {
-        let hint = row_hint(&setting.kind);
-        if l.w + hint.width() + 2 <= w {
+        if show_hint {
             l.pad_to(w - hint.width(), plain);
             l.push(hint, bar(look.secondary()));
         }
@@ -512,7 +537,72 @@ fn draw_setting(
     value_x
 }
 
-/// An account's row: name, command, config dir, group; read-only.
+/// The narrowest a column gets when even the minimums do not fit.
+const COL_FLOOR: usize = 4;
+
+/// Column widths from their content: each column takes the widest of its
+/// values, clamped to `[min, max]`. When they do not fit in `budget`,
+/// column `first` gives way first, down to its minimum; then the widest
+/// column, down to its minimum; then the widest below its minimum, down to
+/// [`COL_FLOOR`].
+fn columns(
+    want: &[usize],
+    min: &[usize],
+    max: &[usize],
+    first: usize,
+    budget: usize,
+) -> Vec<usize> {
+    let mut w: Vec<usize> = want
+        .iter()
+        .zip(min.iter().zip(max))
+        .map(|(want, (lo, hi))| (*want).clamp(*lo, (*hi).max(*lo)))
+        .collect();
+    let n = w.len();
+    let only_first: Vec<bool> = (0..n).map(|i| i == first).collect();
+    let passes = [
+        (min.to_vec(), only_first),
+        (min.to_vec(), vec![true; n]),
+        (vec![COL_FLOOR; n], vec![true; n]),
+    ];
+    for (floor, may) in passes {
+        while w.iter().sum::<usize>() > budget {
+            let Some(i) = (0..n)
+                .filter(|i| may[*i] && w[*i] > floor[*i])
+                .max_by_key(|i| (w[*i], usize::MAX - *i))
+            else {
+                break;
+            };
+            w[i] -= 1;
+        }
+    }
+    w
+}
+
+/// The account columns (name, command, config dir, group): their least and
+/// most widths. The config dir, a path and usually the longest, gives way
+/// first.
+const ACCOUNT_MIN: [usize; 4] = [7, 12, 15, 11];
+const ACCOUNT_MAX: [usize; 4] = [24, 32, 48, 20];
+
+/// The tag of the default account's row.
+const DEFAULT_TAG: &str = "default account";
+
+/// An account's cells: name, command, config dir (`~` for the home), group.
+fn account_cells(win: &SettingsWindow, account: &Account) -> [String; 4] {
+    let home = win.home_dir();
+    let dir = crate::paths::shorten_home(&account.config_dir.to_string_lossy(), &home);
+    let group = if account.group.is_empty() {
+        "(no group)".to_owned()
+    } else {
+        account.group.clone()
+    };
+    [account.name.clone(), account.command.clone(), dir, group]
+}
+
+/// An account's row: name, command, config dir, group; read-only. The
+/// columns are as wide as their widest value across the accounts (within
+/// [`ACCOUNT_MIN`] and [`ACCOUNT_MAX`]), one column apart, and give way
+/// when the row is narrower: the config dir first, then the widest.
 fn draw_account(
     frame: &mut Frame,
     win: &SettingsWindow,
@@ -521,7 +611,8 @@ fn draw_account(
     selected: bool,
     look: Look,
 ) {
-    let Some(account) = win.session.accounts().get(index) else {
+    let accounts = win.session.accounts();
+    let Some(account) = accounts.get(index) else {
         return;
     };
     let w = usize::from(ra.width);
@@ -531,32 +622,46 @@ fn draw_account(
     } else {
         look.secondary()
     };
-    let home = win.home_dir();
-    let dir = crate::paths::shorten_home(&account.config_dir.to_string_lossy(), &home);
+    let default = win.session.value(SettingKey::DefaultAccount);
+    let is_default = |a: &Account| default == SettingValue::Text(a.name.clone());
+    let mut want = [0usize; 4];
+    for a in accounts {
+        for (c, cell) in account_cells(win, a).iter().enumerate() {
+            want[c] = want[c].max(cell.width());
+        }
+    }
+    // The mark and indent, a gap after each column, the tag when an account
+    // has it, and the padding column before the border.
+    let tag_w = if accounts.iter().any(is_default) {
+        DEFAULT_TAG.width() + 1
+    } else {
+        0
+    };
+    let budget = w.saturating_sub(4 + 4 + tag_w);
+    let widths = columns(&want, &ACCOUNT_MIN, &ACCOUNT_MAX, 2, budget);
+    let cells = account_cells(win, account);
     let mut l = Lb::new();
     l.push(
         if selected { "▌" } else { " " },
         bar(look.selected_marker()),
     );
     l.push("   ", plain);
-    l.push(
-        format!("{} ", fit(&account.name, 7)),
-        if selected {
-            plain.add_modifier(Modifier::BOLD)
-        } else {
-            look.text()
-        },
-    );
-    l.push(format!("{} ", fit(&account.command, 12)), plain);
-    l.push(format!("{} ", fit(&dir, 15)), plain);
-    let group = if account.group.is_empty() {
-        "(no group)"
-    } else {
-        account.group.as_str()
-    };
-    l.push(format!("{} ", fit(group, 11)), bar(look.hint()));
-    if win.session.value(SettingKey::DefaultAccount) == SettingValue::Text(account.name.clone()) {
-        l.push("default account", bar(look.hint()));
+    for (c, (cell, cw)) in cells.iter().zip(&widths).enumerate() {
+        let st = match c {
+            0 if selected => plain.add_modifier(Modifier::BOLD),
+            0 => look.text(),
+            3 => bar(look.hint()),
+            _ => plain,
+        };
+        l.push(format!("{} ", fit(cell, *cw)), st);
+    }
+    if is_default(account) {
+        let room = w.saturating_sub(l.w + 1);
+        if DEFAULT_TAG.width() <= room {
+            l.push(DEFAULT_TAG, bar(look.hint()));
+        } else if room >= "default".len() {
+            l.push("default", bar(look.hint()));
+        }
     }
     if selected {
         l.pad_to(w, plain);
@@ -901,6 +1006,15 @@ fn draw_pick(
     let default = shown_value(pick.key, &win.session.default_value(pick.key));
     let rows = usize::from(inner.height.saturating_sub(2));
     let offset = pick.cursor.saturating_sub(rows.saturating_sub(1));
+    // The value column: the longest value (at least 12) and a gap.
+    let value_w = pick
+        .items
+        .iter()
+        .map(|v| v.width())
+        .max()
+        .unwrap_or(0)
+        .max(12)
+        + 1;
     for (i, value) in pick.items.iter().enumerate().skip(offset).take(rows) {
         let selected = i == pick.cursor;
         let bar = |st: Style| on_bar(look, selected, st);
@@ -916,7 +1030,7 @@ fn draw_pick(
         );
         l.push(" ", plain);
         l.push(
-            fit(value, 13),
+            fit(value, value_w),
             if selected {
                 plain.add_modifier(Modifier::BOLD)
             } else {
@@ -941,7 +1055,8 @@ fn draw_pick(
         } else {
             ""
         };
-        let room = iw.saturating_sub(l.w + tag.width());
+        // The tag ends one column clear of the border.
+        let room = iw.saturating_sub(l.w + tag.width() + 1);
         let note = if pick.key == SettingKey::UiColorDepth && value == "auto" {
             match detected {
                 ColorDepth::Ansi16 => "from COLORTERM and TERM: 16 here",
@@ -961,6 +1076,12 @@ fn draw_pick(
     }
 }
 
+/// The least width of the list editor's folder column, its gap included.
+const FOLDER_MIN: usize = 24;
+
+/// The most the list editor keeps for a folder's note.
+const NOTE_MAX: usize = 36;
+
 /// The list editor of a folder list, centred over the settings list.
 fn draw_list_editor(
     frame: &mut Frame,
@@ -969,8 +1090,30 @@ fn draw_list_editor(
     body: Rect,
     look: Look,
 ) {
-    let w = 78.min(body.width.saturating_sub(4));
+    // The folder column takes the longest folder and a gap (at least
+    // [`FOLDER_MIN`]); the note column its longest note (at most
+    // [`NOTE_MAX`]). The window is 78 columns wide, wider when the folders
+    // need it and the screen has room; when it cannot be, the note stays
+    // whole and the folders are cut.
+    let notes_of: Vec<(String, NoticeKind)> = list
+        .items
+        .iter()
+        .map(|item| win.folder_note(list.key, item))
+        .collect();
+    let folder_need = list.items.iter().map(|i| i.width()).max().unwrap_or(0) + 1;
+    let note_need = notes_of
+        .iter()
+        .map(|(n, _)| n.width())
+        .max()
+        .unwrap_or(0)
+        .min(NOTE_MAX);
+    let lead = 4;
+    let want = (lead + folder_need.max(FOLDER_MIN) + note_need + 1 + 2) as u16;
+    let w = want.max(78).min(body.width.saturating_sub(4));
     let iw = usize::from(w.saturating_sub(2));
+    let folder_w = folder_need
+        .max(FOLDER_MIN)
+        .min(iw.saturating_sub(lead + note_need + 1).max(FOLDER_MIN));
     let help = wrap(list.key.help(), iw.saturating_sub(2));
     let notes = [
         "~ is kept as typed and expanded when scanning. Duplicates are refused.",
@@ -1058,7 +1201,7 @@ fn draw_list_editor(
                 None if text.is_empty() => (String::new(), NoticeKind::Info),
                 None => win.folder_note(list.key, &text),
             };
-            let room = iw.saturating_sub(l.w + 6 + note.width().min(36));
+            let room = iw.saturating_sub(l.w + 6 + note.width().min(NOTE_MAX) + 1);
             let field_w = (input.input.text().width() + 1).clamp(20.min(room), room.max(4));
             let (shown_text, col) = input_window(&input.input, field_w);
             l.push("[ ", bar(border));
@@ -1070,7 +1213,7 @@ fn draw_list_editor(
             );
             l.push(" ]  ", bar(border));
             l.push(
-                fit(&note, iw.saturating_sub(l.w)).trim_end().to_owned(),
+                fit(&note, iw.saturating_sub(l.w + 1)).trim_end().to_owned(),
                 bar(kind_style(kind, look)),
             );
             put(frame, ra, bar_line(l, selected, iw, look));
@@ -1082,11 +1225,11 @@ fn draw_list_editor(
         let changed = !saved_items.contains(item);
         l.push(if changed { "* " } else { "  " }, bar(look.modified()));
         l.push(" ", plain);
-        l.push(fit(item, 24), plain);
-        let (note, kind) = win.folder_note(list.key, item);
+        l.push(format!("{} ", fit(item, folder_w - 1)), plain);
+        let (note, kind) = &notes_of[i];
         l.push(
-            fit(&note, iw.saturating_sub(l.w)).trim_end().to_owned(),
-            bar(kind_style(kind, look)),
+            fit(note, iw.saturating_sub(l.w + 1)).trim_end().to_owned(),
+            bar(kind_style(*kind, look)),
         );
         put(frame, ra, bar_line(l, selected, iw, look));
     }
