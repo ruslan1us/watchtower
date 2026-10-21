@@ -11,6 +11,10 @@
 //!
 //! `Ctrl+P` opens the template picker ([`crate::templates`], doc/0036) over
 //! the dialog; a picked template goes into the task field at its cursor.
+//!
+//! [`RenameWindow`] is the window of `e` (doc/0027), [`ReplyWindow`] the
+//! quick reply window of `t` (doc/0040), which has the task field's text
+//! area and the same template picker.
 
 use std::path::PathBuf;
 
@@ -1054,5 +1058,159 @@ impl RenameWindow {
             self.error = None;
         }
         RenameAction::None
+    }
+}
+
+/// What a key in the quick reply window asks the app to do (doc/0040).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyAction {
+    /// Nothing beyond the window's own state change.
+    None,
+    /// Close the window; nothing is sent.
+    Cancel,
+    /// Quit tower.
+    Quit,
+    /// `Ctrl+S`: check the text and send it.
+    Send,
+    /// `Ctrl+P`: open the template picker (doc/0036); the app creates it
+    /// and puts it into [`ReplyWindow::templates`].
+    OpenTemplates,
+}
+
+/// The quick reply window of `t` (doc/0040): a multi-line text for the
+/// session's next prompt, with the new-session dialog's keys for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyWindow {
+    /// Sidecar key of the session (`sessionId`).
+    pub key: String,
+    /// The short id.
+    pub id: String,
+    /// The session's name, as listed.
+    pub name: String,
+    /// The text being typed.
+    pub text: TextArea,
+    /// The row has a live process: the reply stops it first.
+    pub live: bool,
+    /// The owning account's name; the reply runs with its command.
+    pub account: String,
+    /// Why `Ctrl+S` did nothing, shown until the next key.
+    pub error: Option<String>,
+    /// An open yes/no question (discard the text, quit tower).
+    pub prompt: Option<DialogPrompt>,
+    /// The template picker, while it is open over the window (doc/0036);
+    /// it takes every key.
+    pub templates: Option<TemplatePicker>,
+}
+
+impl ReplyWindow {
+    /// An empty window for the session `key` / `id` named `name`, owned by
+    /// `account`.
+    pub fn new(key: String, id: String, name: String, live: bool, account: String) -> ReplyWindow {
+        ReplyWindow {
+            key,
+            id,
+            name,
+            text: TextArea::default(),
+            live,
+            account,
+            error: None,
+            prompt: None,
+            templates: None,
+        }
+    }
+
+    /// Puts a picked template into the text (doc/0036): it fills a blank
+    /// text, else goes in at the cursor, which ends after it.
+    pub fn insert_template(&mut self, text: &str) {
+        if self.text.is_blank() {
+            self.text = TextArea::default();
+        }
+        self.text.insert_text(text);
+        self.error = None;
+    }
+
+    /// `Ctrl+C`: quits at once with a blank text, else asks first, as the
+    /// dialog does (doc/0011).
+    fn quit(&mut self) -> ReplyAction {
+        if self.text.is_blank() {
+            return ReplyAction::Quit;
+        }
+        self.prompt = Some(DialogPrompt::Quit);
+        ReplyAction::None
+    }
+
+    /// Handles one key with the dialog's conventions for its task field
+    /// (doc/0011): typed text is kept as is, `Enter` and `Ctrl+J` start a
+    /// new line, `Ctrl+S` sends, `Ctrl+P` opens the template picker, `Esc`
+    /// cancels (asking first when text was typed), `Ctrl+C` quits (asking
+    /// first when text was typed). `Ctrl`/`Alt` keys and the questions'
+    /// `y` / `n` are also read under a Cyrillic layout.
+    pub fn handle_key(&mut self, key: KeyEvent) -> ReplyAction {
+        let key = layout::shortcut_key(key);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(prompt) = self.prompt {
+            let key = layout::command_key(key);
+            let plain = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+            return match key.code {
+                KeyCode::Char('y' | 'Y') if plain => {
+                    self.prompt = None;
+                    match prompt {
+                        DialogPrompt::Discard => ReplyAction::Cancel,
+                        DialogPrompt::Quit => ReplyAction::Quit,
+                    }
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => {
+                    self.prompt = None;
+                    ReplyAction::None
+                }
+                _ => ReplyAction::None,
+            };
+        }
+        if let Some(picker) = self.templates.as_mut() {
+            match picker.handle_key(key) {
+                PickerAction::None => {}
+                PickerAction::Close => self.templates = None,
+                PickerAction::Pick(text) => {
+                    self.templates = None;
+                    self.insert_template(&text);
+                }
+                PickerAction::Quit => {
+                    self.templates = None;
+                    return self.quit();
+                }
+            }
+            return ReplyAction::None;
+        }
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => return self.quit(),
+            KeyCode::Char('s' | 'S') if ctrl => return ReplyAction::Send,
+            KeyCode::Char('p' | 'P') if ctrl => return ReplyAction::OpenTemplates,
+            KeyCode::Esc => {
+                if self.text.is_blank() {
+                    return ReplyAction::Cancel;
+                }
+                self.prompt = Some(DialogPrompt::Discard);
+                return ReplyAction::None;
+            }
+            KeyCode::Enter if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                self.text.newline();
+                self.error = None;
+                return ReplyAction::None;
+            }
+            // A line feed: some terminals send it for Ctrl+Enter, and pasted
+            // text may contain it. Only ever a new line.
+            KeyCode::Char('j') if ctrl => {
+                self.text.newline();
+                self.error = None;
+                return ReplyAction::None;
+            }
+            _ => {}
+        }
+        if self.text.key(&key) == KeyUse::Changed {
+            self.error = None;
+        }
+        ReplyAction::None
     }
 }

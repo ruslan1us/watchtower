@@ -1,6 +1,6 @@
 # 0036. Prompt templates
 
-- Status: Accepted · 2026-10-21
+- Status: Accepted · 2026-10-21 · also used in the quick reply window of [0040](0040-quick-reply.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0008](0008-new-session-dialog.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md)
 - Amends: the task field and keys of [0008](0008-new-session-dialog.md), the new-session dialog keys and the untranslated text fields of [0011](0011-keybindings.md), the files of [0002](0002-tech-stack-and-files.md)
 

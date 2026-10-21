@@ -1,7 +1,7 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md)
-- Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md)
+- Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md)
 
 ## Context
 
@@ -39,6 +39,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `r` | Refresh now |
 | `c` | Settings window ([0024](0024-settings-window.md)) |
 | `e` | Rename the session ([0027](0027-rename-sessions.md)): a window with the name; a stopped session is renamed from tower, a running one inside it after an attach |
+| `t` | *Added by [0040](0040-quick-reply.md):* quick reply: a window for a text that tower sends as the session's next prompt under its owner (an idle live session is stopped and woken with it, a stopped one woken); not offered while the session works, is busy or waits on a prompt, and the status line says why |
 | `?` | Help overlay listing all keys |
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
 | `Esc` | Cancel an attach waiting for its refresh; else close the topmost panel, overlay or filter |
@@ -105,6 +106,15 @@ field typed characters filter and `↑` / `↓` choose, in the account field
 `←` / `→` (or `↑` / `↓`) change it; `Enter` runs the picker, `Esc` cancels,
 `Ctrl+C` quits as in the list.
 
+**Quick reply window** (`t`, *added by [0040](0040-quick-reply.md)*):
+the text takes the task field's editing keys; `Enter` and `Ctrl+J` start a
+new line, `Ctrl+S` sends, `Ctrl+P` opens the template picker (the pick
+goes in at the cursor; a blank text is replaced), `Esc` cancels and
+`Ctrl+C` quits, both asking first when text was typed (`y` / `n`). After a
+`Workspace not trusted` failure a window offers `Ctrl+T` (run the owner's
+command in the folder, then send once more without a second stop) and
+`Esc` (leave the session stopped).
+
 **Rename window** (`e`, [0027](0027-rename-sessions.md)): the `Name`
 field takes the editing keys of every single-line field (`←` / `→`,
 `Home` / `End`, `Backspace`, `Del`) and `Ctrl+U` empties it; `Enter`
@@ -155,13 +165,15 @@ setting.
   overlay, popups, the trust windows, the quit question, the dialog's own
   questions, and the Settings window outside its text fields (rows, pick
   lists, the list editor and its questions: `с` opens it, `н` / `т`
-  answer). `у` opens the rename window. There the RU layout's `.` and `,` (typed on the `/` key) also act
+  answer). `у` opens the rename window, `е` the quick reply window
+  (*added by [0040](0040-quick-reply.md)*). There the RU layout's `.` and `,` (typed on the `/` key) also act
   as `/` and `?`, so the filter and help open; `.` and `,` are not bound
   anywhere else.
 - Text input is never translated: the new-session dialog's fields (task,
   name, model, project filter), the template picker's filter (*added by
   [0036](0036-prompt-templates.md)*), the resume window's project filter, the `/`
-  filter line, the rename window's name and the Settings window's inline
+  filter line, the rename window's name, the quick reply window's text
+  (*added by [0040](0040-quick-reply.md)*) and the Settings window's inline
   input and folder input keep Cyrillic as typed. There, and everywhere else, only a key with `Ctrl` or
   `Alt` held is translated, so `Ctrl+ы` is `Ctrl+S` and
   `Ctrl+с` is `Ctrl+C` when the terminal reports them that way.
@@ -189,15 +201,15 @@ setting.
   it drops whole key hints, least used first, and keeps `? help` and the
   detach hint.
 - The help overlay fits a 24-row terminal: related list keys share a line
-  (`s, d`, `p, i`, `a, e`, `c, r, ?`, …), followed by the dialog keys. The Settings
+  (`s, d`, `p, i`, `a, e`, `m, t`, `c, r, ?`, …), followed by the dialog keys. The Settings
   window has its own key list (`?` there). *Amended by
   [0028](0028-scrolling-the-logs-panel.md):* opened from the focused logs panel,
   the help lists the panel's keys instead of the dialog keys, and the footer
   shows the panel's keys while it has the focus.
 - Keys are fixed in v1. The key handling is table-driven so that remapping
   through the config file can be added later.
-- A window that a background result opens (the hand-off, orchestrator and
-  rename trust windows, the full text of an `rm` refusal, the account picker after
+- A window that a background result opens (the hand-off, orchestrator,
+  rename and quick reply trust windows, the full text of an `rm` refusal, the account picker after
   an attach's refresh) never replaces or covers a window that is open: the open
   confirmation, picker, help, target picker, popup, new-session dialog or
   quit question keeps the keys. The new window waits in a queue, the status

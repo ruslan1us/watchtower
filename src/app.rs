@@ -4,7 +4,8 @@
 //! selection over headers and rows, the help overlay, the account picker, confirmations, the
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
 //! logs panel and its scrolling (doc/0009, doc/0028), the hand-off to another account (doc/0004), the
-//! rename window of `e` (doc/0027), the
+//! rename window of `e` (doc/0027), the quick reply window of `t`
+//! (doc/0040), the
 //! orchestrator key `o` (doc/0010), the tracked activity times and the
 //! attention highlight with `m` (doc/0006, doc/0007, via
 //! [`crate::activity`]), and the key table (doc/0011).
@@ -14,7 +15,7 @@
 //! accounts' config dirs once when the app is created). Key presses, poll
 //! results and the outcomes of background jobs go in; [`Effect`]s come out
 //! and the runtime (`tui`, `jobs`) carries them out. Every CLI call that can
-//! take a while (dispatch, stop, remove, logs, hand-off, rename) and every file
+//! take a while (dispatch, stop, remove, logs, hand-off, rename, reply) and every file
 //! operation (sidecar saves and reloads, the project scan) is an effect the
 //! runtime runs on a worker thread, reporting back through the `*_finished`
 //! / [`App::logs_fetched`] / `sidecar_*` methods. That keeps the whole flow
@@ -38,8 +39,8 @@ use crate::config::ConfigError;
 use crate::config::{Account, Config, ConfigSource, UiStyle, UiTheme};
 use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, EditSession, SaveError, SaveOutcome};
 use crate::dialog::{
-    Dialog, DialogAction, DialogStatus, Field, RenameAction, RenameWindow, ResumeAction,
-    ResumeWindow,
+    Dialog, DialogAction, DialogStatus, Field, RenameAction, RenameWindow, ReplyAction,
+    ReplyWindow, ResumeAction, ResumeWindow,
 };
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -57,6 +58,7 @@ use crate::poller::PollUpdate;
 use crate::projects::ProjectList;
 use crate::ptysize::TtyProbe;
 use crate::rename::{self, NameCheck, RenameError, RenameRequest, RenameStep, Renamed};
+use crate::reply::{self, Replied, ReplyError, ReplyRequest, ReplyStep};
 use crate::settings::{FolderResult, SettingsAction, SettingsWindow};
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
@@ -201,6 +203,16 @@ pub enum Effect {
     /// for the picker that was just opened, then call
     /// [`App::templates_loaded`] (doc/0036).
     LoadTemplates(TemplateLoad),
+    /// Send a quick reply on a worker thread ([`reply::run`]): stop a live
+    /// session, wait until it is gone, wake it under its owner with the
+    /// text; report steps to [`App::reply_step`], then call
+    /// [`App::reply_finished`] (doc/0040).
+    Reply(ReplyJob),
+    /// Suspend tower like an attach and run the owner's interactive
+    /// command in the session's folder ([`dispatch::trust_command`]), then
+    /// call [`App::reply_trust_finished`], which retries the reply once
+    /// without a second stop (doc/0008, doc/0040).
+    ReplyTrust(ReplyJob),
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -271,6 +283,29 @@ pub struct RenameJob {
 pub struct UntrustedRename {
     /// The rename to retry.
     pub job: RenameJob,
+    /// The CLI's message.
+    pub message: String,
+}
+
+/// A quick reply to one session (doc/0040).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyJob {
+    /// What to stop and wake, with the owner's command, and the text.
+    pub request: ReplyRequest,
+    /// This is the retry after the trust flow.
+    pub after_trust: bool,
+    /// The session's owner record as this tower last read or wrote it in
+    /// the sidecar file; right before the stop and before the wake the job
+    /// compares the file with it, as a hand-off does (doc/0017 section 8).
+    pub recorded: Option<OwnerRecord>,
+}
+
+/// A reply that failed with `Workspace not trusted` (doc/0040): `Ctrl+T`
+/// runs the trust flow for the owner and retries once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedReply {
+    /// The reply to retry.
+    pub job: ReplyJob,
     /// The CLI's message.
     pub message: String,
 }
@@ -484,16 +519,21 @@ pub enum Purpose {
     /// Rename a stopped session: wake it under the chosen account
     /// (doc/0027).
     Rename,
+    /// Send a quick reply: stop and wake it under the chosen account
+    /// (doc/0040).
+    Reply,
 }
 
 impl Purpose {
-    /// The verb for messages: `attach`, `stop`, `remove`, `rename`.
+    /// The verb for messages: `attach`, `stop`, `remove`, `rename`,
+    /// `reply`.
     pub fn verb(self) -> &'static str {
         match self {
             Purpose::Attach => "attach",
             Purpose::Stop => "stop",
             Purpose::Remove => "remove",
             Purpose::Rename => "rename",
+            Purpose::Reply => "reply",
         }
     }
 }
@@ -542,6 +582,19 @@ struct RenameProgress {
     session_id: String,
     /// `renaming <old> → <new>`.
     head: String,
+    text: String,
+}
+
+/// A running quick reply, for the status line and the row-action guard
+/// (doc/0040).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplyProgress {
+    /// The session's name.
+    name: String,
+    /// Short id of the session.
+    id: String,
+    /// Its `sessionId`.
+    session_id: String,
     text: String,
 }
 
@@ -644,6 +697,8 @@ pub enum Overlay {
     OrchestratorUntrusted(Box<UntrustedOrchestrator>),
     /// A rename stopped at `Workspace not trusted` (doc/0027).
     RenameUntrusted(Box<UntrustedRename>),
+    /// A quick reply stopped at `Workspace not trusted` (doc/0040).
+    ReplyUntrusted(Box<UntrustedReply>),
 }
 
 /// A scrollable text window above everything else, e.g. the full text of
@@ -1003,6 +1058,8 @@ pub enum Action {
     Settings,
     /// `e`: rename the session (doc/0027).
     Rename,
+    /// `t`: send the session a quick reply (doc/0040).
+    Reply,
     /// `→` / `l`: give the keys to the open logs panel (doc/0028).
     FocusLogs,
 }
@@ -1046,7 +1103,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("R", "resume a past conversation (claude --resume)"),
     ("a, e", "continue under another account (hand-off); rename"),
     ("s, d", "stop (confirm when working or blocked); remove"),
-    ("m", "mark the highlighted session as seen"),
+    ("m, t", "mark the highlighted session as seen; quick reply"),
     (
         "Space, Esc, →",
         "toggle / close the logs panel; → scrolls it",
@@ -1123,6 +1180,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Tab => Action::ToggleGroup,
         KeyCode::Char('c') => Action::Settings,
         KeyCode::Char('e') => Action::Rename,
+        KeyCode::Char('t') => Action::Reply,
         KeyCode::Right | KeyCode::Char('l') => Action::FocusLogs,
         _ => return None,
     };
@@ -1212,6 +1270,10 @@ pub struct App {
     /// A running session's rename through an attach, until the name is
     /// compared after it.
     rename_attach: Option<RenameIntent>,
+    /// The quick reply window of `t` (doc/0040), when open.
+    reply: Option<ReplyWindow>,
+    /// Quick replies running on worker threads, in the order started.
+    replying: Vec<ReplyProgress>,
     /// Where the config came from, once the runtime says
     /// ([`App::set_config_source`]).
     config_source: Option<ConfigSource>,
@@ -1341,6 +1403,8 @@ impl App {
             renaming: None,
             quiet: HashMap::new(),
             rename_attach: None,
+            reply: None,
+            replying: Vec::new(),
             config_source: None,
             logs: None,
             popup: None,
@@ -1412,9 +1476,13 @@ impl App {
         (picker, Effect::LoadTemplates(load))
     }
 
-    /// The open template picker, whichever window hosts it.
+    /// The open template picker, whichever window hosts it: the
+    /// new-session dialog (doc/0036) or the quick reply window (doc/0040).
     fn template_picker_mut(&mut self) -> Option<&mut TemplatePicker> {
-        self.dialog.as_mut().and_then(|d| d.templates.as_mut())
+        if let Some(picker) = self.dialog.as_mut().and_then(|d| d.templates.as_mut()) {
+            return Some(picker);
+        }
+        self.reply.as_mut().and_then(|r| r.templates.as_mut())
     }
 
     /// Hands the finished load `id` to the open picker that waits for it;
@@ -1953,6 +2021,13 @@ impl App {
         }
         // And a rename of a stopped session (doc/0027).
         if let Some(r) = &self.renaming {
+            out.push(StatusSegment {
+                text: r.text.clone(),
+                severity: Severity::Info,
+            });
+        }
+        // And every quick reply on its way (doc/0040).
+        for r in &self.replying {
             out.push(StatusSegment {
                 text: r.text.clone(),
                 severity: Severity::Info,
@@ -2715,6 +2790,7 @@ impl App {
             && (self.dialog.is_some()
                 || self.resume.is_some()
                 || self.rename.is_some()
+                || self.reply.is_some()
                 || self
                     .settings
                     .as_ref()
@@ -2737,6 +2813,9 @@ impl App {
         if self.rename.is_some() {
             return self.rename_key(key);
         }
+        if self.reply.is_some() {
+            return self.reply_key(key);
+        }
         if self.settings.is_some() {
             return self.settings_key(key);
         }
@@ -2748,6 +2827,7 @@ impl App {
             Overlay::Untrusted(untrusted) => self.untrusted_key(key, *untrusted),
             Overlay::OrchestratorUntrusted(u) => self.orchestrator_untrusted_key(key, *u),
             Overlay::RenameUntrusted(u) => self.rename_untrusted_key(key, *u),
+            Overlay::ReplyUntrusted(u) => self.reply_untrusted_key(key, *u),
             Overlay::None if self.filter.editing => self.filter_key(key),
             Overlay::None if self.logs_focused() => self.logs_key(key),
             Overlay::None => self.list_key(key),
@@ -3035,6 +3115,7 @@ impl App {
                 let new = picker.rename_to.clone().unwrap_or_default();
                 effects.extend(self.start_rename(&picker.key, action.account, new));
             }
+            Purpose::Reply => self.open_reply(&picker.key, action.account),
         }
         effects.extend(self.logs_follow(false));
         effects
@@ -3091,6 +3172,7 @@ impl App {
             Action::ResumePast => return self.open_resume(),
             Action::Settings => return self.request_settings(),
             Action::Rename => effects = self.request_rename(),
+            Action::Reply => effects = self.request_reply(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
@@ -3304,6 +3386,11 @@ impl App {
             );
             return Vec::new();
         }
+        if self.replying_row(&m.session) {
+            // Tower stops and wakes it with the text (doc/0040).
+            self.set_message(reply_running_text(&name), Severity::Info);
+            return Vec::new();
+        }
         let confirm_stop = stop_needs_confirmation(&m.session);
         match &m.owner {
             Ownership::Known { account, .. } => {
@@ -3331,8 +3418,9 @@ impl App {
                         self.confirm_remove(action);
                         Vec::new()
                     }
-                    // Renames start from the rename window (doc/0027).
-                    Purpose::Rename => Vec::new(),
+                    // Renames start from the rename window (doc/0027),
+                    // replies from `t` (doc/0040).
+                    Purpose::Rename | Purpose::Reply => Vec::new(),
                 }
             }
             Ownership::Unknown { config_dir } => {
@@ -3404,6 +3492,9 @@ impl App {
             return Some(format!(
                 "{name} is being handed off to another account; wait until it finishes"
             ));
+        }
+        if self.replying_row(s) {
+            return Some(reply_running_text(&name));
         }
         if let Some(r) = &self.renaming {
             return Some(if self.renaming_row(s) {
@@ -3781,6 +3872,415 @@ impl App {
                     format!(
                         "rename cancelled; {} stays stopped as it was",
                         untrusted.job.request.old_name
+                    ),
+                    Severity::Info,
+                );
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    // ---- the quick reply (doc/0040) ----------------------------------------
+
+    /// The quick reply window of `t`, when open.
+    pub fn reply_window(&self) -> Option<&ReplyWindow> {
+        self.reply.as_ref()
+    }
+
+    /// The status texts of the running replies, in the order started.
+    pub fn reply_progress(&self) -> Vec<&str> {
+        self.replying.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// Whether a reply to `s` runs, by `sessionId` or short id. Its row
+    /// actions are refused until it reports back (doc/0040).
+    fn replying_row(&self, s: &Session) -> bool {
+        self.replying.iter().any(|r| {
+            s.session_id.as_deref() == Some(r.session_id.as_str())
+                || s.id.as_deref() == Some(r.id.as_str())
+        })
+    }
+
+    /// Why `t` is not offered on `m`, if it is not (doc/0040): the row's
+    /// own state ([`reply::refusal`]), a hand-off, rename, reply or attach
+    /// in flight for it, and an unknown owner while the accounts span
+    /// several groups (as for a hand-off, doc/0018).
+    fn reply_refusal(&self, m: &MergedSession) -> Option<String> {
+        let s = &m.session;
+        if let Some(refusal) = reply::refusal(s) {
+            return Some(refusal);
+        }
+        let name = s.display_name();
+        if self.handing_off(s) {
+            return Some(format!(
+                "{name} is being handed off to another account; wait until it finishes"
+            ));
+        }
+        if self.renaming_row(s) {
+            return Some(format!("{name} is being renamed; wait until it finishes"));
+        }
+        if self.replying_row(s) {
+            return Some(reply_running_text(&name));
+        }
+        if let Some(p) = &self.pending_attach
+            && s.key() == Some(p.key.as_str())
+        {
+            return Some(format!(
+                "tower is about to attach to {name}; wait, or Esc to cancel the attach first"
+            ));
+        }
+        if matches!(m.owner, Ownership::Unknown { .. })
+            && handoff::owner_must_be_known(&self.config)
+        {
+            return Some(format!(
+                "{name}'s account is unknown (?) and the accounts are in different groups; \
+                 attach first (Enter) so tower learns its account, then reply"
+            ));
+        }
+        None
+    }
+
+    /// `t` on the selected row (doc/0040): opens the reply window under
+    /// the owning account, after the account picker when the owner is
+    /// unknown, or says why the row is not offered.
+    fn request_reply(&mut self) -> Vec<Effect> {
+        let Some(m) = self.selected_session() else {
+            return Vec::new();
+        };
+        if let Some(refusal) = self.reply_refusal(m) {
+            self.set_message(refusal, Severity::Info);
+            return Vec::new();
+        }
+        let (Some(key), Some(id)) = (m.session.key().map(str::to_owned), m.session.id.clone())
+        else {
+            return Vec::new();
+        };
+        match m.owner.clone() {
+            Ownership::Known { account, .. } => {
+                let Some(account) = self.config.account(&account).cloned() else {
+                    self.set_message(
+                        format!("account `{account}` is not configured"),
+                        Severity::Error,
+                    );
+                    return Vec::new();
+                };
+                self.open_reply(&key, account);
+            }
+            Ownership::Unknown { config_dir } => {
+                let selected = self
+                    .config
+                    .accounts
+                    .iter()
+                    .position(|a| a.name == self.config.default_account)
+                    .unwrap_or(0);
+                self.overlay = Overlay::Picker(Picker {
+                    key,
+                    id,
+                    name: m.session.display_name(),
+                    config_dir,
+                    selected,
+                    purpose: Purpose::Reply,
+                    rename_to: None,
+                });
+            }
+        }
+        Vec::new()
+    }
+
+    /// Opens the reply window for the session `key` under `account`,
+    /// unless the row is no longer offered.
+    fn open_reply(&mut self, key: &str, account: Account) {
+        let Some(m) = self.sessions.iter().find(|m| m.session.key() == Some(key)) else {
+            self.set_message("session no longer listed", Severity::Info);
+            return;
+        };
+        if let Some(refusal) = self.reply_refusal(m) {
+            self.set_message(refusal, Severity::Info);
+            return;
+        }
+        let Some(id) = m.session.id.clone() else {
+            return;
+        };
+        self.reply = Some(ReplyWindow::new(
+            key.to_owned(),
+            id,
+            m.session.display_name(),
+            m.session.has_live_process(),
+            account.name,
+        ));
+    }
+
+    fn reply_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Some(window) = self.reply.as_mut() else {
+            return Vec::new();
+        };
+        match window.handle_key(key) {
+            ReplyAction::None => Vec::new(),
+            ReplyAction::OpenTemplates => {
+                let (picker, effect) = self.new_template_picker();
+                if let Some(window) = self.reply.as_mut() {
+                    window.templates = Some(picker);
+                }
+                vec![effect]
+            }
+            ReplyAction::Cancel => {
+                self.reply = None;
+                self.set_message("reply cancelled; nothing was sent", Severity::Info);
+                Vec::new()
+            }
+            ReplyAction::Quit => vec![Effect::Quit],
+            ReplyAction::Send => self.send_reply(),
+        }
+    }
+
+    /// `Ctrl+S` in the reply window (doc/0040): an empty text sends
+    /// nothing; a row that is no longer offered keeps the window with the
+    /// reason; a row whose process or owner changed under the window says
+    /// what `Ctrl+S` does now. Otherwise the window closes and the reply
+    /// starts.
+    fn send_reply(&mut self) -> Vec<Effect> {
+        let Some(window) = self.reply.as_mut() else {
+            return Vec::new();
+        };
+        let Some(text) = reply::text_to_send(&window.text.text()) else {
+            window.error =
+                Some("nothing to send: type your text, or Ctrl+P for a template".to_owned());
+            return Vec::new();
+        };
+        let key = window.key.clone();
+        let Some(index) = self
+            .sessions
+            .iter()
+            .position(|m| m.session.key() == Some(key.as_str()))
+        else {
+            let name = window.name.clone();
+            self.reply = None;
+            self.set_message(
+                format!("session no longer listed: {name}; nothing was sent"),
+                Severity::Info,
+            );
+            return Vec::new();
+        };
+        let refusal = self.reply_refusal(&self.sessions[index]);
+        let m = &self.sessions[index];
+        let live = m.session.has_live_process();
+        let owner = m.owner.account().map(str::to_owned);
+        let Some(window) = self.reply.as_mut() else {
+            return Vec::new();
+        };
+        if let Some(refusal) = refusal {
+            // The window and its text stay: the row may be idle again soon.
+            window.error = Some(refusal);
+            return Vec::new();
+        }
+        // An unknown owner keeps the account picked for the window.
+        let account = owner.unwrap_or_else(|| window.account.clone());
+        if live != window.live || account != window.account {
+            window.error = Some(if account != window.account {
+                format!(
+                    "{}'s account is now {account}: Ctrl+S sends under it",
+                    window.name
+                )
+            } else if live {
+                "the session is running now: Ctrl+S stops it and wakes it with your text".to_owned()
+            } else {
+                "the session has stopped meanwhile: Ctrl+S wakes it with your text".to_owned()
+            });
+            window.live = live;
+            window.account = account;
+            return Vec::new();
+        }
+        let Some(owner) = self.config.account(&account).cloned() else {
+            window.error = Some(format!("account `{account}` is not configured"));
+            return Vec::new();
+        };
+        let s = &self.sessions[index].session;
+        let (Some(id), Some(session_id)) = (s.id.clone(), s.session_id.clone()) else {
+            return Vec::new();
+        };
+        let request = ReplyRequest {
+            id,
+            session_id,
+            name: s.display_name(),
+            cwd: paths::expand_tilde(&s.cwd, &self.home),
+            owner,
+            live,
+            text,
+        };
+        let job = ReplyJob {
+            recorded: self.sidecar.base_owner(&request.session_id),
+            request,
+            after_trust: false,
+        };
+        self.reply = None;
+        let mut effects = self.run_reply(job);
+        effects.extend(self.logs_follow(false));
+        effects
+    }
+
+    fn run_reply(&mut self, job: ReplyJob) -> Vec<Effect> {
+        let r = &job.request;
+        let text = if r.live {
+            format!("stopping {}…", r.name)
+        } else {
+            format!("waking {} with your text…", r.name)
+        };
+        self.replying.retain(|p| p.session_id != r.session_id);
+        self.replying.push(ReplyProgress {
+            name: r.name.clone(),
+            id: r.id.clone(),
+            session_id: r.session_id.clone(),
+            text,
+        });
+        vec![Effect::Reply(job)]
+    }
+
+    /// A step of the reply to the session `session_id` has started
+    /// (doc/0040).
+    pub fn reply_step(&mut self, session_id: &str, step: ReplyStep) {
+        let Some(r) = self
+            .replying
+            .iter_mut()
+            .find(|r| r.session_id == session_id)
+        else {
+            return;
+        };
+        r.text = match step {
+            ReplyStep::Stopping { .. } | ReplyStep::WaitingForStop => {
+                format!("stopping {}…", r.name)
+            }
+            ReplyStep::Waking { .. } => format!("waking {} with your text…", r.name),
+        };
+    }
+
+    /// Reports a finished reply (doc/0040): `sent to <name>` on success. A
+    /// copy is reported with its id and left alone (its owner recorded as
+    /// `started`, as for a dispatch); `Workspace not trusted` offers the
+    /// trust flow; another tower's newer record ends it. Every outcome
+    /// polls.
+    pub fn reply_finished(
+        &mut self,
+        job: ReplyJob,
+        result: Result<Replied, ReplyError>,
+    ) -> Vec<Effect> {
+        let r = &job.request;
+        self.replying.retain(|p| p.session_id != r.session_id);
+        let (name, owner) = (&r.name, &r.owner.name);
+        let mut effects = Vec::new();
+        match result {
+            Ok(_) => self.set_message(format!("sent to {name}"), Severity::Info),
+            Err(ReplyError::Untrusted { message, .. }) => {
+                let mut message = message;
+                if job.after_trust {
+                    message.push_str(&format!(
+                        "\n(still not trusted after running {} there)",
+                        r.owner.command
+                    ));
+                }
+                self.set_message(
+                    format!(
+                        "{owner} has not trusted {name}'s folder; Ctrl+T to trust it and retry"
+                    ),
+                    Severity::Warning,
+                );
+                let overlay = Overlay::ReplyUntrusted(Box::new(UntrustedReply {
+                    job: job.clone(),
+                    message,
+                }));
+                self.open_late(Waiting::Overlay(Box::new(overlay)));
+            }
+            Err(ReplyError::Copied { new_id, notes }) => {
+                if self.sidecar.record_started(&new_id, owner) {
+                    effects.push(Effect::SaveSidecar);
+                }
+                let note = notes
+                    .first()
+                    .map(|n| format!(" ({})", one_line(n)))
+                    .unwrap_or_default();
+                self.set_message(
+                    format!(
+                        "--resume started a copy {new_id} of {name} under {owner} instead of \
+                         waking {}; the copy got your text and keeps running, nothing else \
+                         was stopped or removed{note}",
+                        r.id
+                    ),
+                    Severity::Warning,
+                );
+            }
+            Err(ReplyError::OwnerChanged { account, stopped }) => {
+                let what = if stopped {
+                    "it was stopped and your text was not sent"
+                } else {
+                    "nothing was run"
+                };
+                self.set_message(
+                    format!(
+                        "another tower recorded {name} under {account} meanwhile; {what} — \
+                         check the row and retry"
+                    ),
+                    Severity::Warning,
+                );
+                effects.push(Effect::CheckSidecar);
+            }
+            Err(err) => {
+                let tail = if err.after_stop() {
+                    "; it is stopped and your text was not sent"
+                } else {
+                    "; nothing was sent"
+                };
+                self.set_message(
+                    format!(
+                        "cannot send to {name}: {}{tail}",
+                        one_line(&err.to_string())
+                    ),
+                    Severity::Error,
+                );
+            }
+        }
+        effects.push(Effect::PollNow);
+        effects.extend(self.logs_follow(false));
+        effects
+    }
+
+    /// Reports the end of a reply's trust flow (doc/0040): the owner's
+    /// interactive command exited, so the reply is retried once, without a
+    /// second stop. When it could not run at all the trust window shows
+    /// why.
+    pub fn reply_trust_finished(
+        &mut self,
+        job: ReplyJob,
+        result: Result<Option<i32>, String>,
+    ) -> Vec<Effect> {
+        match result {
+            Ok(_) => self.run_reply(ReplyJob {
+                request: job.request.after_stop(),
+                after_trust: true,
+                recorded: job.recorded,
+            }),
+            Err(err) => {
+                let overlay =
+                    Overlay::ReplyUntrusted(Box::new(UntrustedReply { job, message: err }));
+                self.open_late(Waiting::Overlay(Box::new(overlay)));
+                Vec::new()
+            }
+        }
+    }
+
+    fn reply_untrusted_key(&mut self, key: KeyEvent, untrusted: UntrustedReply) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c' | 'C') if ctrl => vec![Effect::Quit],
+            KeyCode::Char('t' | 'T') if ctrl => {
+                self.overlay = Overlay::None;
+                vec![Effect::ReplyTrust(untrusted.job)]
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') if !ctrl => {
+                self.overlay = Overlay::None;
+                self.set_message(
+                    format!(
+                        "reply cancelled; {} stays stopped and your text was not sent",
+                        untrusted.job.request.name
                     ),
                     Severity::Info,
                 );
@@ -4222,6 +4722,7 @@ impl App {
             || self.dialog.is_some()
             || self.resume.is_some()
             || self.rename.is_some()
+            || self.reply.is_some()
             || self.settings.is_some()
             || self.overlay != Overlay::None
             || self.quit_prompt.is_some()
@@ -4986,6 +5487,10 @@ impl App {
             );
             return Vec::new();
         }
+        if self.replying_row(&m.session) {
+            self.set_message(reply_running_text(&name), Severity::Info);
+            return Vec::new();
+        }
         if m.session.id.is_none() {
             self.set_message(
                 format!("{name} has no short id; tower cannot hand it off"),
@@ -5692,6 +6197,11 @@ fn learned_text(name: &str, known: &str, picked: &str) -> String {
     } else {
         format!("{name} turned out to run under {known}; using {known} instead of {picked}")
     }
+}
+
+/// The refusal for a row whose quick reply runs (doc/0040).
+fn reply_running_text(name: &str) -> String {
+    format!("tower is sending your reply to {name}; wait until it finishes")
 }
 
 /// The message for a row action (`Enter`, `a`, `s`, `d`) on an interactive

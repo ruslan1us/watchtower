@@ -1,7 +1,8 @@
 //! Rendering of the new-session dialog (doc/0008), with its template
-//! picker over it (doc/0036), the resume window of `R` (doc/0019) and the
-//! rename window of `e` (doc/0027). Pure drawing from the [`Dialog`],
-//! [`ResumeWindow`] and [`RenameWindow`] state.
+//! picker over it (doc/0036), the resume window of `R` (doc/0019), the
+//! rename window of `e` (doc/0027) and the quick reply window of `t` with
+//! its template picker (doc/0040). Pure drawing from the [`Dialog`],
+//! [`ResumeWindow`], [`RenameWindow`] and [`ReplyWindow`] state.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -13,8 +14,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::theme::Look;
 use crate::app::App;
 use crate::dialog::{
-    Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, RenameWindow, ResumeField,
-    ResumeWindow,
+    Choice, Dialog, DialogPrompt, DialogStatus, Field, LineInput, RenameWindow, ReplyWindow,
+    ResumeField, ResumeWindow, TextArea,
 };
 use crate::dispatch::MODEL_CHOICES;
 
@@ -149,10 +150,16 @@ fn wrap_with_cursor(line: &str, width: usize, cursor: usize) -> (Vec<String>, (u
 /// Visual rows of the task wrapped to `width`, and the cursor's visual
 /// (row, column).
 fn task_rows(dialog: &Dialog, width: usize) -> (Vec<String>, (usize, usize)) {
-    let (crow, ccol) = dialog.task.cursor();
+    text_rows(&dialog.task, width)
+}
+
+/// Visual rows of a text area wrapped to `width`, and the cursor's visual
+/// (row, column).
+fn text_rows(text: &TextArea, width: usize) -> (Vec<String>, (usize, usize)) {
+    let (crow, ccol) = text.cursor();
     let mut rows = Vec::new();
     let mut cursor = (0, 0);
-    for (i, line) in dialog.task.lines().iter().enumerate() {
+    for (i, line) in text.lines().iter().enumerate() {
         if i == crow {
             let (wrapped, (r, c)) = wrap_with_cursor(line, width, ccol);
             cursor = (rows.len() + r, c);
@@ -829,5 +836,133 @@ pub fn draw_rename(frame: &mut Frame, _app: &App, window: &RenameWindow, area: R
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
+    }
+}
+
+/// The reply window's line saying what `Ctrl+S` does (doc/0040): a live
+/// session is stopped first, a stopped one only woken.
+pub fn reply_plan(live: bool, account: &str) -> String {
+    if live {
+        format!(
+            "Stops the idle session and wakes it under {account} with your text as the next \
+             prompt."
+        )
+    } else {
+        format!("Wakes the session under {account} with your text as the next prompt.")
+    }
+}
+
+/// The reply window's keys (doc/0040).
+pub const REPLY_KEYS: &str = "Enter new line · Ctrl+S send · Ctrl+P template · Esc cancel";
+
+/// Draws the quick reply window of `t` centred in `area` (doc/0040): the
+/// text, what `Ctrl+S` does, an error or question, the keys, and the
+/// template picker over it while it is open.
+pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rect, look: Look) {
+    let w = if area.width > 104 {
+        100
+    } else {
+        area.width.saturating_sub(2).max(1)
+    };
+    let width = usize::from(w.saturating_sub(4)).max(1);
+    let editing = window.prompt.is_none() && window.templates.is_none();
+    let mut below: Vec<Line> = Vec::new();
+    for row in wrap(&reply_plan(window.live, &window.account), width) {
+        below.push(Line::styled(row, look.text()));
+    }
+    if let Some(err) = &window.error {
+        for row in wrap(err, width) {
+            below.push(Line::styled(row, look.error()));
+        }
+    }
+    match window.prompt {
+        None => {}
+        Some(DialogPrompt::Discard) => below.push(Line::styled(
+            "Discard this text?  y discard · n keep editing",
+            look.prompt(),
+        )),
+        Some(DialogPrompt::Quit) => below.push(Line::styled(
+            "Quit tower? The text is lost.  y quit · n stay",
+            look.prompt(),
+        )),
+    }
+    let footer = wrap(REPLY_KEYS, width);
+    let text_w = width.saturating_sub(2).max(1);
+    let (rows, (crow, ccol)) = text_rows(&window.text, text_w);
+    // Text, blank, plan and messages, blank, footer.
+    let fixed = 1 + below.len() + 1 + footer.len();
+    let wanted = fixed + rows.len().clamp(3, TASK_ROWS);
+    let h = (wanted as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(1);
+    let rect = super::centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Reply to {} ", window.name);
+    let block = look
+        .overlay_block(title)
+        .title_bottom(look.hint_line(" Esc cancel "));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    // One column of padding inside the border, as the other windows.
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
+    let text_h = usize::from(inner.height)
+        .saturating_sub(fixed)
+        .clamp(1, TASK_ROWS);
+    let mut p = Painter {
+        frame,
+        area: inner,
+        y: inner.y,
+    };
+    let mut cursor = None;
+    if window.text.is_blank() && crow == 0 && ccol == 0 {
+        p.line(Line::from(vec![
+            Span::styled("┊ ", look.hint()),
+            Span::styled(
+                "your next prompt for the session · Ctrl+P inserts a template",
+                look.hint(),
+            ),
+        ]));
+        if editing {
+            cursor = Some(Position::new(inner.x + 2, inner.y));
+        }
+        for _ in 1..text_h {
+            p.line(Line::styled("┊ ", look.hint()));
+        }
+    } else {
+        let start = if crow < text_h { 0 } else { crow + 1 - text_h };
+        for i in start..start + text_h {
+            let text = rows.get(i).cloned().unwrap_or_default();
+            if i == crow && editing && p.has_room() {
+                cursor = Some(Position::new(inner.x + 2 + ccol as u16, p.y));
+            }
+            p.line(Line::from(vec![
+                Span::styled("┊ ", look.hint()),
+                Span::styled(text, look.text()),
+            ]));
+        }
+    }
+    p.line(Line::raw(""));
+    for line in below {
+        p.line(line);
+    }
+    p.line(Line::raw(""));
+    for row in footer {
+        p.line(look.hint_line(row));
+    }
+    if let Some(pos) = cursor
+        && pos.x < inner.x + inner.width
+        && pos.y < inner.y + inner.height
+    {
+        p.frame.set_cursor_position(pos);
+    }
+    if let Some(picker) = &window.templates {
+        super::templates::draw_picker(p.frame, picker, area, look);
     }
 }

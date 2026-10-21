@@ -35,6 +35,8 @@
 //!   doc/0004).
 //! - [`rename`]: renaming a stopped session with `/rename` without
 //!   attaching (doc/0027).
+//! - [`reply`]: the quick reply, a text sent to an idle or stopped session
+//!   as its next prompt (doc/0040).
 //!
 //! The TUI (milestones 1–5, doc/0014):
 //!
@@ -46,8 +48,8 @@
 //! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
-//! - [`jobs`]: runs dispatch, stop, remove, hand-off and rename on worker
-//!   threads.
+//! - [`jobs`]: runs dispatch, stop, remove, hand-off, rename and the quick
+//!   reply on worker threads.
 //! - [`logfollow`]: fetches `claude logs` for the panel and follows working
 //!   sessions in the background on its own thread (doc/0030).
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
@@ -91,6 +93,7 @@ pub mod poller;
 pub mod projects;
 pub mod ptysize;
 pub mod rename;
+pub mod reply;
 pub mod settings;
 pub mod sidecar;
 pub mod status;

@@ -1,14 +1,14 @@
 //! Background jobs: the CLI calls behind the app's [`Effect`]s that can take
 //! a while — dispatch (`claude --bg`, which may first start a supervisor),
-//! the orchestrator's start, `stop`, `rm`, the hand-off sequence
-//! and the rename of a stopped session — and the file work that
+//! the orchestrator's start, `stop`, `rm`, the hand-off sequence,
+//! the rename of a stopped session and the quick reply — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
 //! reloads, the project scan, the template load — each run on its own
 //! short-lived worker thread so the UI never blocks (doc/0001, doc/0002,
-//! doc/0004, doc/0008, doc/0009, doc/0027, doc/0036). Results come back over a channel as [`JobResult`]s;
-//! [`JobResult::apply`] hands them to the [`App`]. A hand-off and a rename
-//! also report each step as it starts ([`JobResult::HandoffStep`],
-//! [`JobResult::RenameStep`]).
+//! doc/0004, doc/0008, doc/0009, doc/0027, doc/0036, doc/0040). Results come back over a channel as [`JobResult`]s;
+//! [`JobResult::apply`] hands them to the [`App`]. A hand-off, a rename and
+//! a reply also report each step as it starts ([`JobResult::HandoffStep`],
+//! [`JobResult::RenameStep`], [`JobResult::ReplyStep`]).
 //!
 //! Like every background call, these run with stdin null and captured
 //! output ([`CliRunner`]), so nothing can touch the terminal (doc/0005).
@@ -38,7 +38,7 @@ use std::time::Duration;
 use crate::actions::{self, Removal, StopError};
 use crate::app::{
     App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, OrchestratorJob, ProjectScan, RemoveJob,
-    RenameJob, SessionAction, SidecarJob,
+    RenameJob, ReplyJob, SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::config::ConfigError;
@@ -48,6 +48,7 @@ use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
 use crate::rename::{self, RenameError, RenameStep, RenameTiming, Renamed};
+use crate::reply::{self, Replied, ReplyError, ReplyStep};
 use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 use crate::subagents::{self, Subagent};
@@ -75,6 +76,11 @@ pub enum JobResult {
     /// A finished rename of a stopped session (doc/0027), boxed to keep
     /// the enum small.
     Rename(Box<RenameJob>, Result<Renamed, RenameError>),
+    /// A step of the running reply to the session with this `sessionId`
+    /// has started (doc/0040).
+    ReplyStep(String, ReplyStep),
+    /// A finished quick reply (doc/0040), boxed to keep the enum small.
+    Reply(Box<ReplyJob>, Result<Replied, ReplyError>),
     /// A finished sidecar save, with its job number (doc/0002).
     Saved(u64, SaveJob, io::Result<Saved>),
     /// A finished look for other towers' sidecar changes (doc/0017).
@@ -115,6 +121,11 @@ impl JobResult {
                 Vec::new()
             }
             JobResult::Rename(job, result) => app.rename_finished(*job, result),
+            JobResult::ReplyStep(session_id, step) => {
+                app.reply_step(&session_id, step);
+                Vec::new()
+            }
+            JobResult::Reply(job, result) => app.reply_finished(*job, result),
             JobResult::Saved(seq, job, result) => app.sidecar_saved(seq, &job, result),
             JobResult::Checked(seq, result) => app.sidecar_checked(seq, result),
             JobResult::Projects(id, list) => {
@@ -323,6 +334,30 @@ impl Jobs {
         });
     }
 
+    /// Runs the quick reply of `job` (doc/0040): stop a live session and
+    /// wait until it is gone, then wake it under its owner with the text.
+    /// Each step is reported as it starts. Right before the stop and before
+    /// the wake the session's record in the state file is compared with
+    /// [`ReplyJob::recorded`], as for a hand-off (doc/0017 section 8). A
+    /// failed worker counts as a failed wake.
+    pub fn reply(&self, job: ReplyJob) {
+        let timing = self.handoff_timing;
+        let state_file = self.state_file.clone();
+        let fail = |job, err| JobResult::Reply(Box::new(job), Err(ReplyError::ResumeCli(err)));
+        self.launch("reply", job, fail, move |runner, tx, job| {
+            let session_id = job.request.session_id.clone();
+            let mut progress = |step: ReplyStep| {
+                let _ = tx.send(JobResult::ReplyStep(session_id.clone(), step));
+            };
+            let mut check = |stopped: bool| match &state_file {
+                Some(path) => reply_owner_unchanged(path, &job, stopped),
+                None => Ok(()),
+            };
+            let result = reply::run(runner, &job.request, &timing, &mut progress, &mut check);
+            JobResult::Reply(Box::new(job), result)
+        });
+    }
+
     /// Runs a sidecar save or check on a worker thread (doc/0002); the
     /// file is `path`.
     pub fn sidecar(&self, job: SidecarJob, path: PathBuf) {
@@ -482,6 +517,30 @@ fn rename_owner_unchanged(path: &std::path::Path, job: &RenameJob) -> Result<(),
         return Ok(());
     }
     Err(RenameError::OwnerChanged { account })
+}
+
+/// The reply's guard, as [`owner_unchanged`] for a hand-off: an error when
+/// the state file now records the session under another account than the
+/// owner the reply stops and wakes it with, and the record differs from the
+/// one this tower planned with. An unreadable file gives no evidence.
+fn reply_owner_unchanged(
+    path: &std::path::Path,
+    job: &ReplyJob,
+    stopped: bool,
+) -> Result<(), ReplyError> {
+    let Ok(now) = sidecar::read_owner(path, &job.request.session_id) else {
+        return Ok(());
+    };
+    if now == job.recorded {
+        return Ok(());
+    }
+    let Some(account) = now.and_then(|r| r.account) else {
+        return Ok(());
+    };
+    if account == job.request.owner.name {
+        return Ok(());
+    }
+    Err(ReplyError::OwnerChanged { account, stopped })
 }
 
 fn worker_error(job: &str, message: String) -> CliError {

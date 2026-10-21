@@ -1,5 +1,6 @@
 //! Rendering of the template picker (doc/0036), drawn over the window that
-//! hosts it (the new-session dialog). Pure drawing from a
+//! hosts it (the new-session dialog, doc/0036, or the quick reply window,
+//! doc/0040). Pure drawing from a
 //! [`TemplatePicker`]; its look follows the style and theme like every
 //! window ([`Look`], doc/0020, doc/0021).
 

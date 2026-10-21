@@ -782,6 +782,14 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 };
                 queue.extend(app.rename_trust_finished(job, result));
             }
+            Effect::Reply(job) => rt.jobs.reply(job),
+            Effect::ReplyTrust(job) => {
+                let req = &job.request;
+                let Some(result) = run_trust(rt, app, &req.owner, &req.cwd, "reply") else {
+                    return Ok(false);
+                };
+                queue.extend(app.reply_trust_finished(job, result));
+            }
             Effect::PollForRename => {
                 let cycle = rt.poller.poll_now();
                 app.rename_poll_started(cycle);
@@ -791,8 +799,8 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
     Ok(true)
 }
 
-/// The trust flow of doc/0008, for a dispatch, a hand-off (doc/0004) or a
-/// rename (doc/0027): hands the terminal to the interactive `<account
+/// The trust flow of doc/0008, for a dispatch, a hand-off (doc/0004), a
+/// rename (doc/0027) or a quick reply (doc/0040): hands the terminal to the interactive `<account
 /// command>` in `dir` so the user accepts Claude Code's own trust prompt.
 /// `None` when a termination signal arrived meanwhile and tower must exit.
 fn run_trust(

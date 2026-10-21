@@ -35,7 +35,7 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 | Command | Behaviour | Source |
 |---|---|---|
 | `claude --bg [--name N] [--model M] [--permission-mode P] [--effort E] [--agent A] [--settings F] "task"` | Starts a background session in the current directory (the session's `cwd`). Prints `backgrounded · <id> · <name>` and hint lines on **stdout**; `Starting background service…`, printed first when the supervisor has to start, goes to **stderr**. In an untrusted folder it fails (exit 1, see [Permissions and trust](#permissions-and-trust)). An unknown `--model` name is **not** rejected: exit 0 and the normal `backgrounded` line, then the session ends in `state: failed`. | CLI help, verified |
-| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`; with `--settings` there, it lists `--settings` too and the hooks keep firing, 2.1.303). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself (a `done` session keeps `state: done`, `status: idle`; one stopped mid-turn wakes `state: working`, `status: idle`; used by the hand-off without a prompt, [0033](../0033-hand-off-without-a-prompt.md)); a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line. On a stopped session, flags beyond `--bg` (e.g. `--name X`) or the short id in place of the full `sessionId` also start a copy instead of waking it; a prompt such as `"/rename X"` does not ([Renaming a session](#renaming-a-session), 2.1.303). | CLI help, verified (stopped case) |
+| `claude --resume <sessionId> --bg ["prompt"]` | Continues a stopped session in the background under the **same id**. Prints on stderr e.g. `note: woke session 1a2b3c4d with its saved options (--name, --permission-mode, --model).`; the saved options are the flags given at the original dispatch (without `--permission-mode` there, the note lists only `(--name, --model)`; with `--settings` there, it lists `--settings` too and the hooks keep firing, 2.1.303). With a prompt, the prompt becomes the next turn. Without a prompt it exits 0, prints `backgrounded · <id> · <name> (idle — send a prompt to start)` on stdout, and the session sits idle and does not continue by itself (a `done` session keeps `state: done`, `status: idle`; one stopped mid-turn wakes `state: working`, `status: idle`; used by the hand-off without a prompt, [0033](../0033-hand-off-without-a-prompt.md)); a permission prompt pending before the stop is not shown again. If the session is already running, starts a copy under a new id and prints a `note:` line (wording in [Sending a prompt to a background session](#sending-a-prompt-to-a-background-session), 2.1.306). `--` before the prompt ends the options: a prompt starting with `-` is then taken as the prompt, and the session still wakes under its own id. On a stopped session, flags beyond `--bg` (e.g. `--name X`) or the short id in place of the full `sessionId` also start a copy instead of waking it; a prompt such as `"/rename X"` does not ([Renaming a session](#renaming-a-session), 2.1.303). | CLI help, verified (stopped case) |
 | `claude --resume` (no argument) | Opens the interactive session picker for the current folder (its worktree; background sessions marked `bg`). In the picker `Ctrl+A` shows every project on the machine, `Ctrl+W` every worktree of the repository, `Esc` leaves. Picking a conversation of a background session that is still running attaches to it (v2.1.285+); picking one of an unrelated project copies a `cd` and resume command to the clipboard instead of resuming. A conversation picked here starts in the permission mode a new session would, except plan mode. Picking an ended conversation opens it in the foreground; backgrounding it then starts a copy under a new session id (see [Attach and detach keys](#attach-and-detach-keys)). Used by `R` ([0019](../0019-resume-past-sessions.md)). | documented ([sessions](https://code.claude.com/docs/en/sessions)); ended case verified (2.1.303) |
 | `claude agents --json [--all] [--cwd <path>]` | Lists active sessions, interactive and background. `--all` adds completed background sessions, including sessions stopped with `claude stop`, which are missing without it; `--cwd` filters by directory. Needs no TTY. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
 | `claude attach <id\|name>` | Attaches the terminal to a background session. Part of a name is accepted. Wakes a stopped session. | documented ([agent view](https://code.claude.com/docs/en/agent-view)), verified |
@@ -298,6 +298,33 @@ Verified with Claude Code 2.1.303 on Linux:
 
 How Watchtower uses it: [0027](../0027-rename-sessions.md).
 
+## Sending a prompt to a background session
+
+Verified with Claude Code 2.1.306 on Linux (one account, a session that
+had finished a turn, `state: done`, `status: idle`):
+
+- On the **live** session, `claude --resume <sessionId> --bg "text"` does
+  not deliver the prompt to it: exit 0, stdout `backgrounded · <copy id>`
+  plus the usual hint lines, stderr ``note: session <id> is already running
+  in the background, so this started a copy as <copy id>. `claude attach
+  <id>` opens the original.`` The copy runs the text.
+- After `claude stop <id>` (and once the listing shows no `pid` and no
+  `status`), `claude --resume <sessionId> --bg "<text>"` printed
+  `backgrounded · <id> · <name>` with the same short id and stderr `note:
+  woke session <id> with its saved options (--name, --model).`; the text
+  became the next turn. A three-line text arrived intact as one prompt
+  (`claude logs` showed the three lines, and the session answered `3`
+  when asked how many lines the message had).
+- `claude --resume <sessionId> --bg -- "- reply with …"` on the stopped
+  session: same id, no copy, no option error; the prompt `- reply with …`
+  was the next turn. A multi-line prompt whose lines start with `-v` and
+  `--help` passed after `--` arrived intact too. So `--` ends the options
+  and does not count as a flag that starts a copy.
+- A session's `SendMessage` to another session arrives there as that
+  agent's message, not as the user's prompt.
+
+How Watchtower uses it: [0040](../0040-quick-reply.md).
+
 ## Supervisor lifecycle
 
 Documented ([agent view](https://code.claude.com/docs/en/agent-view)) and verified:
@@ -405,7 +432,9 @@ Documented ([cross-session messaging](https://code.claude.com/docs/en/cross-sess
 - A message can never approve a permission prompt.
 - A session in `bypassPermissions` mode holds inbound messages for approval.
 - There is no CLI way to reply to a session without attaching: `claude --resume <sessionId> "msg"`
-  sends the message and then attaches.
+  sends the message and then attaches. (Verified separately: a **stopped** background session
+  takes a prompt without an attach through `--resume <sessionId> --bg "msg"`; a live one gets a
+  copy instead, see [Sending a prompt to a background session](#sending-a-prompt-to-a-background-session).)
 
 Verified with Claude Code 2.1.303, accounts `main` and `alt` whose config dirs share their
 session lists (each supervisor hosts its own sessions):
@@ -541,6 +570,8 @@ https://code.claude.com/docs/en/hooks):
 | `--bg` with an unknown `--model` name | as `--bg` success; the session then turns `failed` | 0 | verified |
 | `--bg` in an untrusted folder | stderr ``Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry.``; empty stdout | 1 | verified |
 | `--resume <sessionId> --bg` without a prompt (stopped session) | stdout `backgrounded · <id> · <name> (idle — send a prompt to start)`; stderr `note: woke session <id> with its saved options (…).` | 0 | verified |
+| `--resume <sessionId> --bg "text"` (session still running) | stdout `backgrounded · <copy id>` plus hint lines; stderr ``note: session <id> is already running in the background, so this started a copy as <copy id>. `claude attach <id>` opens the original.`` | 0 | verified (2.1.306) |
+| `--resume <sessionId> --bg -- "<text>"` (stopped session; text may start with `-`, may span lines) | stdout `backgrounded · <id> · <name>`; stderr `note: woke session <id> with its saved options (--name, --model).` | 0 | verified (2.1.306) |
 | `--resume <sessionId> --bg "/rename X"` (stopped session) | stdout `backgrounded · <id> · <old name>`; stderr `note: woke session <id> with its saved options (--name, --model).` | not captured | verified (2.1.303) |
 | `--resume <sessionId> --bg --name X` (stopped session) | stdout `backgrounded · <copy id> · X (idle — …)`; stderr `note: background session <id> keeps its own saved options, so the flags you passed started a copy as <copy id>. …` | not captured | verified (2.1.303) |
 | `/rename <name>` inside a session | `⎿  Session renamed to: <name>` | — | verified (2.1.303) |

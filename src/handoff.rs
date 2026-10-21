@@ -302,6 +302,14 @@ fn spans_groups(config: &Config) -> bool {
         .any(|a| a.group != config.accounts[0].group)
 }
 
+/// Whether an action that wakes a session under the account the user picks
+/// must wait until its owner is known: the accounts span several groups
+/// and `allow_cross_group_handoff` is not set (doc/0018). The quick reply
+/// follows this rule (doc/0040).
+pub fn owner_must_be_known(config: &Config) -> bool {
+    !config.allow_cross_group_handoff && spans_groups(config)
+}
+
 /// The refusal for an unknown owner while the accounts span groups.
 fn unknown_owner_refusal(name: &str) -> String {
     format!(
@@ -441,14 +449,12 @@ pub fn interpret_resume(out: &CliOutput, id: &str, dir: &Path) -> Result<Resumed
     })
 }
 
-/// The row of `request` in a listing: by `sessionId`, else by short id.
-fn find_row<'a>(rows: &'a [Session], request: &HandoffRequest) -> Option<&'a Session> {
+/// The row with `session_id` in a listing, else the one with short id
+/// `id`.
+fn find_row<'a>(rows: &'a [Session], id: &str, session_id: &str) -> Option<&'a Session> {
     rows.iter()
-        .find(|s| s.session_id.as_deref() == Some(request.session_id.as_str()))
-        .or_else(|| {
-            rows.iter()
-                .find(|s| s.id.as_deref() == Some(request.id.as_str()))
-        })
+        .find(|s| s.session_id.as_deref() == Some(session_id))
+        .or_else(|| rows.iter().find(|s| s.id.as_deref() == Some(id)))
 }
 
 /// How many successful, non-empty, complete listings in a row must miss
@@ -471,10 +477,16 @@ pub enum StopEvidence {
 
 /// What one listing result says about the row of `request`.
 pub fn stop_evidence(listing: &Result<Listing, String>, request: &HandoffRequest) -> StopEvidence {
+    stop_evidence_of(listing, &request.id, &request.session_id)
+}
+
+/// What one listing result says about the row with short id `id` and
+/// `sessionId` `session_id`.
+fn stop_evidence_of(listing: &Result<Listing, String>, id: &str, session_id: &str) -> StopEvidence {
     let Ok(listing) = listing else {
         return StopEvidence::Nothing;
     };
-    match find_row(&listing.sessions, request) {
+    match find_row(&listing.sessions, id, session_id) {
         Some(row) if row.has_live_process() => StopEvidence::Running,
         Some(_) => StopEvidence::Stopped,
         None if listing.sessions.is_empty() || !listing.warnings.is_empty() => {
@@ -495,11 +507,23 @@ pub fn wait_until_stopped(
     request: &HandoffRequest,
     timing: &HandoffTiming,
 ) -> Result<(), HandoffError> {
+    wait_for_stop(runner, account, &request.id, &request.session_id, timing)
+}
+
+/// [`wait_until_stopped`] for the row with short id `id` and `sessionId`
+/// `session_id`; the quick reply waits the same way (doc/0040).
+pub fn wait_for_stop(
+    runner: &CliRunner,
+    account: &Account,
+    id: &str,
+    session_id: &str,
+    timing: &HandoffTiming,
+) -> Result<(), HandoffError> {
     let start = Instant::now();
     let mut absent = 0;
     loop {
         let listing = runner.list_sessions(account).map_err(|err| err.to_string());
-        let evidence = stop_evidence(&listing, request);
+        let evidence = stop_evidence_of(&listing, id, session_id);
         absent = match evidence {
             StopEvidence::Stopped => return Ok(()),
             StopEvidence::Absent => absent + 1,

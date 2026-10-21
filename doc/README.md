@@ -28,7 +28,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029) |
-| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036) |
+| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |
@@ -53,8 +53,9 @@ This directory records the design decisions behind it, one file per decision.
 | 0033 | [Hand-off without a prompt](0033-hand-off-without-a-prompt.md) | Accepted |
 | 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
 | 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
-| 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted |
+| 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted (picker also used by 0040) |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
+| 0040 | [Quick reply](0040-quick-reply.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

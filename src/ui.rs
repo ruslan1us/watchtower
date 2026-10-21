@@ -4,7 +4,8 @@
 //! hand-off target picker and trust window (doc/0004), the orchestrator's
 //! trust window (doc/0010), the new-session dialog, the resume window
 //! of `R` ([`dialog`], doc/0019), the rename window of `e` and its trust
-//! window (doc/0027) and the
+//! window (doc/0027), the quick reply window of `t` and its trust window
+//! (doc/0040) and the
 //! popup window (doc/0006, doc/0008, doc/0009, doc/0011). Pure drawing from [`App`] state; no I/O.
 //!
 //! Two styles draw the screen under the same windows (doc/0020): the
@@ -48,7 +49,7 @@ use crate::activity;
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LOGS_KEY_TABLE, LogsPanel, LogsView, Overlay,
     Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
-    UntrustedOrchestrator, UntrustedRename,
+    UntrustedOrchestrator, UntrustedRename, UntrustedReply,
 };
 use crate::config::UiStyle;
 use crate::groups;
@@ -74,6 +75,7 @@ pub const FOOTER_KEYS: &[&str] = &[
     "i interactive",
     "R resume",
     "e rename",
+    "t reply",
     "c settings",
     "↑↓ move",
     "q quit",
@@ -97,6 +99,7 @@ pub const FOOTER_KEYS_LOGS_OPEN: &[&str] = &[
     "i interactive",
     "R resume",
     "e rename",
+    "t reply",
     "c settings",
     "↑↓ move",
     "q quit",
@@ -251,6 +254,7 @@ fn draw_windows(frame: &mut Frame, app: &mut App) {
             draw_orchestrator_untrusted(frame, app, &u, area, look);
         }
         Overlay::RenameUntrusted(u) => draw_rename_untrusted(frame, app, &u, area, look),
+        Overlay::ReplyUntrusted(u) => draw_reply_untrusted(frame, app, &u, area, look),
     }
     if let Some(d) = app.dialog() {
         dialog::draw(frame, app, d, area, look);
@@ -260,6 +264,9 @@ fn draw_windows(frame: &mut Frame, app: &mut App) {
     }
     if let Some(r) = app.rename_window() {
         dialog::draw_rename(frame, app, r, area, look);
+    }
+    if let Some(r) = app.reply_window() {
+        dialog::draw_reply(frame, app, r, area, look);
     }
     if let Some(popup) = app.popup_mut() {
         draw_popup(frame, popup, area, look);
@@ -1136,6 +1143,46 @@ fn draw_rename_untrusted(
     frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
 }
 
+/// The window after a quick reply failed with `Workspace not trusted`
+/// (doc/0008, doc/0040).
+fn draw_reply_untrusted(
+    frame: &mut Frame,
+    app: &App,
+    untrusted: &UntrustedReply,
+    area: Rect,
+    look: Look,
+) {
+    let r = &untrusted.job.request;
+    let dir = paths::shorten_home(&r.cwd.to_string_lossy(), app.home());
+    let mut text: Vec<String> = untrusted.message.lines().map(str::to_owned).collect();
+    text.extend([
+        String::new(),
+        format!(
+            "Your text was not sent to {}: {} has not trusted its folder, so it was not woken \
+             and stays stopped.",
+            r.name, r.owner.name
+        ),
+        format!(
+            "Ctrl+T: run `{}` in {dir} to accept Claude Code's trust prompt, then /exit; tower \
+             then sends the text once more.",
+            r.owner.command
+        ),
+        "Esc: leave it stopped; the text is not sent.".to_owned(),
+    ]);
+    let w = area.width.saturating_sub(4).min(80);
+    let inner_w = usize::from(w.saturating_sub(4)).max(1);
+    let lines: Vec<Line> = text
+        .iter()
+        .flat_map(|t| wrap(t, inner_w))
+        .map(|r| look.text_line(format!(" {r}"), look.text()))
+        .collect();
+    let h = lines.len() as u16 + 2;
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Not trusted by {} ", r.owner.name);
+    frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
+}
+
 fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect, look: Look) {
     let mut lines = vec![Line::styled(
         " The account that owns this session is unknown.",
@@ -1148,6 +1195,10 @@ fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect, look: 
         )),
         Purpose::Rename => lines.push(Line::styled(
             " Tower wakes it with that account to rename it, which moves the session to it.",
+            look.text(),
+        )),
+        Purpose::Reply => lines.push(Line::styled(
+            " Tower wakes it with that account to send your text, which moves the session to it.",
             look.text(),
         )),
         Purpose::Stop | Purpose::Remove => {}

@@ -22,6 +22,9 @@ What it adds on top:
 - **Visual-only attention.** A session that starts waiting for you or fails gets a `●`
   marker and bold text until you attach or mark it seen. No bell, sound or desktop
   notifications.
+- **Quick reply.** `t` on a session waiting for review sends it a text (typed, or a
+  [prompt template](#prompt-templates)) as your next prompt, under its own account and id,
+  without attaching ([Quick reply](#quick-reply)).
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
 - **Subagents under their session.** A working session tower started shows its running
   subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
@@ -269,7 +272,8 @@ file per template in `~/.config/watchtower/templates/` (the `templates` folder n
 your `config.toml`), named `<name>.md`. In the new-session dialog `Ctrl+P` opens a picker
 with the names and each template's first line; type to filter, `↑` / `↓` to choose,
 `Enter` inserts the text into the task (at the cursor, or as the whole task when it is
-empty), `Esc` closes the picker.
+empty), `Esc` closes the picker. The [quick reply](#quick-reply) window has the same
+picker on `Ctrl+P`.
 
 ```text
 ~/.config/watchtower/templates/
@@ -281,6 +285,24 @@ Tower only reads the folder, afresh each time the picker opens. Only regular `.m
 directly in it count; hidden files and subfolders are ignored, and symlinks, files over
 64 KiB, empty files and files that are not UTF-8 are skipped, with a note in the status
 line ([0036](doc/0036-prompt-templates.md)).
+
+## Quick reply
+
+`t` on a session opens its **Reply to** window: type the text (or `Ctrl+P` for a template;
+`Enter` starts a new line) and press `Ctrl+S`. Tower sends it as your own next prompt, with
+the command of the account that owns the session, and the session keeps its id:
+
+- a session that is idle after its turn (Ready for review, or blocked on a question it
+  asked in its reply) is stopped, and once it is gone woken with
+  `<account command> --resume <sessionId> --bg -- <text>`;
+- a session without a live process (stopped, finished, failed) is only woken that way.
+
+The window says which of the two will happen. Claude Code only takes a prompt this way on a
+stopped session; on a running one it would start a copy, which tower reports by its id
+instead of the reply. `t` is not offered while a session works, is busy (also `done · bg
+task`), or waits on a permission prompt or a question dialog: attach to answer those
+(`Enter`). The status line shows `stopping <name>…`, `waking <name> with your text…` and
+`sent to <name>` ([0040](doc/0040-quick-reply.md)).
 
 ## Keys
 
@@ -301,6 +323,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `s` | Stop the session (asks first when it is working or blocked) |
 | `d` | Remove the session (asks first) |
 | `m` | Mark a highlighted session as seen |
+| `t` | [Quick reply](#quick-reply): send the session a text as your next prompt (idle or stopped sessions) |
 | `/` | Text filter on name, project and account; `Esc` clears it |
 | `p` | Group by state / by project |
 | `i` | Show / hide interactive sessions |
@@ -348,6 +371,16 @@ New-session dialog ([0008](doc/0008-new-session-dialog.md)):
 | `Ctrl+Enter`, `Alt+Enter` | Start and attach |
 | `Ctrl+T` | After `Workspace not trusted`: run the account's command in the folder to accept trust, then retry |
 | `Esc` | Cancel (asks first if the task is not empty) |
+
+Quick reply window ([0040](doc/0040-quick-reply.md)):
+
+| Key | Action |
+|---|---|
+| `Enter`, `Ctrl+J` | New line |
+| `Ctrl+P` | Insert a [prompt template](#prompt-templates) at the cursor |
+| `Ctrl+S` | Send |
+| `Ctrl+T` | After `Workspace not trusted`: run the owner's command in the folder to accept trust, then send once more |
+| `Esc` | Cancel (asks first if text was typed) |
 
 Settings window ([0024](doc/0024-settings-window.md)):
 
