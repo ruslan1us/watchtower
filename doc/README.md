@@ -23,7 +23,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
-| 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029; busy rows outside `working` amended by 0032) |
+| 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029; busy rows outside `working` amended by 0032; header folders fitted to the width, 2026-10-21) |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted (rename wake amended by 0027) |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
@@ -37,11 +37,11 @@ This directory records the design decisions behind it, one file per decision.
 | 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted (`/proc` reads amended by 0025) |
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted (`--settings` added by 0039) |
-| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21; values wrap, titles cut and a two-row key line by 0041) |
+| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21; values wrap, titles cut and a two-row key line by 0041; group separators and the status line fitted to the width, 2026-10-21) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038) |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031; `[ui] color_depth` by 0038) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
-| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038) |
+| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038; detail-panel values wrap inside a padding column, 2026-10-21) |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 | 0027 | [Rename a session](0027-rename-sessions.md) | Accepted |

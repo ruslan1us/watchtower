@@ -11,7 +11,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::dialog::input_window;
 use super::theme::{Lb, Look, palette};
@@ -672,7 +672,8 @@ fn draw_account(
 /// The detail panel: the selected setting's help, its key, values,
 /// default, file value, unsaved value and when it applies.
 fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) {
-    let inner_w = usize::from(area.width.saturating_sub(3));
+    // The borders and one padding column each side.
+    let inner_w = usize::from(area.width.saturating_sub(4));
     let mut lines: Vec<Line<'static>> = Vec::new();
     let text_lines = |lines: &mut Vec<Line<'static>>, text: &str, st: Style| {
         for t in wrap(text, inner_w) {
@@ -680,7 +681,10 @@ fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
         }
     };
     let kv = |lines: &mut Vec<Line<'static>>, k: &str, v: &str, st: Style| {
-        for (i, part) in wrap(v, inner_w.saturating_sub(10)).into_iter().enumerate() {
+        for (i, part) in wrap_value(v, inner_w.saturating_sub(10))
+            .into_iter()
+            .enumerate()
+        {
             let mut l = Lb::new();
             l.push(" ", look.text())
                 .push(fit(if i == 0 { k } else { "" }, 10), look.hint())
@@ -766,6 +770,65 @@ fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
         Paragraph::new(lines).block(look.overlay_block(format!(" {title} "))),
         area,
     );
+}
+
+/// A detail-panel value in rows of at most `w` columns (doc/0024): a
+/// list joined by ` · ` breaks between its items, so no row starts or
+/// ends with `·`; other values break at spaces; a word longer than a row
+/// breaks after a `-`, `/` or `_` where it can, else at the row's end.
+fn wrap_value(v: &str, w: usize) -> Vec<String> {
+    let w = w.max(1);
+    let sep = if v.contains(" · ") { " · " } else { " " };
+    let mut out = Vec::new();
+    let mut row = String::new();
+    for item in v.split(sep) {
+        let joined = if row.is_empty() {
+            item.to_owned()
+        } else {
+            format!("{row}{sep}{item}")
+        };
+        if joined.width() <= w {
+            row = joined;
+            continue;
+        }
+        if !row.is_empty() {
+            out.push(std::mem::take(&mut row));
+        }
+        let mut pieces = break_word(item, w);
+        row = pieces.pop().unwrap_or_default();
+        out.extend(pieces);
+    }
+    out.push(row);
+    out
+}
+
+/// `word` in rows of at most `w` columns, each broken after the last
+/// `-`, `/` or `_` that fits in the row's second half, else at its end.
+fn break_word(word: &str, w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest: Vec<char> = word.chars().collect();
+    while rest.iter().collect::<String>().width() > w {
+        // The longest prefix that fits.
+        let mut used = 0;
+        let mut end = 0;
+        for ch in &rest {
+            let cw = ch.width().unwrap_or(0);
+            if used + cw > w {
+                break;
+            }
+            used += cw;
+            end += 1;
+        }
+        let end = end.max(1);
+        let cut = (end / 2..end)
+            .rev()
+            .find(|&k| matches!(rest[k], '-' | '/' | '_'))
+            .map_or(end, |k| k + 1);
+        out.push(rest[..cut].iter().collect());
+        rest.drain(..cut);
+    }
+    out.push(rest.into_iter().collect());
+    out
 }
 
 /// The values a setting takes, for the detail panel.

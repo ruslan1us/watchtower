@@ -1,6 +1,6 @@
 # 0024. Settings window
 
-- Status: Accepted · 2026-10-19 · the logs-follow row added by [0031](0031-logs-follow-interval.md) · an empty hand-off prompt allowed by [0033](0033-hand-off-without-a-prompt.md) · the colour-depth row added by [0038](0038-light-and-16-colour-themes.md)
+- Status: Accepted · 2026-10-19 · the logs-follow row added by [0031](0031-logs-follow-interval.md) · an empty hand-off prompt allowed by [0033](0033-hand-off-without-a-prompt.md) · the colour-depth row added by [0038](0038-light-and-16-colour-themes.md) · detail-panel values wrap inside a padding column, amended 2026-10-21
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md)
 
 ## Context
@@ -27,7 +27,12 @@ separator per section (Appearance, New sessions, Projects, Hand-off,
 General, Accounts) joined to its border, and from 130 columns a 50-column
 detail panel with the selected setting's help, key, values, default,
 file value, unsaved value and when it applies
-(`config_edit::SettingKey::applies`). Below 130 columns a one-line help
+(`config_edit::SettingKey::applies`). *Amended 2026-10-21 (UI audit):*
+its text keeps one padding column before each border; a long value
+wraps under its label, a list of values (`default · fable · …`) breaks
+between its items so no row starts or ends with `·`, and a word longer
+than a row breaks after a `-`, `/` or `_` where it can. Short values
+keep their one row. Below 130 columns a one-line help
 strip under the list replaces it. A row shows its value, a dim `default`
 when it equals the built-in default, and an amber `*` when it has an
 unsaved change (`●` stays the attention marker,

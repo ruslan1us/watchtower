@@ -1,6 +1,6 @@
 # 0006. Session states, grouping and activity times
 
-- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md) · busy rows outside `working` (`done · bg task`, no spinner) amended by [0032](0032-background-task-after-a-finished-turn.md)
+- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md) · busy rows outside `working` (`done · bg task`, no spinner) amended by [0032](0032-background-task-after-a-finished-turn.md) · header folders fitted to the width, amended 2026-10-21
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0029](0029-tracking-subagents.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -154,7 +154,11 @@ The dashboard draws headers as separators joined to the list border
 before the name (the spinner only for `state: working`, amended by
 [0032](0032-background-task-after-a-finished-turn.md)), `N of M shown` in the list's title when rows are hidden,
 per-state count pills above the list, and a detail panel for the selected
-row or group.
+row or group. *Amended 2026-10-21 (UI audit):* a header always keeps its
+arrow, its row count, its highlight count and at least three `─` before
+the border; a project's folder that does not fit first becomes `…/last`,
+then is cut with `…` (e.g. `├─▾ …/billing-platform-fronte… 1  ● 1 ───┤`
+next to the logs panel).
 
 **Activity times.** Tower tracks them itself:
 

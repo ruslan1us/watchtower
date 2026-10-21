@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::subtree::{self, Part};
 use super::theme::{Lb, Theme, rfit};
-use super::{DETACH_HINT, FOOTER_HELP, MARKER, age_column, fit, row_columns};
+use super::{DETACH_HINT, FOOTER_HELP, MARKER, StatusPiece, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
 use crate::groups::{self, Group, GroupKey, Grouping};
 
@@ -722,19 +722,47 @@ fn separator(
     } else {
         th.hue(th.key_color(group)).add_modifier(Modifier::BOLD)
     };
+    let count_text = format!(" {count}");
+    let lit_text = (lit > 0).then(|| format!("{MARKER} {lit}"));
+    // The lead, the arrow, the count, the marker, a space and the rule's
+    // shortest run stay; the title gets the rest.
+    let fixed = lead.0.width()
+        + 2
+        + count_text.width()
+        + lit_text.as_ref().map_or(0, |t| 2 + t.width())
+        + 1
+        + SEPARATOR_RULE_MIN;
+    let title = header_title(group, iw.saturating_sub(fixed));
     let mut l = Lb::new();
     l.push(lead.0, lead.1)
         .push(if collapsed { "▸ " } else { "▾ " }, th.muted())
-        .push(group.title().to_owned(), title_st)
-        .push(format!(" {count}"), th.muted());
-    if lit > 0 {
-        l.push("  ", th.muted())
-            .push(format!("{MARKER} {lit}"), th.attention());
+        .push(title, title_st)
+        .push(count_text, th.muted());
+    if let Some(text) = lit_text {
+        l.push("  ", th.muted()).push(text, th.attention());
     }
     l.push(" ", th.muted());
     let n = iw.saturating_sub(l.w);
     l.push("─".repeat(n), th.line());
     l.line()
+}
+
+/// The shortest run of `─` a separator keeps before the border.
+const SEPARATOR_RULE_MIN: usize = 3;
+
+/// A group header's title in at most `w` columns (doc/0006): a project's
+/// folder first becomes `…/last`, then is cut with `…`; a state group's
+/// title is cut with `…`.
+fn header_title(group: &GroupKey, w: usize) -> String {
+    let title = group.title();
+    if title.width() <= w {
+        return title.to_owned();
+    }
+    let short = match group {
+        GroupKey::Project(_) => short_project(title),
+        GroupKey::State(_) => title.to_owned(),
+    };
+    super::shorten(&short, w.max(1))
 }
 
 /// One session row: selection bar, attention marker, spinner or state
@@ -829,27 +857,21 @@ fn session_row(
 fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme) {
     let mut l = Lb::new();
     l.push(" ", Style::new());
-    let counter = super::attention_text(app.attention_count()).map(|text| {
-        if app.attention_filtered() > 0 {
-            format!("{text} (filtered)")
-        } else {
-            text
-        }
-    });
-    if let Some(text) = &counter {
-        l.push(format!("{MARKER} {text}"), th.attention());
-    }
-    for (i, seg) in app.status_segments(now).into_iter().enumerate() {
-        if i > 0 || counter.is_some() {
-            l.push("  ·  ", th.faint());
-        }
-        let style = match (seg.severity, th.color) {
-            (Severity::Info, _) => th.text(),
-            (Severity::Warning, true) if th.hues() => th.fg(th.p.amber),
-            (Severity::Error, true) => th.attention(),
-            _ => Style::new().add_modifier(Modifier::BOLD),
+    let width = usize::from(area.width).saturating_sub(1);
+    for piece in super::status_pieces(app, now, width) {
+        match piece {
+            StatusPiece::Counter(text) => l.push(text, th.attention()),
+            StatusPiece::Gap => l.push(super::STATUS_GAP, th.faint()),
+            StatusPiece::Segment(text, severity) => {
+                let style = match (severity, th.color) {
+                    (Severity::Info, _) => th.text(),
+                    (Severity::Warning, true) if th.hues() => th.fg(th.p.amber),
+                    (Severity::Error, true) => th.attention(),
+                    _ => Style::new().add_modifier(Modifier::BOLD),
+                };
+                l.push(text, style)
+            }
         };
-        l.push(seg.text, style);
     }
     put(frame, area, l.line());
 }

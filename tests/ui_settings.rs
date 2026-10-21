@@ -555,6 +555,74 @@ fn the_folder_list_sizes_its_columns_from_the_folders() {
     }
 }
 
+/// The detail panel's rows between its borders: the last 50 columns.
+fn detail_rows(lines: &[String], w: u16) -> Vec<String> {
+    let from = usize::from(w) - 50;
+    lines
+        .iter()
+        .map(|l| l.chars().skip(from).collect::<String>())
+        .filter(|r| r.starts_with('│') && r.ends_with('│'))
+        .map(|r| {
+            let cs: Vec<char> = r.chars().collect();
+            cs[1..cs.len() - 1].iter().collect()
+        })
+        .collect()
+}
+
+/// Long values in the detail panel wrap and keep one padding column
+/// before its border; a list of values breaks between its items
+/// (doc/0024). Below 130 columns the help strip is cut with `…`.
+#[test]
+fn long_values_in_the_detail_panel_wrap_inside_its_padding() {
+    let (_env, mut app) = opened_long();
+    select(&mut app, "default model");
+    let s = screen(&mut app, 160, 45);
+    let rows = detail_rows(&s, 160);
+    assert!(rows.len() > 10, "{}", s.join("\n"));
+    for row in &rows {
+        assert!(row.ends_with(' '), "touches the border: {row:?}");
+        assert!(!row.trim_end().ends_with('·'), "{row:?}");
+        assert!(!row.trim_start().starts_with('·'), "{row:?}");
+    }
+    let at = rows
+        .iter()
+        .position(|r| r.starts_with(" in file   "))
+        .unwrap();
+    assert_eq!(
+        rows[at].trim_end(),
+        " in file   \"claude-opus-4-1-20250805-"
+    );
+    assert_eq!(rows[at + 1].trim(), "experimental-long-context\"");
+    let values = rows
+        .iter()
+        .position(|r| r.starts_with(" values    "))
+        .unwrap();
+    assert_eq!(
+        rows[values].trim_end(),
+        " values    default · fable · opus · sonnet"
+    );
+    assert_eq!(rows[values + 1].trim(), "haiku · a full model name");
+    // A short value keeps its row.
+    select(&mut app, "style");
+    let s = screen(&mut app, 160, 45);
+    let rows = detail_rows(&s, 160);
+    assert!(
+        rows.iter()
+            .any(|r| r.trim_end() == " values    dashboard · minimal"),
+        "{rows:?}"
+    );
+
+    // 80 columns: the one-line help strip, cut before its padding.
+    select(&mut app, "default model");
+    let s = screen(&mut app, 80, 24);
+    let strip = list_row(&s, "default model  The new-session");
+    assert!(strip.ends_with("… "), "{strip:?}");
+    assert!(
+        !s.iter().any(|l| l.contains("in file   ")),
+        "no detail panel"
+    );
+}
+
 /// The width of the window whose top border, on the row holding `row`,
 /// starts with `title`.
 fn window_width(lines: &[String], row: &str, title: &str) -> usize {

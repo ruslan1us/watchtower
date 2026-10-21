@@ -2205,7 +2205,6 @@ invariants! {
     hint_row_resume: HintRow, "resume-";
     hint_row_settings: HintRow, "settings-";
     cut_list: Cut, "list-";
-    #[ignore = "F-F1"]
     cut_status: Cut, "status-";
     cut_filter: Cut, "filter-";
     cut_logs: Cut, "logs-";
@@ -2221,9 +2220,7 @@ invariants! {
     cut_picker: Cut, "picker-";
     cut_resume: Cut, "resume-";
     cut_settings: Cut, "settings-";
-    #[ignore = "F-E4"]
     mid_word_list: MidWord, "list-";
-    #[ignore = "F-F1"]
     mid_word_status: MidWord, "status-";
     mid_word_filter: MidWord, "filter-";
     mid_word_logs: MidWord, "logs-";
@@ -2257,7 +2254,6 @@ invariants! {
     could_wrap_settings: CouldWrap, "settings-";
     odd_list: Odd, "list-";
     odd_status: Odd, "status-";
-    #[ignore = "F-F1"]
     odd_filter: Odd, "filter-";
     odd_logs: Odd, "logs-";
     odd_help: Odd, "help-";

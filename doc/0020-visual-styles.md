@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21 · values wrap, titles cut with `…`, two-row key line by [0041](0041-details-panel-values-wrap.md)
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21 · values wrap, titles cut with `…`, two-row key line by [0041](0041-details-panel-values-wrap.md) · group separators and the status line fitted to the width, amended 2026-10-21 (UI audit)
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -42,7 +42,10 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
 - Sessions panel: `N of M shown` in its title when folded groups, the
   filter or `i` hide rows, else the session count; a column header from 26
   rows; each group as a separator joined to the border
-  (`├─▾ Needs me 2  ● 2 ──┤`, `▸` when folded); rows with the attention
+  (`├─▾ Needs me 2  ● 2 ──┤`, `▸` when folded; *amended 2026-10-21 (UI
+  audit):* the arrow, count and `●` count stay, with at least three `─`
+  before the border, and a long folder becomes `…/last`, then is cut
+  with `…`, [0006](0006-session-states-and-grouping.md)); rows with the attention
   marker, a Braille spinner for busy rows (one frame per redraw tick, no
   extra wake-ups) or a `▪` in the group colour, name, project, state
   detail, age and account. Interactive rows are dimmed. Narrow lists shorten
@@ -70,6 +73,16 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
 - Status line and footer carry the same content and rules as the minimal
   style (counter first, segments, whole key hints dropped least used first,
   `? help` and the detach hint kept), in the dashboard's palette.
+  *Amended 2026-10-21 (UI audit):* in both styles the status line is
+  fitted to the width. After the attention counter, whole segments are
+  kept in priority order: errors, then the view's state, progress and
+  messages (filter, hidden interactive rows, hand-off, rename, reply,
+  attach check, status message), then warnings, each in their usual
+  order, and `refreshed …` (or `loading…`) last. The first segment that
+  does not fit is the last one shown: its folders become `…/last` and
+  its long words are shortened with `…`, then its end is cut with `…`;
+  with fewer than 12 columns left it is left out. The line never starts
+  or ends with `·`.
 - Overlays, dialogs, pickers and help are the same windows in both styles,
   with the same text and layout; while the dashboard is drawn they take
   its theme's look, colours from [0021](0021-dashboard-themes.md).

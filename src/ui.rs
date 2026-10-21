@@ -48,7 +48,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::activity;
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LOGS_KEY_TABLE, LogsPanel, LogsView, Overlay,
-    Picker, Popup, Purpose, QuitPrompt, Severity, TargetPicker, UntrustedHandoff,
+    Picker, Popup, Purpose, QuitPrompt, Severity, StatusSegment, TargetPicker, UntrustedHandoff,
     UntrustedOrchestrator, UntrustedRename, UntrustedReply,
 };
 use crate::config::UiStyle;
@@ -901,37 +901,162 @@ pub fn attention_text(count: usize) -> Option<String> {
     }
 }
 
-fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant) {
-    let mut spans = vec![Span::raw(" ")];
+/// The separator between status-line segments.
+pub(crate) const STATUS_GAP: &str = "  ·  ";
+
+/// The fewest columns a cut status segment keeps; with less room it is
+/// left out.
+const STATUS_CUT_MIN: usize = 12;
+
+/// Words of a cut status segment longer than this are shortened before
+/// the segment's end is cut.
+const STATUS_WORD_MIN: usize = 20;
+
+/// One piece of the fitted status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StatusPiece {
+    /// The attention counter with its marker, `● 2 need you`.
+    Counter(String),
+    /// [`STATUS_GAP`], only ever between two other pieces.
+    Gap,
+    Segment(String, Severity),
+}
+
+/// The status line of `app` fitted to `width` columns (the leading space
+/// excluded), in both styles (doc/0007, doc/0020).
+pub(crate) fn status_pieces(app: &App, now: Instant, width: usize) -> Vec<StatusPiece> {
     // Global, whatever the filter hides; it says so when it hides some
     // (doc/0006, doc/0007).
     let counter = attention_text(app.attention_count()).map(|text| {
         if app.attention_filtered() > 0 {
-            format!("{text} (filtered)")
+            format!("{MARKER} {text} (filtered)")
         } else {
-            text
+            format!("{MARKER} {text}")
         }
     });
-    if let Some(text) = &counter {
-        spans.push(Span::styled(
-            format!("{MARKER} {text}"),
-            attention_style(app.color),
-        ));
+    fit_status(counter, app.status_segments(now), width)
+}
+
+/// Whether `text` is the status line's refresh segment (`refreshed 3s
+/// ago`, `no successful refresh yet`, `loading…`; see
+/// [`App::status_segments`]), which gives way to every other segment.
+fn is_refresh_segment(text: &str) -> bool {
+    (text.starts_with("refreshed ") && text.ends_with(" ago"))
+        || text == "no successful refresh yet"
+        || text == "loading…"
+}
+
+/// The status line's pieces in `width` columns: the counter, then whole
+/// segments by priority (errors, then the view's state, progress and
+/// messages, then warnings, each in [`App::status_segments`] order, and
+/// the refresh segment last). The first
+/// segment that does not fit is the last: its long words are shortened
+/// (folders to `…/last`, then any word to [`STATUS_WORD_MIN`]), then its
+/// end is cut with `…`, or it is left out with less than
+/// [`STATUS_CUT_MIN`] columns. A gap never starts or ends the line.
+pub(crate) fn fit_status(
+    counter: Option<String>,
+    segments: Vec<StatusSegment>,
+    width: usize,
+) -> Vec<StatusPiece> {
+    let rank = |s: &StatusSegment| match s.severity {
+        _ if is_refresh_segment(&s.text) => 3,
+        Severity::Error => 0,
+        Severity::Info => 1,
+        Severity::Warning => 2,
+    };
+    let mut segments = segments;
+    segments.sort_by_key(rank);
+    let mut out = Vec::new();
+    let mut used = 0;
+    if let Some(text) = counter {
+        if text.width() > width {
+            out.push(StatusPiece::Counter(shorten(&text, width)));
+            return out;
+        }
+        used = text.width();
+        out.push(StatusPiece::Counter(text));
     }
-    for (i, seg) in app.status_segments(now).into_iter().enumerate() {
-        if i > 0 || counter.is_some() {
-            spans.push(Span::styled(
-                "  ·  ",
-                Style::new().add_modifier(Modifier::DIM),
+    for seg in segments {
+        let gap = if out.is_empty() {
+            0
+        } else {
+            STATUS_GAP.width()
+        };
+        let need = gap + seg.text.width();
+        if used + need <= width {
+            if gap > 0 {
+                out.push(StatusPiece::Gap);
+            }
+            used += need;
+            out.push(StatusPiece::Segment(seg.text, seg.severity));
+            continue;
+        }
+        let room = width.saturating_sub(used + gap);
+        if room >= STATUS_CUT_MIN || (out.is_empty() && room > 0) {
+            if gap > 0 {
+                out.push(StatusPiece::Gap);
+            }
+            out.push(StatusPiece::Segment(
+                shorten_segment(&seg.text, room),
+                seg.severity,
             ));
         }
-        let style = match (seg.severity, app.color) {
-            (Severity::Info, _) => Style::new(),
-            (Severity::Warning, true) => Style::new().fg(Color::Yellow),
-            (Severity::Error, true) => Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            (_, false) => Style::new().add_modifier(Modifier::BOLD),
+        break;
+    }
+    out
+}
+
+/// A status segment in `room` columns: folders become `…/last` and long
+/// words are shortened, longest first and only as far as needed, then
+/// the end is cut with `…`.
+fn shorten_segment(text: &str, room: usize) -> String {
+    let mut words: Vec<String> = text.split(' ').map(str::to_owned).collect();
+    let total = |words: &[String]| words.iter().map(|w| w.width()).sum::<usize>() + words.len() - 1;
+    // Folders first, the longest first.
+    while total(&words) > room {
+        let Some(k) = (0..words.len())
+            .filter(|&k| words[k].contains('/') && short_folder(&words[k]) != words[k])
+            .max_by_key(|&k| words[k].width())
+        else {
+            break;
         };
-        spans.push(Span::styled(seg.text, style));
+        words[k] = short_folder(&words[k]);
+    }
+    // Then any long word, longest first.
+    while total(&words) > room {
+        let Some(k) = (0..words.len())
+            .filter(|&k| words[k].width() > STATUS_WORD_MIN)
+            .max_by_key(|&k| words[k].width())
+        else {
+            break;
+        };
+        let over = total(&words) - room;
+        let w = words[k].width();
+        words[k] = shorten(&words[k], w.saturating_sub(over).max(STATUS_WORD_MIN));
+    }
+    shorten(&words.join(" "), room)
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant) {
+    let mut spans = vec![Span::raw(" ")];
+    let width = usize::from(area.width).saturating_sub(1);
+    for piece in status_pieces(app, now, width) {
+        spans.push(match piece {
+            StatusPiece::Counter(text) => Span::styled(text, attention_style(app.color)),
+            StatusPiece::Gap => Span::styled(STATUS_GAP, Style::new().add_modifier(Modifier::DIM)),
+            StatusPiece::Segment(text, severity) => {
+                let style = match (severity, app.color) {
+                    (Severity::Info, _) => Style::new(),
+                    (Severity::Warning, true) => Style::new().fg(Color::Yellow),
+                    (Severity::Error, true) => {
+                        Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    }
+                    (_, false) => Style::new().add_modifier(Modifier::BOLD),
+                };
+                Span::styled(text, style)
+            }
+        });
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -1462,7 +1587,9 @@ pub fn fit(s: &str, w: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::fit;
+    use super::{StatusPiece, fit, fit_status};
+    use crate::app::{Severity, StatusSegment};
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn fit_pads_and_truncates() {
@@ -1470,5 +1597,120 @@ mod tests {
         assert_eq!(fit("abcdef", 4), "abc…");
         assert_eq!(fit("abc", 0), "");
         assert_eq!(fit("日本語", 4), "日… ");
+    }
+
+    fn seg(text: &str, severity: Severity) -> StatusSegment {
+        StatusSegment {
+            text: text.to_owned(),
+            severity,
+        }
+    }
+
+    /// The line as drawn, without the leading space.
+    fn text(pieces: &[StatusPiece]) -> String {
+        pieces
+            .iter()
+            .map(|p| match p {
+                StatusPiece::Counter(t) | StatusPiece::Segment(t, _) => t.as_str(),
+                StatusPiece::Gap => super::STATUS_GAP,
+            })
+            .collect()
+    }
+
+    fn many() -> Vec<StatusSegment> {
+        vec![
+            seg("filter \"auth\": 2 matches", Severity::Info),
+            seg(
+                "started refactor-the-authentication-middleware-and-session-store under main \
+                 in ~/workspace/billing-platform-frontend-with-a-very-long-folder-name",
+                Severity::Info,
+            ),
+            seg("refreshed 3s ago", Severity::Info),
+            seg(
+                "alt: claude-alt agents --json failed (exit 1): could not reach the \
+                 background service",
+                Severity::Error,
+            ),
+            seg(
+                "project root ~/old-projects does not exist",
+                Severity::Warning,
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_status_line_keeps_whole_segments_by_priority() {
+        let counter = || Some("● 2 need you".to_owned());
+        // Wide enough for everything: errors, info, warnings, refresh.
+        let all = text(&fit_status(counter(), many(), 400));
+        assert_eq!(
+            all,
+            "● 2 need you  ·  alt: claude-alt agents --json failed (exit 1): could not reach \
+             the background service  ·  filter \"auth\": 2 matches  ·  started \
+             refactor-the-authentication-middleware-and-session-store under main in \
+             ~/workspace/billing-platform-frontend-with-a-very-long-folder-name  ·  project \
+             root ~/old-projects does not exist  ·  refreshed 3s ago"
+        );
+        for w in [79, 119, 249] {
+            let pieces = fit_status(counter(), many(), w);
+            let line = text(&pieces);
+            assert!(line.width() <= w, "{w}: {line}");
+            assert!(
+                line.starts_with("● 2 need you  ·  alt: claude-alt"),
+                "{w}: {line}"
+            );
+            assert!(!line.trim_end().ends_with('·'), "{w}: {line}");
+            assert!(!matches!(pieces.last(), Some(StatusPiece::Gap)), "{w}");
+            // Only the last piece is cut.
+            let cut: Vec<usize> = pieces
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| matches!(p, StatusPiece::Segment(t, _) if t.ends_with('…')))
+                .map(|(k, _)| k)
+                .collect();
+            assert!(cut.iter().all(|&k| k + 1 == pieces.len()), "{w}: {line}");
+        }
+        // 80 columns: the error is cut at its end.
+        let line = text(&fit_status(counter(), many(), 79));
+        assert_eq!(
+            line,
+            "● 2 need you  ·  alt: claude-alt agents --json failed (exit 1): could not reac…"
+        );
+        // 120: the error whole, the filter cut, the rest gives way.
+        let line = text(&fit_status(counter(), many(), 119));
+        assert!(
+            line.ends_with("background service  ·  filter \"aut…"),
+            "{line}"
+        );
+        assert!(!line.contains("started"), "{line}");
+        // 250: the message's folder becomes `…/last` and is shortened
+        // before anything else; the warning and `refreshed` give way.
+        let line = text(&fit_status(counter(), many(), 249));
+        assert!(
+            line.ends_with(
+                "·  started refactor-the-authentication-middleware-and-session-store under \
+                 main in …/billing-platform-frontend-with-…"
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("project root"), "{line}");
+        assert!(!line.contains("refreshed"), "{line}");
+    }
+
+    #[test]
+    fn a_cut_segment_shortens_its_names_first() {
+        let pieces = fit_status(None, many()[1..2].to_vec(), 60);
+        assert_eq!(
+            text(&pieces),
+            "started refactor-the-authen… under main in …/billing-platfo…"
+        );
+        // A gap never starts the line, and nothing is cut too short.
+        let pieces = fit_status(Some("● 1 needs you".into()), many(), 20);
+        assert_eq!(text(&pieces), "● 1 needs you");
+        assert_eq!(
+            text(&fit_status(Some("● 1 needs you".into()), many(), 5)),
+            "● 1 …"
+        );
+        assert!(fit_status(None, Vec::new(), 80).is_empty());
     }
 }

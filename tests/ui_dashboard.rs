@@ -883,6 +883,128 @@ fn every_theme_draws_the_same_text() {
     }
 }
 
+const LONG_FOLDER: &str = "billing-platform-frontend-with-a-very-long-folder-name";
+
+/// [`app`] with a highlighted session in [`LONG_FOLDER`].
+fn with_long_folder() -> App {
+    let mut app = app();
+    let mut rows = main_rows();
+    rows.push(bg(
+        "5f4e3d2c",
+        "long-folder-task",
+        LONG_FOLDER,
+        "blocked",
+        Some("waiting"),
+        Some("permission prompt"),
+        7,
+    ));
+    app.apply_poll(update("main", &rows));
+    app
+}
+
+/// The separator of the [`LONG_FOLDER`] project.
+fn long_header(lines: &[String]) -> &str {
+    lines
+        .iter()
+        .find(|l| l.starts_with("├─▾ ") && l.contains("billing-platform"))
+        .unwrap_or_else(|| panic!("no project header in\n{}", lines.join("\n")))
+}
+
+/// A project header keeps its arrow, count and marker and a run of `─`
+/// before the border; the folder gives way, `…/last` first (doc/0006).
+#[test]
+fn a_long_project_header_keeps_its_count_and_marker_beside_the_logs() {
+    let mut app = with_long_folder();
+    app.handle_key(ch('p'));
+    select(&mut app, "long-folder-task");
+    open_logs(&mut app, "question");
+    assert!(app.logs().is_some());
+    for (w, h) in [(80, 24), (140, 40), (160, 45)] {
+        let l = screen(&mut app, w, h);
+        let header = long_header(&l);
+        assert!(header.starts_with("├─▾ "), "{w}x{h}: {header}");
+        let (_, rule) = header
+            .split_once(" 1  ● 1 ")
+            .unwrap_or_else(|| panic!("{w}x{h}: count and marker: {header}"));
+        let dashes = rule.chars().take_while(|c| *c == '─').count();
+        assert!(dashes >= 3, "{w}x{h}: {header}");
+        assert!(
+            rule[dashes * '─'.len_utf8()..].starts_with('┤'),
+            "{w}x{h}: {header}"
+        );
+        assert!(
+            header.contains("▾ …/billing-platform-"),
+            "{w}x{h}: {header}"
+        );
+        assert!(!header.contains("~/workspace/billing"), "{w}x{h}: {header}");
+    }
+    // At 140 columns the list is 70 wide: `…/last` is cut too.
+    let l = screen(&mut app, 140, 40);
+    let header = long_header(&l);
+    assert!(
+        header
+            .starts_with("├─▾ …/billing-platform-frontend-with-a-very-long-folder-n… 1  ● 1 ───┤"),
+        "{header}"
+    );
+    // Without the logs panel, at 250 columns, the folder is whole.
+    app.handle_key(ch(' '));
+    let l = screen(&mut app, 250, 60);
+    let header = long_header(&l);
+    assert!(
+        header.starts_with(&format!("├─▾ ~/workspace/{LONG_FOLDER} 1  ● 1 ───")),
+        "{header}"
+    );
+}
+
+/// The status line keeps whole segments by priority and cuts only the
+/// last one with `…`, in both styles (doc/0007, doc/0020).
+#[test]
+fn the_status_line_is_fitted_to_the_width_in_both_styles() {
+    let message = format!(
+        "started refactor-the-authentication-middleware-and-session-store under main in \
+         ~/workspace/{LONG_FOLDER}"
+    );
+    for style in [UiStyle::Dashboard, UiStyle::Minimal] {
+        let mut app = app();
+        app.style = style;
+        app.set_message(&message, watchtower::app::Severity::Info);
+        app.add_warning("project root ~/old-projects-from-the-previous-laptop does not exist");
+        app.apply_poll(PollUpdate {
+            account: "alt".into(),
+            cycle: 1,
+            result: Err(
+                "claude-alt agents --json failed (exit 1): could not reach the \
+                         background service"
+                    .into(),
+            ),
+        });
+        for (w, h) in [(80, 24), (120, 36), (250, 60)] {
+            let l = screen(&mut app, w, h);
+            let status = &l[usize::from(h) - 2];
+            assert!(
+                status.starts_with(" ● 3 need you  ·  alt: claude-alt agents --json failed"),
+                "{style:?} {w}x{h}: {status}"
+            );
+            assert!(!status.ends_with('·'), "{style:?} {w}x{h}: {status}");
+            assert_eq!(
+                status.matches('…').count(),
+                usize::from(status.ends_with('…')) + status.matches("…/").count(),
+                "only the last segment is cut: {style:?} {w}x{h}: {status}"
+            );
+            if w < 250 {
+                assert!(status.ends_with('…'), "{style:?} {w}x{h}: {status}");
+            }
+        }
+        let l = screen(&mut app, 250, 60);
+        let status = &l[58];
+        assert!(
+            status.contains("service (showing last good list)  ·  started refactor-the-"),
+            "{style:?}: {status}"
+        );
+        assert!(!status.contains("refreshed"), "{style:?}: {status}");
+    }
+}
+
 #[test]
 #[ignore = "prints the screens for a look"]
 fn dump() {
