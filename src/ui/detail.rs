@@ -1,6 +1,7 @@
 //! The dashboard's detail panel (doc/0020): what tower knows about the
 //! selected session, or a summary of the selected group. A side panel on
-//! wide terminals, a three-line strip under the list on narrower ones.
+//! wide terminals, a four-line strip under the list on narrower ones; both
+//! show the folder's `git` summary when tower has one (doc/0037).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -147,6 +148,16 @@ fn handoff_text(app: &App, m: &MergedSession) -> String {
     }
 }
 
+/// `git       feature/login · 3 changed · ↑2` for the session's folder in
+/// a line `width` columns wide, when tower has a summary for it
+/// (doc/0037). Not inside a work tree, no git, a folder that is gone or a
+/// `git status` that failed: no line.
+fn git_line(app: &App, m: &MergedSession, width: usize, th: Theme) -> Option<Lb> {
+    let summary = app.git_summary(&m.session.cwd)?;
+    let room = width.saturating_sub(1 + KEY_W + 1);
+    Some(kv("git", summary.fitted(room), th.text(), th))
+}
+
 /// The short id and kind: `5e6f7a8b · background`.
 fn id_text(m: &MergedSession) -> (String, &'static str) {
     let id = m.session.id.clone().unwrap_or_else(|| "-".to_owned());
@@ -174,6 +185,9 @@ fn keys(app: &App, subject: &Subject) -> Vec<(&'static str, &'static str)> {
                 k.push(("a", "hand-off"));
             }
             k.push(("s", "stop"));
+            if !m.session.cwd.is_empty() {
+                k.push(("!", "shell"));
+            }
             k
         }
         Subject::Group { collapsed, .. } => {
@@ -291,6 +305,9 @@ fn session_lines(app: &App, m: &MergedSession, width: usize, now_ms: i64, th: Th
         kv("changed", changed_text(app, m, now_ms), text, th),
         Lb::new(),
         kv("folder", paths::shorten_home(&s.cwd, app.home()), text, th),
+    ]);
+    lines.extend(git_line(app, m, width, th));
+    lines.extend([
         account_line(app, m, "account", th),
         kv("id", id, text, th),
         kv("kind", kind, text, th),
@@ -439,6 +456,7 @@ pub fn draw_strip(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: The
                 (head, rest.next().unwrap_or_default()),
                 (fold, rest.next().unwrap_or_default()),
                 (Lb::new(), rest.next().unwrap_or_default()),
+                (Lb::new(), rest.next().unwrap_or_default()),
             ]
         }
         Subject::Nothing => {
@@ -466,5 +484,13 @@ pub fn draw_strip(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: The
         cut.pad_to(half, Style::new());
         cut.append(right);
         put(frame, row(inner, k as u16), cut.line());
+    }
+    // The fourth line, across both halves: the folder's git summary
+    // (doc/0037).
+    if let Subject::Session(m) = &subject
+        && inner.height >= 4
+        && let Some(l) = git_line(app, m, usize::from(inner.width), th)
+    {
+        put(frame, row(inner, 3), l.line());
     }
 }

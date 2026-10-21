@@ -44,6 +44,7 @@ use crate::cli::{CliError, CliRunner};
 use crate::config::ConfigError;
 use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
+use crate::gitinfo::{GitJob, GitRunner, GitState};
 use crate::handoff::{self, HandoffError, HandoffTiming, Resumed, Step};
 use crate::orchestrator::{self, StartError};
 use crate::projects::{self, ProjectList};
@@ -101,6 +102,8 @@ pub enum JobResult {
     /// The templates folder listed for the picker of load `id`
     /// (doc/0036).
     Templates(u64, TemplateList),
+    /// A finished `git status` for the details panel (doc/0037).
+    Git(GitJob, GitState),
 }
 
 impl JobResult {
@@ -140,6 +143,10 @@ impl JobResult {
                 Vec::new()
             }
             JobResult::Templates(id, list) => app.templates_loaded(id, list),
+            JobResult::Git(job, state) => {
+                app.git_finished(job, state);
+                Vec::new()
+            }
         }
     }
 }
@@ -160,6 +167,8 @@ pub struct Jobs {
     /// The sidecar file a hand-off checks before waking (doc/0017).
     state_file: Option<PathBuf>,
     spawner: ThreadSpawner,
+    /// Runs the details panel's `git status` (doc/0037).
+    git: Arc<GitRunner>,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
 }
@@ -174,9 +183,28 @@ impl Jobs {
             rename_timing: RenameTiming::default(),
             state_file: None,
             spawner: spawn_thread,
+            git: Arc::new(GitRunner::new()),
             tx,
             rx,
         }
+    }
+
+    /// Uses `runner` for `git status` (tests).
+    pub fn with_git_runner(mut self, runner: GitRunner) -> Jobs {
+        self.git = Arc::new(runner);
+        self
+    }
+
+    /// Runs `git status` in `job`'s folder (doc/0037). A worker that panics
+    /// or cannot start reports the folder's git state as unavailable, so
+    /// the folder is asked again later.
+    pub fn git(&self, job: GitJob) {
+        let git = Arc::clone(&self.git);
+        let fail = |job, err: CliError| JobResult::Git(job, GitState::Unavailable(err.to_string()));
+        self.launch("git", job, fail, move |_, _, job| {
+            let state = git.status(&job.dir());
+            JobResult::Git(job, state)
+        });
     }
 
     /// Uses `timing` for the stop wait of hand-offs (tests).

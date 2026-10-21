@@ -43,6 +43,7 @@ use crate::dialog::{
     ReplyWindow, ResumeAction, ResumeWindow,
 };
 use crate::dispatch::{self, DispatchError, DispatchRequest, Dispatched};
+use crate::gitinfo::{GitCache, GitJob, GitState, GitSummary};
 use crate::groups::{self, Group, GroupKey, Grouping};
 use crate::handoff::{self, HandoffError, HandoffRequest, Outcome, Resumed, Step};
 use crate::layout;
@@ -60,6 +61,7 @@ use crate::ptysize::TtyProbe;
 use crate::rename::{self, NameCheck, RenameError, RenameRequest, RenameStep, Renamed};
 use crate::reply::{self, Replied, ReplyError, ReplyRequest, ReplyStep};
 use crate::settings::{FolderResult, SettingsAction, SettingsWindow};
+use crate::shell::{ShellOutcome, ShellRequest, ShellResult};
 use crate::sidecar::{
     self, AccountSource, CheckJob, OwnerRecord, RecentProject, Reloaded, SaveJob, Saved, Sidecar,
     StateTuple,
@@ -213,6 +215,14 @@ pub enum Effect {
     /// call [`App::reply_trust_finished`], which retries the reply once
     /// without a second stop (doc/0008, doc/0040).
     ReplyTrust(ReplyJob),
+    /// Run `git status` in a session's folder on a worker thread
+    /// ([`crate::gitinfo::GitRunner::status`]), then call
+    /// [`App::git_finished`] (doc/0037).
+    GitStatus(GitJob),
+    /// Hand the terminal to a shell in a session's folder exactly like an
+    /// attach ([`crate::shell::run`]), then call [`App::shell_finished`]
+    /// (doc/0037).
+    Shell(ShellRequest),
 }
 
 /// The note shown while the config's accounts differ from the ones tower
@@ -1062,6 +1072,8 @@ pub enum Action {
     Reply,
     /// `→` / `l`: give the keys to the open logs panel (doc/0028).
     FocusLogs,
+    /// `!`: a shell in the selected session's folder (doc/0037).
+    Shell,
 }
 
 /// Keys of the logs panel while it has the focus (doc/0028), looked up
@@ -1108,7 +1120,10 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
         "Space, Esc, →",
         "toggle / close the logs panel; → scrolls it",
     ),
-    ("c, r, ?", "settings; refresh now; this help"),
+    (
+        "!, c, r, ?",
+        "shell in the folder; settings; refresh now; help",
+    ),
     ("q, Ctrl+C", "quit"),
     ("Ctrl+Z", "inside a session: return to tower"),
 ];
@@ -1182,6 +1197,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('e') => Action::Rename,
         KeyCode::Char('t') => Action::Reply,
         KeyCode::Right | KeyCode::Char('l') => Action::FocusLogs,
+        KeyCode::Char('!') => Action::Shell,
         _ => return None,
     };
     Some(action)
@@ -1351,6 +1367,11 @@ pub struct App {
     /// enhancement is on); the dialog footer then shows it instead of
     /// `Alt+Enter` (doc/0011).
     pub keyboard_enhanced: bool,
+    /// `git status` results by folder, for the details panel (doc/0037).
+    git: GitCache,
+    /// Whether the last frame drew a details panel that shows the `git`
+    /// line; only then is git asked (doc/0037).
+    git_shown: bool,
 }
 
 impl App {
@@ -1440,6 +1461,8 @@ impl App {
             theme,
             style_fallback_noted: false,
             keyboard_enhanced: false,
+            git: GitCache::default(),
+            git_shown: false,
         }
     }
 
@@ -3173,6 +3196,7 @@ impl App {
             Action::Settings => return self.request_settings(),
             Action::Rename => effects = self.request_rename(),
             Action::Reply => effects = self.request_reply(),
+            Action::Shell => return self.request_shell(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
@@ -4710,7 +4734,109 @@ impl App {
     /// on every turn of its loop.
     pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
         self.show_waiting();
-        self.attach_progress(now)
+        let mut effects = self.attach_progress(now);
+        if let Some(job) = self.start_git(now) {
+            effects.push(Effect::GitStatus(job));
+        }
+        effects
+    }
+
+    // ---- the details panel's git line and the shell (doc/0037) -----------
+
+    /// Set by the renderer on every frame: whether it drew a details panel
+    /// with room for the `git` line.
+    pub fn set_git_shown(&mut self, shown: bool) {
+        self.git_shown = shown;
+    }
+
+    /// The `git` summary of the folder `cwd` (as a session lists it), when
+    /// known.
+    pub fn git_summary(&self, cwd: &str) -> Option<&GitSummary> {
+        self.git.summary(cwd)
+    }
+
+    /// The git results by folder.
+    pub fn git_cache(&self) -> &GitCache {
+        &self.git
+    }
+
+    /// The `git status` to run now for the selected session's folder:
+    /// only while the last frame showed the `git` line, and only when that
+    /// folder has no fresh result and no job running ([`GitCache::start`]).
+    /// The runtime asks on every turn ([`App::tick`]), so a new selection
+    /// and an expired result are both picked up.
+    pub fn start_git(&mut self, now: Instant) -> Option<GitJob> {
+        if !self.git_shown {
+            return None;
+        }
+        let cwd = self.selected_session()?.session.cwd.clone();
+        self.git.start(&cwd, now)
+    }
+
+    /// Records the result of a `git status` job.
+    pub fn git_finished(&mut self, job: GitJob, state: GitState) {
+        self.git.finished(&job, state, Instant::now());
+    }
+
+    /// `!`: a shell in the selected row's folder. Any session row with a
+    /// folder qualifies, interactive and stopped ones too; whether the
+    /// folder still exists is checked right before the hand-over
+    /// ([`crate::shell::run`]).
+    fn request_shell(&mut self) -> Vec<Effect> {
+        let Some(m) = self.selected_session() else {
+            self.set_message(
+                "select a session to open a shell in its folder",
+                Severity::Info,
+            );
+            return Vec::new();
+        };
+        let cwd = m.session.cwd.clone();
+        let name = m.session.display_name();
+        if cwd.is_empty() {
+            self.set_message(format!("{name} has no folder"), Severity::Info);
+            return Vec::new();
+        }
+        let folder = paths::shorten_home(&cwd, &self.home);
+        vec![Effect::Shell(ShellRequest {
+            dir: PathBuf::from(cwd),
+            folder,
+        })]
+    }
+
+    /// Reports how the shell ended and polls at once, as after an attach.
+    pub fn shell_finished(&mut self, outcome: ShellOutcome) -> Vec<Effect> {
+        let folder = outcome.folder;
+        let result = match outcome.result {
+            ShellResult::FolderGone => {
+                self.set_message(
+                    format!("{folder} no longer exists; no shell started"),
+                    Severity::Warning,
+                );
+                return Vec::new();
+            }
+            ShellResult::Ran(result) => result,
+        };
+        if let Some(panel) = self.logs.as_mut() {
+            panel.scroll = None;
+        }
+        match result {
+            Ok(Some(0)) => {
+                self.set_message(format!("back from the shell in {folder}"), Severity::Info)
+            }
+            Ok(Some(code)) => self.set_message(
+                format!("the shell in {folder} exited with code {code}"),
+                Severity::Info,
+            ),
+            Ok(None) => self.set_message(
+                format!("the shell in {folder} was ended by a signal"),
+                Severity::Info,
+            ),
+            Err(err) => self.set_message(
+                format!("cannot run a shell in {folder}: {}", one_line(&err)),
+                Severity::Error,
+            ),
+        }
+        vec![Effect::PollNow]
     }
 
     // ---- windows opened by background results (doc/0011) -----------------

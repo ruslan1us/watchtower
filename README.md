@@ -228,7 +228,10 @@ does not parse is not applied; the status line shows the error until it is fixed
   ([0020](doc/0020-visual-styles.md)). The default, `"dashboard"`, draws rounded panels:
   a header with a count pill per state and the accounts, the session list with section
   separators, and a detail panel for the selected session (on the right from 130 columns,
-  a strip under the list below that; the logs panel takes its place while open). It needs
+  a strip under the list below that; the logs panel takes its place while open). When the
+  session's folder is a git work tree, the panel has a `git` line with the branch, the
+  number of changed files and the commits not pushed yet, e.g.
+  `git  feature/login · 3 changed · ↑2` ([0037](doc/0037-git-summary-and-shell.md)). It needs
   at least 80×24 and uses the plain layout on a smaller terminal. For the plain
   single-column list, switch back to `"minimal"`:
 
@@ -330,6 +333,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `r` | Refresh now |
 | `c` | Settings window ([0024](doc/0024-settings-window.md)) |
 | `e` | Rename the session: a stopped one is woken with `/rename` and stopped again, without attaching; for a running one tower attaches and you type `/rename <name>` there, then `Ctrl+Z` ([0027](doc/0027-rename-sessions.md)) |
+| `!` | A shell (`$SHELL`, else `/bin/sh`) in the session's folder; `exit` returns to tower ([0037](doc/0037-git-summary-and-shell.md)) |
 | `?` | Help |
 | `q`, `Ctrl+C` | Quit |
 | `Esc` | Cancel a waiting attach, else close the panel, overlay or filter |

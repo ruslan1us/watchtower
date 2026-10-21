@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md)
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -50,7 +50,10 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
   and the keys that apply. A selected group header shows a summary: rows,
   highlighted rows, accounts, and the states inside a project. From 130
   columns it is a 48-column panel right of the list; below that a
-  three-line strip under the list, shown from 26 rows.
+  three-line strip under the list, shown from 26 rows. *Amended by
+  [0037](0037-git-summary-and-shell.md):* a `git` line (branch, changed
+  files, commits not pushed) follows the folder when the folder is a git
+  work tree, and the strip has a fourth line for it.
 - The logs panel ([0009](0009-stop-remove-and-logs.md)), while open, takes
   the detail panel's place by the same rule: right of the list from 130
   columns, under it below that, half the space either way.

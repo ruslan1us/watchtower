@@ -38,8 +38,9 @@ const DETAIL_W: u16 = 48;
 /// header, and a narrow terminal the detail strip under the list.
 const TALL: u16 = 26;
 
-/// Height of the detail strip under the list, borders included.
-const STRIP_H: u16 = 5;
+/// Height of the detail strip under the list, borders included: four
+/// lines, the last for the `git` line (doc/0037).
+const STRIP_H: u16 = 6;
 
 /// Braille spinner of busy rows; one frame per redraw tick.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -113,12 +114,14 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
             let [list, side] =
                 Layout::horizontal([Constraint::Min(60), Constraint::Length(DETAIL_W)]).areas(body);
             draw_list(frame, app, list, tall, now_ms, th);
+            app.set_git_shown(true);
             super::detail::draw_side(frame, app, side, now_ms, th);
         }
         false if tall => {
             let [list, strip] =
                 Layout::vertical([Constraint::Min(4), Constraint::Length(STRIP_H)]).areas(body);
             draw_list(frame, app, list, tall, now_ms, th);
+            app.set_git_shown(true);
             super::detail::draw_strip(frame, app, strip, now_ms, th);
         }
         false => draw_list(frame, app, body, tall, now_ms, th),

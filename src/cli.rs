@@ -285,58 +285,11 @@ impl CliRunner {
     /// Runs a prepared command line with stdin null and captured output, in
     /// [`CommandLine::cwd`] when set, in a new process group of its own.
     pub fn run_line(&self, line: &CommandLine) -> Result<CliOutput, CliError> {
-        use std::os::unix::process::CommandExt;
         let mut cmd = line.to_command();
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
         if let Some(path) = &self.path {
             cmd.env("PATH", path);
         }
-        let mut child = cmd.spawn().map_err(|source| CliError::Spawn {
-            program: line.program.clone(),
-            source,
-        })?;
-        let stdout = Collector::start(child.stdout.take().expect("stdout is piped"));
-        let stderr = Collector::start(child.stderr.take().expect("stderr is piped"));
-        let deadline = Instant::now() + self.timeout;
-
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() >= deadline => {
-                    kill_group(&mut child);
-                    let _ = child.wait();
-                    return Err(CliError::Timeout {
-                        program: line.program.clone(),
-                        timeout: self.timeout,
-                        stderr: String::from_utf8_lossy(&stderr.take()).into_owned(),
-                    });
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-                Err(source) => {
-                    kill_group(&mut child);
-                    let _ = child.wait();
-                    return Err(CliError::Wait {
-                        program: line.program.clone(),
-                        source,
-                    });
-                }
-            }
-        };
-
-        // A grandchild (e.g. a freshly started supervisor) may keep the pipes
-        // open after the child exits, so EOF may never come. Take what was
-        // written after a short grace instead of waiting for it.
-        let grace_end = Instant::now() + EOF_GRACE;
-        stdout.wait(grace_end.saturating_duration_since(Instant::now()));
-        stderr.wait(grace_end.saturating_duration_since(Instant::now()));
-        Ok(CliOutput {
-            code: status.code(),
-            stdout: stdout.take(),
-            stderr: String::from_utf8_lossy(&stderr.take()).into_owned(),
-        })
+        run_captured(cmd, &line.program, self.timeout)
     }
 
     /// `<account command> agents --json --all`, parsed (doc/0001).
@@ -353,6 +306,66 @@ impl CliRunner {
         }
         Ok(listing::parse_listing(&out.stdout_text())?)
     }
+}
+
+/// Runs `cmd` with stdin null and captured output, in a new process group
+/// of its own, and waits for it up to `timeout`; on a timeout the whole
+/// group is killed. `program` names the command in errors. The background
+/// CLI calls ([`CliRunner::run_line`]) and the details panel's
+/// `git status` ([`crate::gitinfo`], doc/0037) run through it.
+pub fn run_captured(
+    mut cmd: Command,
+    program: &str,
+    timeout: Duration,
+) -> Result<CliOutput, CliError> {
+    use std::os::unix::process::CommandExt;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = cmd.spawn().map_err(|source| CliError::Spawn {
+        program: program.to_owned(),
+        source,
+    })?;
+    let stdout = Collector::start(child.stdout.take().expect("stdout is piped"));
+    let stderr = Collector::start(child.stderr.take().expect("stderr is piped"));
+    let deadline = Instant::now() + timeout;
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                kill_group(&mut child);
+                let _ = child.wait();
+                return Err(CliError::Timeout {
+                    program: program.to_owned(),
+                    timeout,
+                    stderr: String::from_utf8_lossy(&stderr.take()).into_owned(),
+                });
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(source) => {
+                kill_group(&mut child);
+                let _ = child.wait();
+                return Err(CliError::Wait {
+                    program: program.to_owned(),
+                    source,
+                });
+            }
+        }
+    };
+
+    // A grandchild (e.g. a freshly started supervisor) may keep the pipes
+    // open after the child exits, so EOF may never come. Take what was
+    // written after a short grace instead of waiting for it.
+    let grace_end = Instant::now() + EOF_GRACE;
+    stdout.wait(grace_end.saturating_duration_since(Instant::now()));
+    stderr.wait(grace_end.saturating_duration_since(Instant::now()));
+    Ok(CliOutput {
+        code: status.code(),
+        stdout: stdout.take(),
+        stderr: String::from_utf8_lossy(&stderr.take()).into_owned(),
+    })
 }
 
 /// Why a listing call failed.

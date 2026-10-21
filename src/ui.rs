@@ -76,6 +76,7 @@ pub const FOOTER_KEYS: &[&str] = &[
     "R resume",
     "e rename",
     "t reply",
+    "! shell",
     "c settings",
     "↑↓ move",
     "q quit",
@@ -100,6 +101,7 @@ pub const FOOTER_KEYS_LOGS_OPEN: &[&str] = &[
     "R resume",
     "e rename",
     "t reply",
+    "! shell",
     "c settings",
     "↑↓ move",
     "q quit",
@@ -152,6 +154,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, now: Instant) {
 /// counts from (doc/0006).
 pub fn draw_at(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     let area = frame.area();
+    // The dashboard sets it again when it draws a details panel
+    // (doc/0037).
+    app.set_git_shown(false);
     if app.settings().is_some() {
         // The Settings window takes the whole screen (doc/0024).
         let look = look(app, area);

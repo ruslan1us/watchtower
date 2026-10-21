@@ -6,9 +6,9 @@
 //! project scan) run on worker threads ([`Jobs`]), and `claude logs` in the
 //! log follower ([`Follower`], doc/0030), which keeps following working
 //! sessions during every hand-over of the terminal; attach, the task
-//! editor, the trust flow and Claude Code's picker of past conversations
-//! (`R`, doc/0019) take over the terminal through the same hand-over
-//! ([`attach::run_foreground`]).
+//! editor, the trust flow, Claude Code's picker of past conversations
+//! (`R`, doc/0019) and the shell of `!` (doc/0037) take over the terminal
+//! through the same hand-over ([`attach::run_foreground`]).
 //!
 //! The terminal is restored on normal exit, on error (a drop guard), on a
 //! panic of the main thread (a panic hook; other threads' panics are only
@@ -653,6 +653,22 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 if let Some(job) = app.start_sidecar_check() {
                     rt.jobs.sidecar(job, rt.state_file.to_path_buf());
                 }
+            }
+            Effect::GitStatus(job) => rt.jobs.git(job),
+            Effect::Shell(req) => {
+                let termination = rt.termination;
+                let shell = crate::shell::program_from_env();
+                let outcome = crate::shell::run(
+                    &mut rt.handover(),
+                    &mut InheritSpawner,
+                    &req,
+                    &shell,
+                    termination,
+                );
+                if termination.pending().is_some() {
+                    return Ok(false);
+                }
+                queue.extend(app.shell_finished(outcome));
             }
             Effect::ReadSubagents => {
                 if let Some(job) = app.start_subagent_read(Instant::now()) {

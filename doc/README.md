@@ -18,7 +18,7 @@ This directory records the design decisions behind it, one file per decision.
 | No. | Decision | Status |
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
-| 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029) |
+| 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029, `git status` by 0037) |
 | 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
@@ -28,7 +28,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029) |
-| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040) |
+| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040; `!` shell key by 0037) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted |
@@ -37,7 +37,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0017 | [Ownership evidence rules](0017-ownership-evidence-rules.md) | Accepted (`/proc` reads amended by 0025) |
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted (`--settings` added by 0039) |
-| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032) |
+| 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
@@ -54,6 +54,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
 | 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
 | 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted (picker also used by 0040) |
+| 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
 | 0040 | [Quick reply](0040-quick-reply.md) | Accepted |
 

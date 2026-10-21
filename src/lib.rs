@@ -57,6 +57,9 @@
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
 //! - [`templates`]: prompt templates from `<config dir>/templates` and the
 //!   reusable picker that inserts one (doc/0036).
+//! - [`shell`]: `!`, a shell in the selected session's folder (doc/0037).
+//! - [`gitinfo`]: the details panel's `git` line, read with `git status`
+//!   on worker threads and cached per folder (doc/0037).
 //! - [`tui`]: the terminal runtime and event loop.
 //! - [`args`]: command-line arguments.
 //! - [`status`]: `tower status [--json]`, one merged snapshot without the
@@ -78,6 +81,7 @@ pub mod config_edit;
 pub mod dialog;
 pub mod dispatch;
 pub mod editor;
+pub mod gitinfo;
 pub mod groups;
 pub mod handoff;
 pub mod jobs;
@@ -95,6 +99,7 @@ pub mod ptysize;
 pub mod rename;
 pub mod reply;
 pub mod settings;
+pub mod shell;
 pub mod sidecar;
 pub mod status;
 pub mod subagents;
