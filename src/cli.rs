@@ -134,11 +134,23 @@ pub fn attach_command(account: &Account, id: &str) -> CommandLine {
     CommandLine::for_account(account, ["attach", id])
 }
 
-/// `<account command> --resume` in `dir`, with no session id and no other
-/// argument: Claude Code's own interactive picker of past conversations
-/// (doc/0019). Run in the foreground like an attach.
-pub fn resume_picker_command(account: &Account, dir: &Path) -> CommandLine {
-    CommandLine::for_account(account, ["--resume"]).with_cwd(dir)
+/// `<account command> [--settings <file>] --resume` in `dir`, with no
+/// session id: Claude Code's own interactive picker of past conversations
+/// (doc/0019). `settings` is tower's subagent-hooks file, which the copy a
+/// backgrounded conversation starts as keeps (doc/0039). Run in the
+/// foreground like an attach.
+pub fn resume_picker_command(
+    account: &Account,
+    dir: &Path,
+    settings: Option<&Path>,
+) -> CommandLine {
+    let mut args = Vec::new();
+    if let Some(file) = settings {
+        args.push("--settings".to_owned());
+        args.push(file.to_string_lossy().into_owned());
+    }
+    args.push("--resume".to_owned());
+    CommandLine::for_account(account, args).with_cwd(dir)
 }
 
 /// The arguments of the listing call: `agents --json --all` (doc/0001).

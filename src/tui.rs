@@ -416,14 +416,6 @@ pub fn flush_sidecar(
     }
 }
 
-/// Writes `<config dir>/claude-settings.json` for the running binary when
-/// its content is not current (doc/0029). Each dispatch checks it again.
-fn write_subagent_settings(config_dir: &std::path::Path) -> Result<bool, String> {
-    let exe = crate::subagents::running_exe()
-        .map_err(|e| format!("cannot find the running tower binary: {e}"))?;
-    crate::subagents::ensure_settings(&crate::subagents::settings_path(config_dir), &exe)
-}
-
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
 /// `source` says which config file was used and whether it was found
 /// (doc/0002); a missing one shows a warning.
@@ -442,12 +434,13 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     );
     app.set_config_dir(&dirs.config_dir);
     app.enable_subagents(&dirs.config_dir);
+    // Written when not current (doc/0029); each dispatch and `R` check it
+    // again.
     if config.track_subagents
-        && let Err(err) = write_subagent_settings(&dirs.config_dir)
+        && let Err(err) =
+            crate::subagents::prepare_settings(&crate::subagents::settings_path(&dirs.config_dir))
     {
-        app.add_warning(format!(
-            "subagents: {err}; sessions start without the subagent hooks"
-        ));
+        app.add_warning(crate::subagents::no_hooks_warning(&err));
     }
     app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());

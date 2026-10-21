@@ -433,7 +433,8 @@ Verified with Claude Code 2.1.303:
 Not verified: what a subagent's permission prompt looks like in the listing.
 
 How Watchtower uses it: [0029](../0029-tracking-subagents.md),
-[0035](../0035-continued-subagents.md).
+[0035](../0035-continued-subagents.md),
+[0039](../0039-subagent-hooks-for-resumed-conversations.md).
 
 ## Background shells and the turn
 
@@ -503,9 +504,28 @@ https://code.claude.com/docs/en/hooks):
 - While subagents run, the parent row stays `state: working` / `status: busy`; it turns
   `done` only after relaying their results. The JSON row still has only `pid`, `id`, `cwd`,
   `kind`, `startedAt`, `sessionId`, `name`, `status`, `state`.
+- `--settings` given to the interactive picker reaches the backgrounded copy (verified
+  2.1.306, WSL, clean environment in a private tmux server):
+  `claude --settings <file> --resume`, an ended conversation picked, `←` on the empty
+  prompt (agent view opens), `Ctrl+C` twice. The copy is listed under a new `sessionId`,
+  and its process's `/proc/<pid>/cmdline` is `<claude binary> --session-id <copy
+  sessionId> --fork-session --resume <transcript path> --settings <file> --model <model>
+  --permission-mode <mode>`. Attached with `claude attach <copy id>` and asked for one
+  background `general-purpose` subagent, the copy fired, all with `session_id` = the
+  copy's `sessionId`:
+  1. `SubagentStart` `{agent_id: A, agent_type: "general-purpose"}`.
+  2. `PostToolUse` `tool_name: "Agent"`, `tool_response {status: "async_launched",
+     agentId: A}`.
+  3. Two `SubagentStop` with `agent_type: ""` (helpers, ids never started), each with
+     `background_tasks` listing A as `running`.
+  4. `SubagentStop` of A when it ended (about 30 s later), `background_tasks` listing A as
+     `running`.
 
-Not verified: whether `--settings` given to the interactive `claude --resume` reaches the
-copy a backgrounded conversation starts as.
+  `tower hook --dir <dir>` from that file wrote `<dir>/subagents/<copy sessionId>.json`
+  with A `running`, `background: true`, description from the launch, then moved A to
+  `stopped`. Leaving the attach with `←` then `Esc` returned to the shell as in
+  [Attach and detach keys](#attach-and-detach-keys). Only the order `--settings <file>
+  --resume` was tried.
 
 ## Known messages and exit codes
 
@@ -539,8 +559,6 @@ copy a backgrounded conversation starts as.
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.
 - Whether `--effort` survives a wake with `--resume <sessionId> --bg` (the `note:` line lists
   `--name`, `--permission-mode`, `--settings` and `--model` only).
-- Whether `--settings` on the interactive `claude --resume` reaches the backgrounded copy
-  ([Hooks passed with `--settings`](#hooks-passed-with---settings)).
 - Whether attaching with the hosting account after the 1-hour idle stop keeps the account, and
   how such a row looks in the JSON (probably like a row after `claude stop`).
 - Whether `claude agents --json` starts a supervisor for an account with no live sessions.

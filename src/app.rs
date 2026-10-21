@@ -374,6 +374,10 @@ pub struct ResumeRequest {
     pub account: Account,
     /// The project folder the picker starts in.
     pub folder: PathBuf,
+    /// `--settings`: tower's settings file with the subagent hooks
+    /// (doc/0029), which the backgrounded copy keeps (doc/0039); `None`
+    /// while tracking is off.
+    pub settings: Option<PathBuf>,
 }
 
 /// How the picker of past conversations ended, reported back by the
@@ -386,6 +390,9 @@ pub struct ResumeOutcome {
     pub folder: String,
     /// As [`AttachOutcome::result`].
     pub result: Result<Option<i32>, String>,
+    /// Why the settings file could not be used, so the picker ran without
+    /// `--settings` (doc/0039); `None` when it was passed or not asked for.
+    pub settings_error: Option<String>,
 }
 
 /// How an attach ended, reported back by the runtime.
@@ -4836,7 +4843,12 @@ impl App {
                     return Vec::new();
                 };
                 self.resume = None;
-                vec![Effect::ResumePast(ResumeRequest { account, folder })]
+                let settings = self.claude_settings();
+                vec![Effect::ResumePast(ResumeRequest {
+                    account,
+                    folder,
+                    settings,
+                })]
             }
         }
     }
@@ -4846,6 +4858,9 @@ impl App {
     /// normal background row, its owner detected through `/proc` as usual
     /// (doc/0019).
     pub fn resume_finished(&mut self, outcome: ResumeOutcome) -> Vec<Effect> {
+        if let Some(err) = &outcome.settings_error {
+            self.add_warning(subagents::no_hooks_warning(err));
+        }
         let who = format!(
             "claude --resume in {} ({})",
             outcome.folder, outcome.account

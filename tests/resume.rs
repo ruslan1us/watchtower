@@ -169,7 +169,43 @@ fn keys_choose_and_enter_runs_the_picker() {
     assert_eq!(req.account.name, "alt");
     assert_eq!(req.account.command, "claude-alt");
     assert_eq!(req.folder, Path::new("/home/user/workspace/api"));
+    // Subagent tracking was never enabled (as in the other tests).
+    assert_eq!(req.settings, None);
     assert!(app.resume_window().is_none());
+}
+
+/// Presses `R`, then `Enter` on the first project, and returns the request.
+fn confirmed_request(app: &mut App) -> ResumeRequest {
+    open(app, projects(&["web"]));
+    let effects = app.handle_key(key(KeyCode::Enter));
+    let [Effect::ResumePast(req)] = effects.as_slice() else {
+        panic!("{effects:?}")
+    };
+    req.clone()
+}
+
+#[test]
+fn the_request_carries_the_settings_file_while_tracking() {
+    // doc/0039: `R` passes the same `--settings` file as a dispatch.
+    let config_dir = Path::new("/home/user/.config/watchtower");
+    let mut on = app_single();
+    on.enable_subagents(config_dir);
+    assert_eq!(
+        confirmed_request(&mut on).settings,
+        Some(config_dir.join("claude-settings.json"))
+    );
+
+    let home = Path::new(common::HOME);
+    let mut config = watchtower::config::Config::defaults(home);
+    config.track_subagents = false;
+    let mut off = App::new(
+        config,
+        home.into(),
+        watchtower::sidecar::Sidecar::default(),
+        Box::new(common::NoEnviron),
+    );
+    off.enable_subagents(config_dir);
+    assert_eq!(confirmed_request(&mut off).settings, None);
 }
 
 #[test]
@@ -243,6 +279,7 @@ fn back_from_the_picker_polls_at_once() {
         account: "alt".into(),
         folder: "~/workspace/api".into(),
         result: Ok(Some(0)),
+        settings_error: None,
     });
     assert_eq!(effects, vec![Effect::PollNow]);
     let status = common::status_text(&app);
@@ -254,6 +291,7 @@ fn back_from_the_picker_polls_at_once() {
         account: "alt".into(),
         folder: "~/workspace/api".into(),
         result: Ok(Some(1)),
+        settings_error: None,
     });
     assert_eq!(effects, vec![Effect::PollNow]);
     assert!(common::status_text(&app).contains("exited with code 1"));
@@ -310,6 +348,7 @@ fn the_picker_runs_in_the_folder_with_no_other_argument() {
     let req = ResumeRequest {
         account: fake.account_named("alt", Some("~/.claude-alt")),
         folder: folder.path().to_path_buf(),
+        settings: None,
     };
     let mut term = FakeTerm::default();
     let outcome = resume_past(
@@ -343,6 +382,89 @@ fn the_picker_runs_in_the_folder_with_no_other_argument() {
     assert_eq!(term.log[3], "reclaim");
 }
 
+/// The announcement's text after the account command, the same with and
+/// without `--settings` (doc/0039).
+const ANNOUNCED: &str = " --resume` in ~/workspace/api (alt): pick a conversation";
+
+#[test]
+fn the_picker_gets_the_settings_file_before_resume() {
+    let _l = fake_claude::lock();
+    let fake = fake_claude::Fake::new("claude-alt", "exit 0");
+    let folder = tempfile::tempdir().unwrap();
+    let config_dir = tempfile::tempdir().unwrap();
+    let settings = config_dir.path().join("claude-settings.json");
+    let req = ResumeRequest {
+        account: fake.account_named("alt", Some("~/.claude-alt")),
+        folder: folder.path().to_path_buf(),
+        settings: Some(settings.clone()),
+    };
+    let mut term = FakeTerm::default();
+    let outcome = resume_past(
+        &mut term,
+        &mut InheritSpawner,
+        &req,
+        "~/workspace/api",
+        &Termination::default(),
+    );
+    assert_eq!(outcome.result, Ok(Some(0)));
+    assert_eq!(outcome.settings_error, None);
+    assert_eq!(
+        fake.argv(),
+        ["--settings", settings.to_str().unwrap(), "--resume"]
+    );
+    // Written first, as for a dispatch: only the three hooks.
+    let text = std::fs::read_to_string(&settings).unwrap();
+    for hook in [
+        "SubagentStart",
+        "SubagentStop",
+        "PostToolUse",
+        " hook --dir ",
+    ] {
+        assert!(text.contains(hook), "{text}");
+    }
+    // The printed line is unchanged.
+    assert!(term.log[1].contains(ANNOUNCED), "{:?}", term.log);
+    assert!(!term.log[1].contains("--settings"), "{:?}", term.log);
+}
+
+#[test]
+fn an_unusable_settings_file_runs_without_it_and_warns_once() {
+    let _l = fake_claude::lock();
+    let fake = fake_claude::Fake::new("claude-alt", "exit 0");
+    let folder = tempfile::tempdir().unwrap();
+    // A relative config dir is refused for the hook command (doc/0029).
+    let req = ResumeRequest {
+        account: fake.account_named("alt", Some("~/.claude-alt")),
+        folder: folder.path().to_path_buf(),
+        settings: Some(PathBuf::from("relative-config/claude-settings.json")),
+    };
+    let mut term = FakeTerm::default();
+    let outcome = resume_past(
+        &mut term,
+        &mut InheritSpawner,
+        &req,
+        "~/workspace/api",
+        &Termination::default(),
+    );
+    assert_eq!(outcome.result, Ok(Some(0)));
+    assert_eq!(fake.argv(), ["--resume"]);
+    assert!(term.log[1].contains(ANNOUNCED), "{:?}", term.log);
+    let err = outcome
+        .settings_error
+        .clone()
+        .expect("the reason is reported");
+    assert!(err.contains("is not absolute"), "{err}");
+
+    let mut app = app_two();
+    assert_eq!(app.resume_finished(outcome.clone()), vec![Effect::PollNow]);
+    assert_eq!(app.resume_finished(outcome), vec![Effect::PollNow]);
+    let status = common::status_text(&app);
+    let warning = "sessions start without the subagent hooks";
+    assert_eq!(status.matches(warning).count(), 1, "{status}");
+    assert!(status.contains("subagents: "), "{status}");
+    assert!(status.contains("back from claude --resume"), "{status}");
+}
+
 #[test]
 fn a_failing_picker_waits_for_a_key() {
     let _l = fake_claude::lock();
@@ -350,6 +472,7 @@ fn a_failing_picker_waits_for_a_key() {
     let req = ResumeRequest {
         account: fake.account(),
         folder: std::env::temp_dir(),
+        settings: None,
     };
     let mut term = FakeTerm::default();
     let outcome = resume_past(

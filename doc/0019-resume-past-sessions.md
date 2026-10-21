@@ -1,6 +1,6 @@
 # 0019. Resume a past conversation into the background
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · `--settings` with the subagent hooks added by [0039](0039-subagent-hooks-for-resumed-conversations.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0008](0008-new-session-dialog.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -60,6 +60,10 @@ On `Enter` tower hands the terminal over exactly like an attach
 ([0005](0005-attach-and-detach.md): release, no-op signal handlers, saved
 terminal settings put back, key pause on a non-zero exit, reclaim) and runs
 `<account command> --resume` in the chosen folder, with no other argument.
+*Amended by [0039](0039-subagent-hooks-for-resumed-conversations.md):* while
+subagent tracking is on, `--settings <config dir>/claude-settings.json` goes
+before `--resume`, so the backgrounded copy reports its subagents; the printed
+line and the note below are unchanged.
 Before handing over it prints one sanitised line: where it runs, and "pick a
 conversation (Ctrl+A shows all projects); then press ← on an empty prompt
 and Ctrl+C twice to come back to tower (Esc there reopens the conversation)
@@ -107,7 +111,8 @@ tower never spins on it. `Ctrl+Z` therefore does not return to tower here;
   The window shows which account that is.
 - The permission mode of a conversation picked in the picker follows
   Claude Code's rules for the picker, not the mode it ended in
-  (https://code.claude.com/docs/en/sessions). Tower passes no flag.
+  (https://code.claude.com/docs/en/sessions). Tower passes no flag (only the
+  subagent hooks' `--settings`, [0039](0039-subagent-hooks-for-resumed-conversations.md)).
 - Users who turned `leftArrowOpensAgents` off use `/bg` (documented,
   untested here); tower changes no setting.
 

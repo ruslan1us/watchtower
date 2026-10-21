@@ -258,6 +258,21 @@ pub fn ensure_settings(settings: &Path, exe: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Makes the settings file `settings` current for the running binary
+/// ([`running_exe`], [`ensure_settings`]). An error says why the file
+/// cannot be used; the session then starts without `--settings`.
+pub fn prepare_settings(settings: &Path) -> Result<(), String> {
+    let exe = running_exe().map_err(|e| format!("cannot find the running tower binary: {e}"))?;
+    ensure_settings(settings, &exe).map(|_| ())
+}
+
+/// The warning for a settings file that cannot be used (`err` from
+/// [`prepare_settings`]). The same text each time, so the status line shows
+/// it once ([`crate::app::App::add_warning`]).
+pub fn no_hooks_warning(err: &str) -> String {
+    format!("subagents: {err}; sessions start without the subagent hooks")
+}
+
 // ---- the file format -------------------------------------------------------
 
 /// One session's file (doc/0029).

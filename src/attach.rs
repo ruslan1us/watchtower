@@ -274,6 +274,10 @@ pub fn resume_announcement(req: &ResumeRequest, folder: &str) -> String {
 /// [`run_foreground`], exactly like an attach (doc/0019). `folder` is the
 /// folder as shown to the user (`~` form). A non-zero exit waits for a key,
 /// so Claude Code's error text can be read.
+///
+/// With a settings file, it is written first when its content is not
+/// current, as for a dispatch; when it cannot be used, the picker runs
+/// without `--settings` and the outcome says why (doc/0039).
 pub fn resume_past(
     handover: &mut dyn Handover,
     spawner: &mut dyn Spawner,
@@ -281,7 +285,14 @@ pub fn resume_past(
     folder: &str,
     termination: &Termination,
 ) -> ResumeOutcome {
-    let line = cli::resume_picker_command(&req.account, &req.folder);
+    let (settings, settings_error) = match req.settings.as_deref() {
+        Some(path) => match crate::subagents::prepare_settings(path) {
+            Ok(()) => (Some(path), None),
+            Err(err) => (None, Some(err)),
+        },
+        None => (None, None),
+    };
+    let line = cli::resume_picker_command(&req.account, &req.folder, settings);
     let fg = Foreground {
         line: &line,
         announce: Some(resume_announcement(req, folder)),
@@ -292,6 +303,7 @@ pub fn resume_past(
         account: req.account.name.clone(),
         folder: folder.to_owned(),
         result: run_foreground(handover, spawner, &fg, termination),
+        settings_error,
     }
 }
 

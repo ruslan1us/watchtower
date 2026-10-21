@@ -1,6 +1,6 @@
 # 0029. Tracking the subagents of sessions tower starts
 
-- Status: Accepted · 2026-10-19 · a start of a stopped id taken as a continuation, stopped agents' descriptions remembered and filled from any stop's snapshot by [0035](0035-continued-subagents.md)
+- Status: Accepted · 2026-10-19 · a start of a stopped id taken as a continuation, stopped agents' descriptions remembered and filled from any stop's snapshot by [0035](0035-continued-subagents.md) · `R` passes `--settings` too, amended by [0039](0039-subagent-hooks-for-resumed-conversations.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0019](0019-resume-past-sessions.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md), [0024](0024-settings-window.md), [reference](reference/claude-code-cli.md#subagents-in-background-sessions)
 
 ## Context
@@ -28,6 +28,9 @@ stopped session with `--resume <sessionId> --bg`, which keeps its saved `--setti
 either. `R` ([0019](0019-resume-past-sessions.md)) is unchanged: whether a
 `--settings` given to the interactive `claude --resume` reaches the backgrounded copy is
 not verified. Sessions started anywhere else show no subagents.
+*Amended by [0039](0039-subagent-hooks-for-resumed-conversations.md):* it does (verified,
+2.1.306), so `R` passes the same `--settings` file, before `--resume`, under the same
+writing and refusal rules as a dispatch.
 
 **The settings file** holds only the three hooks, nothing else:
 
@@ -166,6 +169,8 @@ are ignored; sessions already started keep their saved hooks.
   file's path, so moving or deleting the binary breaks their hooks until a tower writes
   the file again; Claude Code then reports a failing hook, the session is unaffected.
 - Sessions started before this change, outside tower or through `R` show no subagents.
+  *Amended by [0039](0039-subagent-hooks-for-resumed-conversations.md):* a conversation
+  backgrounded from `R` with tracking on shows them.
 
 ## Alternatives considered
 
@@ -174,8 +179,13 @@ are ignored; sessions already started keep their saved hooks.
 - **Reading transcripts or `jobs/`**: internal files, against 0001.
 - **Scraping `claude logs`**: fragile and tied to the screen layout.
 
-## Open items
+## Resolved
 
 - Whether `--settings` on the interactive `claude --resume` of `R` reaches the
-  backgrounded copy.
+  backgrounded copy: it does (verified 2.1.306, WSL); see
+  [0039](0039-subagent-hooks-for-resumed-conversations.md) and the
+  [reference](reference/claude-code-cli.md#hooks-passed-with---settings).
+
+## Open items
+
 - What a subagent's permission prompt looks like in the listing.
