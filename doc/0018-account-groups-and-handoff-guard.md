@@ -108,6 +108,7 @@ around limits.
 - Whether usage limits count as "restrictions" under the Usage Policy effective
   November 12, 2026. Until that is clear, tower stays manual and neutral and
   makes no limit-related claims.
-- Cross-account messaging: whether the orchestrator's `SendMessage` reaches
-  sessions hosted by another account ([0010](0010-orchestrator.md)), and
-  whether relaying across groups needs the same guard.
+- Cross-account messaging: ~~whether the orchestrator's `SendMessage` reaches
+  sessions hosted by another account~~ it does: verified 2026-10-19 (Claude
+  Code 2.1.303), and the reply comes back too ([0010](0010-orchestrator.md)).
+  Still open: whether relaying across groups needs the same guard.
