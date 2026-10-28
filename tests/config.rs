@@ -385,6 +385,7 @@ fn example_config_is_valid_and_complete() {
             "project_roots",
             "sessions",
             "ui",
+            "usage",
         ]
     );
     let sessions_keys: Vec<&str> = table["sessions"]
@@ -406,6 +407,15 @@ fn example_config_is_valid_and_complete() {
     assert_eq!(c.ui_style, defaults.ui_style);
     assert_eq!(c.ui_theme, defaults.ui_theme);
     assert_eq!(c.ui_color_depth, defaults.ui_color_depth);
+    let usage_keys: Vec<&str> = table["usage"]
+        .as_table()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(usage_keys, ["refresh_secs", "show"]);
+    assert_eq!(c.usage_show, defaults.usage_show);
+    assert_eq!(c.usage_refresh_secs, defaults.usage_refresh_secs);
     for account in table["accounts"].as_array().unwrap() {
         let mut keys: Vec<&str> = account
             .as_table()
@@ -703,4 +713,34 @@ fn logs_follow_secs_is_off_or_five_to_thirty() {
     }
     assert!(parse("logs_follow_secs = -1\n").is_err());
     assert!(parse("logs_follow_secs = \"off\"\n").is_err());
+}
+
+/// `[usage]` (doc/0043): off by default, probes every 300 s, 60 to 3600.
+#[test]
+fn usage_is_off_by_default_and_refreshes_every_60_to_3600_seconds() {
+    use std::time::Duration;
+    let defaults = Config::defaults(Path::new(HOME));
+    assert!(!defaults.usage_show);
+    assert_eq!(defaults.usage_refresh_secs, 300);
+    assert_eq!(defaults.usage_interval(), Duration::from_secs(300));
+    assert!(!parse("[usage]\n").unwrap().usage_show);
+    let on = parse("[usage]\nshow = true\nrefresh_secs = 60\n").unwrap();
+    assert!(on.usage_show);
+    assert_eq!(on.usage_refresh_secs, 60);
+    assert_eq!(
+        parse("[usage]\nrefresh_secs = 3600\n")
+            .unwrap()
+            .usage_refresh_secs,
+        3600
+    );
+    for bad in [0, 59, 3601] {
+        let msg = invalid(&format!("[usage]\nrefresh_secs = {bad}\n"));
+        assert!(
+            msg.contains(&format!(
+                "[usage] refresh_secs must be 60 to 3600 seconds, not {bad}"
+            )),
+            "{msg}"
+        );
+    }
+    assert!(parse("[usage]\nshow = \"yes\"\n").is_err());
 }

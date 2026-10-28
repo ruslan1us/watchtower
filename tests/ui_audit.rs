@@ -68,6 +68,7 @@ use watchtower::reply::ReplyError;
 use watchtower::sidecar::{AccountSource, Sidecar};
 use watchtower::subagents::Subagent;
 use watchtower::templates::{Template, TemplateList};
+use watchtower::usage::{Clock, ExtraUsage, Limit, LimitKind, PlanUsage, Probed, RateLimited};
 
 // ---- data -------------------------------------------------------------------
 
@@ -229,6 +230,87 @@ fn app_with(cross: bool, prompt: &str, owners: bool, text: &str) -> App {
 
 fn base() -> App {
     app_with(false, HANDOFF_PROMPT, true, &listing_text())
+}
+
+// ---- plan usage (doc/0043) ----------------------------------------------------
+
+/// A limit of `kind` at `percent`, resetting `hours` after [`NOW_MS`].
+fn limit(kind: &str, percent: f64, hours: i64, severity: &str, model: Option<&str>) -> Limit {
+    let kind = LimitKind::from(kind);
+    let group = match kind {
+        LimitKind::Session => Some("session".to_owned()),
+        LimitKind::WeeklyAll | LimitKind::WeeklyScoped => Some("weekly".to_owned()),
+        _ => None,
+    };
+    Limit {
+        kind,
+        group,
+        percent: Some(percent),
+        resets_at_ms: Some(NOW_MS + hours * 3_600_000),
+        model: model.map(str::to_owned),
+        surface: None,
+        severity: Some(severity.to_owned()),
+        active: Some(true),
+    }
+}
+
+fn plan(limits: Vec<Limit>, extra: bool) -> Probed {
+    Probed {
+        usage: Some(PlanUsage {
+            limits,
+            extra: Some(ExtraUsage {
+                enabled: extra,
+                monthly_limit: Some(50.0),
+                used_credits: Some(12.5),
+                utilization: Some(25.0),
+                currency: Some("USD".to_owned()),
+            }),
+        }),
+        ..Probed::default()
+    }
+}
+
+fn plain_plan() -> Probed {
+    plan(
+        vec![
+            limit("session", 24.0, 3, "normal", None),
+            limit("weekly_all", 12.0, 100, "normal", None),
+            limit("weekly_scoped", 3.0, 100, "normal", Some("Fable")),
+        ],
+        false,
+    )
+}
+
+/// The scenarios' app with `[usage] show = true` (doc/0043), local time
+/// as UTC.
+fn usage_app() -> App {
+    let config = Config::parse(
+        &format!(
+            "{}\n[usage]\nshow = true\n",
+            config_text(false, HANDOFF_PROMPT)
+        ),
+        Path::new(HOME),
+    )
+    .unwrap();
+    let text = listing_text();
+    let mut sc = Sidecar::default();
+    for s in &parse_listing(&text).unwrap().sessions {
+        if let Some(id) = &s.session_id {
+            sc.record_owner(id, "main", AccountSource::Started);
+        }
+    }
+    let mut app = App::new(config, HOME.into(), sc, Box::new(NoEnviron));
+    for a in ["main", "alt", "spare"] {
+        app.apply_poll(poll_of(a, &text));
+    }
+    feed_git(&mut app);
+    app.clock = Clock::UTC;
+    app
+}
+
+/// `account`'s probe result, received `ago_s` seconds before [`NOW_MS`].
+fn usage_in(app: &mut App, account: &str, result: Result<Probed, String>, ago_s: i64) {
+    app.usage_received(account, result, Instant::now(), NOW_MS - ago_s * 1000);
 }
 
 fn feed_git(app: &mut App) {
@@ -717,6 +799,64 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
     s!("list-unknown-owner", || {
         let mut app = app_with(false, HANDOFF_PROMPT, false, &listing_text());
         select(&mut app, "print-date");
+        just(app)
+    });
+    s!("list-usage", || {
+        let mut app = usage_app();
+        let mut main = plain_plan();
+        if let Some(u) = main.usage.as_mut() {
+            u.extra.as_mut().unwrap().enabled = true;
+        }
+        usage_in(&mut app, "main", Ok(main), 30);
+        usage_in(&mut app, "alt", Ok(plain_plan()), 1200);
+        usage_in(&mut app, "spare", Ok(Probed::default()), 30);
+        select(&mut app, LONG_NAME);
+        just(app)
+    });
+    s!("list-usage-critical", || {
+        let mut app = usage_app();
+        let mut p = plan(
+            vec![
+                limit("session", 81.6, 1, "warning", None),
+                limit("weekly_all", 97.0, 30, "critical", None),
+                limit(
+                    "weekly_scoped",
+                    40.2,
+                    30,
+                    "normal",
+                    Some("Claude Opus with a very long model display name"),
+                ),
+                limit("monthly_surface", 7.0, 400, "elevated", None),
+            ],
+            true,
+        );
+        p.last_known = true;
+        p.rate_limited = Some(RateLimited {
+            stated: "1:30pm".to_owned(),
+            until_ms: Some(NOW_MS + 3_600_000),
+        });
+        usage_in(&mut app, "main", Ok(p), 90);
+        usage_in(&mut app, "alt", Ok(plain_plan()), 30);
+        usage_in(&mut app, "spare", Ok(plain_plan()), 30);
+        select(&mut app, "print-date");
+        just(app)
+    });
+    s!("list-usage-waiting", || {
+        let mut app = usage_app();
+        select(&mut app, LONG_NAME);
+        just(app)
+    });
+    s!("list-usage-failed", || {
+        let mut app = usage_app();
+        usage_in(&mut app, "main", Err(POLL_ERROR.to_owned()), 10);
+        usage_in(&mut app, "alt", Ok(plain_plan()), 4000);
+        usage_in(
+            &mut app,
+            "alt",
+            Err("/usage timed out after 20s".to_owned()),
+            10,
+        );
+        select(&mut app, CYR_NAME);
         just(app)
     });
     s!("list-empty", || {
@@ -1268,6 +1408,17 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
             sp(app, key(KeyCode::Enter));
         })
     });
+    s!("settings-usage", || {
+        settings(Some(SETTINGS_CONFIG), |app| {
+            settings_common::select(app, "show plan usage")
+        })
+    });
+    s!("settings-usage-refresh", || {
+        settings(Some(SETTINGS_CONFIG), |app| {
+            settings_common::select(app, "usage refresh");
+            sp(app, key(KeyCode::Enter));
+        })
+    });
     s!("settings-follow", || {
         settings(Some(SETTINGS_CONFIG), |app| {
             settings_common::select(app, "follow logs in background")
@@ -1709,6 +1860,7 @@ const KV_LABELS: &[&str] = &[
     "attention",
     "accounts",
     "states",
+    "usage",
 ];
 
 /// A details panel: a box with a ` folder    ` or ` sessions  ` line.

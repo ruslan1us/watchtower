@@ -56,6 +56,7 @@ use crate::settings::{FolderJob, FolderResult};
 use crate::sidecar::{self, LOCK_WAIT, Reloaded, SaveJob, Saved};
 use crate::subagents::{self, Subagent};
 use crate::templates::{TemplateList, TemplateLoad};
+use crate::usage::{self, Probed, UsageJob};
 
 /// A finished background job.
 #[derive(Debug)]
@@ -109,6 +110,9 @@ pub enum JobResult {
     /// The slash commands of an account and folder (doc/0042), boxed to
     /// keep the enum small.
     Commands(Box<CommandLoad>, CommandList),
+    /// A finished usage probe (doc/0043): the usage folder's canonical
+    /// path when it could be made, and what `/usage` reported.
+    Usage(UsageJob, Option<PathBuf>, Result<Probed, String>),
 }
 
 impl JobResult {
@@ -154,6 +158,10 @@ impl JobResult {
             }
             JobResult::Commands(load, list) => {
                 app.commands_loaded(&load, list);
+                Vec::new()
+            }
+            JobResult::Usage(job, folder, result) => {
+                app.usage_finished(&job, folder, result);
                 Vec::new()
             }
         }
@@ -213,6 +221,18 @@ impl Jobs {
         self.launch("git", job, fail, move |_, _, job| {
             let state = git.status(&job.dir());
             JobResult::Git(job, state)
+        });
+    }
+
+    /// Runs one usage probe (doc/0043). A worker that panics or cannot
+    /// start reports the probe as failed, so the account is probed again
+    /// on its schedule.
+    pub fn usage(&self, job: UsageJob) {
+        let fail = |job, err: CliError| JobResult::Usage(job, None, Err(err.to_string()));
+        self.launch("usage", job, fail, |runner, _, job| {
+            let (folder, result) =
+                usage::run_probe(runner, &job.account, &job.dir, usage::Clock::LOCAL);
+            JobResult::Usage(job, folder, result)
         });
     }
 

@@ -1,7 +1,8 @@
 # Claude Code CLI behaviour Watchtower relies on
 
 Verified against Claude Code 2.1.302 on 2026-10-18; facts marked 2.1.303 were verified
-with that version (renaming and hooks passed with `--settings` on 2026-10-19). Re-verify after upgrades.
+with that version (renaming and hooks passed with `--settings` on 2026-10-19), and the
+[plan usage limits](#plan-usage-limits) with 2.1.312 on 2026-10-28. Re-verify after upgrades.
 
 This page collects the facts about Claude Code that Watchtower's design depends on. Each
 fact is marked:
@@ -49,6 +50,7 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 | `claude logs <id\|name>` | "Recent terminal output" of the session. Part of a name is accepted. **No line-limit flag.** Format below. Fails (exit 1, empty stdout) for a stopped session, since there is no live process. | CLI help, verified |
 | `claude stop <id>` / `claude kill <id>` | Stops the session's process; the conversation is kept. **Short id only**: a name, a full `sessionId` or a pid gives `No job matching '<x>'`. Idempotent: on an already stopped session it prints `stopped <id>` and exits 0. | CLI help, verified |
 | `claude rm <id> [--discard-unpushed <commit>@<worktree>] [--force-remove-worktree <worktree>]` | Removes the row and, when safe, the session's worktree. The transcript stays on disk. Works on exited sessions. Refuses on uncommitted changes, unpushed commits or a worktree in use, and prints the flag to pass for a second try. Can also refuse with `couldn't remove <id> — the background service may be restarting. …` (exit 1) while the hosting account's supervisor is not running; another account's command then removes it ([Multiple config dirs](#multiple-config-dirs-accounts), [0034](../0034-remove-with-another-account-when-the-service-is-down.md)). | CLI help, verified (success case; service refusal on the owner's server 2026-10-20) |
+| `claude -p --output-format stream-json --verbose --no-session-persistence --safe-mode "/usage"` | Runs `/usage` as a local command (no model turn) and prints the plan's usage, structured in `usage_report`; see [Plan usage limits](#plan-usage-limits). Used by [0043](../0043-plan-usage-display.md). | verified (2.1.312) |
 | `claude respawn <id>\|--all` | Restarts sessions onto the currently installed binary. | CLI help |
 | `claude daemon status\|logs\|stop [--any] [--keep-workers]` | Supervisor information (pid, version, socket dir, worker counts), its log, stopping it. | CLI help |
 
@@ -683,6 +685,77 @@ https://code.claude.com/docs/en/hooks):
   [Attach and detach keys](#attach-and-detach-keys). Only the order `--settings <file>
   --resume` was tried.
 
+## Plan usage limits
+
+Verified with Claude Code 2.1.312 on WSL (Linux), 2026-10-28, one account on a
+subscription; how Watchtower uses it: [0043](../0043-plan-usage-display.md).
+
+- **No subcommand.** There is no `claude usage` or `claude status`. `claude auth status
+  --json` has `subscriptionType` but no usage; `claude agents --json` has no usage fields.
+  (CLI help, verified)
+- **`/usage` in print mode is a local command.** `<command> -p --output-format stream-json
+  --verbose --no-session-persistence --safe-mode "/usage"` (in this order, the prompt
+  last) exits 0 and makes no model turn: the `result` line has `num_turns: 0`,
+  `duration_api_ms: 0`, `total_cost_usd: 0` and `local_command: "usage"`; the
+  `assistant` line has `message.model: "<synthetic>"`, zero tokens and
+  `local_command_run: {"command": "usage", "args": ""}`. (verified)
+- **Output: three JSON lines.** `system` (`subtype: init`, with `claude_code_version`,
+  `cwd`, `session_id`, …), `assistant`, `result`. The `assistant` line's
+  `message.content[0].text` and the `result` line's `result` hold `/usage`'s text:
+  `Current session: N% used · resets <Mon D>, <h[:mm]am|pm> (<time zone>)`, `Current week
+  (all models): …`, `Current week (<model>): …`, then a breakdown of what contributed.
+  `--output-format json` and plain text give only that text. (verified)
+- **`usage_report`** on the `assistant` line, documented as experimental (the Agent SDK's
+  `SDKUsageReport`), made-up values:
+
+  ```json
+  {
+    "session": { "total_cost_usd": 0, "total_api_duration_ms": 0, "total_duration_ms": 700,
+                 "total_lines_added": 0, "total_lines_removed": 0, "model_usage": {} },
+    "rate_limits": {
+      "limits": [
+        { "kind": "session", "group": "session", "percent": 24,
+          "resets_at": "2026-10-28T18:00:00.177181+00:00", "scope": null,
+          "severity": "normal", "is_active": true },
+        { "kind": "weekly_all", "group": "weekly", "percent": 12,
+          "resets_at": "2026-11-03T08:00:00.177201+00:00", "scope": null,
+          "severity": "normal", "is_active": false },
+        { "kind": "weekly_scoped", "group": "weekly", "percent": 3,
+          "resets_at": "2026-11-03T08:00:00+00:00",
+          "scope": { "model": { "display_name": "Fable" }, "surface": null },
+          "severity": "normal", "is_active": false }
+      ],
+      "extra_usage": { "is_enabled": false, "monthly_limit": null, "used_credits": null,
+                       "utilization": null, "currency": null }
+    }
+  }
+  ```
+
+  Only `severity: "normal"` was observed. Sanitized samples: `tests/fixtures/usage/`.
+  (verified; experimental per the Agent SDK docs)
+- **No plan data.** Logged out, and per the docs with an API key, a setup token or usage
+  billing: exit 0 with `usage_report: null`. (research, documented)
+- **Per account.** The running command's config dir decides: two config dirs that share
+  `jobs/` through symlinks still report their own usage (separate credentials).
+  (verified)
+- **`--safe-mode`** gives the same data without loading the user's hooks and MCP servers.
+  `--no-session-persistence` saves no transcript. (CLI help, verified)
+- **`--session-id <uuid>`** works with `-p`: every line carries that `session_id`. (verified)
+- **Its own row.** While it runs (about one second) the probe is listed by `claude agents
+  --json` as `kind: interactive` with `pid`, `sessionId`, `status` (`busy`, then `idle`),
+  `cwd` = the folder it runs in and `name` `<folder name>-<2 hex>` (e.g. `usage-4f`); then
+  the row is gone. `claude agents --json --all` printed the same bytes before and after.
+  (verified)
+- **Cost.** About 1.5 to 1.9 s and a peak near 280 MB per call. (verified)
+- **Rate limited itself.** Claude Code's usage endpoint is rate limited: `/usage` may say
+  "Showing last-known usage" (a snapshot up to 60 minutes old) or "rate limited until
+  <time>" (documented, https://code.claude.com/docs/en/costs; the exact wording was not
+  captured).
+- **Status line and hooks.** The status line's JSON has `rate_limits`, but only a status
+  line command sees it, which would replace the user's
+  ([0016](../0016-do-not-change-claude-code-defaults.md)); no hook carries usage.
+  (documented)
+
 ## Known messages and exit codes
 
 | Situation | Output | Exit code | Source |
@@ -721,6 +794,9 @@ https://code.claude.com/docs/en/hooks):
 - What a subagent's permission prompt looks like in `claude agents --json` (see
   [Subagents in background sessions](#subagents-in-background-sessions)).
 - Whether `claude --bg` enforces the 4-character minimum prompt documented for agent view.
+- `usage_report` `severity` values other than `normal`, the exact "rate limited until …"
+  wording, and the logged-out `usage_report: null` on this version
+  ([Plan usage limits](#plan-usage-limits)).
 - Whether `--effort` survives a wake with `--resume <sessionId> --bg` (the `note:` line lists
   `--name`, `--permission-mode`, `--settings` and `--model` only).
 - Whether attaching with the hosting account after the 1-hour idle stop keeps the account, and

@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md)
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -36,7 +36,7 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `/` | Text filter: type or edit it in the input line ([0006](0006-session-states-and-grouping.md)); `Esc` clears it |
 | `p` | Toggle grouping: by state / by project ([0006](0006-session-states-and-grouping.md)) |
 | `i` | Show / hide interactive sessions (shown by default) |
-| `r` | Refresh now |
+| `r` | Refresh now (*amended by [0043](0043-plan-usage-display.md):* also the plan usage older than 60 s, while it is shown) |
 | `c` | Settings window ([0024](0024-settings-window.md)) |
 | `e` | Rename the session ([0027](0027-rename-sessions.md)): a window with the name; a stopped session is renamed from tower, a running one inside it after an attach |
 | `t` | *Added by [0040](0040-quick-reply.md):* quick reply: a window for a text that tower sends as the session's next prompt under its owner (an idle live session is stopped and woken with it, a stopped one woken); not offered while the session works, is busy or waits on a prompt, and the status line says why |

@@ -701,7 +701,7 @@ fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
             kv(
                 &mut lines,
                 "values",
-                &values_text(&setting.kind),
+                &values_text(setting.key, &setting.kind),
                 look.secondary(),
             );
             kv(
@@ -832,7 +832,7 @@ fn break_word(word: &str, w: usize) -> Vec<String> {
 }
 
 /// The values a setting takes, for the detail panel.
-fn values_text(kind: &SettingKind) -> String {
+fn values_text(key: SettingKey, kind: &SettingKind) -> String {
     match kind {
         SettingKind::Choice { values, free_text } => {
             let mut text = values.join(" · ");
@@ -846,12 +846,13 @@ fn values_text(kind: &SettingKind) -> String {
         SettingKind::Steps { values, min, max } => {
             let steps: Vec<String> = values
                 .iter()
-                .map(|v| match v {
-                    0 => "off".to_owned(),
-                    v => format!("{v} s"),
-                })
+                .map(|v| crate::settings::shown_value(key, &SettingValue::Int(*v)))
                 .collect();
-            format!("{} (file: 0, or {min} to {max})", steps.join(" · "))
+            if values.contains(&0) {
+                format!("{} (file: 0, or {min} to {max})", steps.join(" · "))
+            } else {
+                format!("{} (file: {min} to {max})", steps.join(" · "))
+            }
         }
         SettingKind::Text => "any text, not empty".to_owned(),
         SettingKind::Paths => "folders; ~ is expanded".to_owned(),

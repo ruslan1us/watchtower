@@ -45,6 +45,7 @@ use crate::dispatch::{
     PERMISSION_MODES,
 };
 use crate::sidecar::{self, FileStamp};
+use crate::usage;
 
 /// The comment at the top of a config file tower creates.
 pub const HEADER: &str = "\
@@ -117,11 +118,13 @@ pub enum SettingKey {
     PollIntervalSecs,
     TrackSubagents,
     LogsFollowSecs,
+    UsageShow,
+    UsageRefreshSecs,
 }
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 14] = [
+    pub const ALL: [SettingKey; 16] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
         SettingKey::UiColorDepth,
@@ -136,6 +139,8 @@ impl SettingKey {
         SettingKey::PollIntervalSecs,
         SettingKey::LogsFollowSecs,
         SettingKey::TrackSubagents,
+        SettingKey::UsageShow,
+        SettingKey::UsageRefreshSecs,
     ];
 
     /// The key's path in the file: `["ui", "style"]`, `["default_model"]`.
@@ -155,6 +160,8 @@ impl SettingKey {
             SettingKey::PollIntervalSecs => &["poll_interval_secs"],
             SettingKey::LogsFollowSecs => &["logs_follow_secs"],
             SettingKey::TrackSubagents => &["sessions", "track_subagents"],
+            SettingKey::UsageShow => &["usage", "show"],
+            SettingKey::UsageRefreshSecs => &["usage", "refresh_secs"],
         }
     }
 
@@ -180,7 +187,9 @@ impl SettingKey {
             SettingKey::HandoffPrompt | SettingKey::AllowCrossGroupHandoff => Section::Handoff,
             SettingKey::PollIntervalSecs
             | SettingKey::LogsFollowSecs
-            | SettingKey::TrackSubagents => Section::General,
+            | SettingKey::TrackSubagents
+            | SettingKey::UsageShow
+            | SettingKey::UsageRefreshSecs => Section::General,
         }
     }
 
@@ -201,6 +210,8 @@ impl SettingKey {
             SettingKey::PollIntervalSecs => "poll interval",
             SettingKey::LogsFollowSecs => "follow logs in background",
             SettingKey::TrackSubagents => "track subagents",
+            SettingKey::UsageShow => "show plan usage",
+            SettingKey::UsageRefreshSecs => "usage refresh",
         }
     }
 
@@ -258,6 +269,14 @@ impl SettingKey {
                 "List the subagents of sessions tower starts, through observe-only hooks passed \
                  with --settings."
             }
+            SettingKey::UsageShow => {
+                "Show each account's plan usage as Claude Code's /usage reports it, for your \
+                 information only. Runs /usage with --safe-mode: no model turn, no hooks."
+            }
+            SettingKey::UsageRefreshSecs => {
+                "How often each account's /usage is asked. r also refreshes values older than a \
+                 minute."
+            }
         }
     }
 
@@ -280,6 +299,8 @@ impl SettingKey {
             SettingKey::TrackSubagents => {
                 "sessions started from now on; the list from the next poll"
             }
+            SettingKey::UsageShow => "at once",
+            SettingKey::UsageRefreshSecs => "from the next probe",
         }
     }
 
@@ -296,8 +317,12 @@ impl SettingKey {
     fn shape(self) -> Shape {
         match self {
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Shape::Paths,
-            SettingKey::AllowCrossGroupHandoff | SettingKey::TrackSubagents => Shape::Bool,
-            SettingKey::PollIntervalSecs | SettingKey::LogsFollowSecs => Shape::Int,
+            SettingKey::AllowCrossGroupHandoff
+            | SettingKey::TrackSubagents
+            | SettingKey::UsageShow => Shape::Bool,
+            SettingKey::PollIntervalSecs
+            | SettingKey::LogsFollowSecs
+            | SettingKey::UsageRefreshSecs => Shape::Int,
             _ => Shape::Text,
         }
     }
@@ -646,7 +671,9 @@ impl EditSession {
             }
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => SettingKind::Paths,
             SettingKey::HandoffPrompt => SettingKind::Text,
-            SettingKey::AllowCrossGroupHandoff | SettingKey::TrackSubagents => SettingKind::Bool,
+            SettingKey::AllowCrossGroupHandoff
+            | SettingKey::TrackSubagents
+            | SettingKey::UsageShow => SettingKind::Bool,
             SettingKey::PollIntervalSecs => SettingKind::Int {
                 min: *POLL_INTERVAL_RANGE.start() as i64,
                 max: *POLL_INTERVAL_RANGE.end() as i64,
@@ -655,6 +682,11 @@ impl EditSession {
                 values: LOGS_FOLLOW_STEPS.iter().map(|s| *s as i64).collect(),
                 min: *LOGS_FOLLOW_RANGE.start() as i64,
                 max: *LOGS_FOLLOW_RANGE.end() as i64,
+            },
+            SettingKey::UsageRefreshSecs => SettingKind::Steps {
+                values: usage::REFRESH_STEPS.iter().map(|s| *s as i64).collect(),
+                min: *usage::REFRESH_RANGE.start() as i64,
+                max: *usage::REFRESH_RANGE.end() as i64,
             },
         }
     }
@@ -689,6 +721,8 @@ impl EditSession {
             SettingKey::PollIntervalSecs => SettingValue::Int(DEFAULT_POLL_INTERVAL_SECS as i64),
             SettingKey::LogsFollowSecs => SettingValue::Int(DEFAULT_LOGS_FOLLOW_SECS as i64),
             SettingKey::TrackSubagents => SettingValue::Bool(true),
+            SettingKey::UsageShow => SettingValue::Bool(false),
+            SettingKey::UsageRefreshSecs => SettingValue::Int(usage::DEFAULT_REFRESH_SECS as i64),
         }
     }
 
@@ -776,11 +810,15 @@ impl EditSession {
                     Err(format!("must be {min} to {max} seconds"))
                 }
             }
-            (SettingKind::Steps { min, max, .. }, SettingValue::Int(n)) => {
-                if *n == 0 || (min..=max).contains(n) {
+            (SettingKind::Steps { values, min, max }, SettingValue::Int(n)) => {
+                // 0 is off only where off is one of the steps.
+                let off = values.contains(&0);
+                if (off && *n == 0) || (min..=max).contains(n) {
                     Ok(())
-                } else {
+                } else if off {
                     Err(format!("must be off (0) or {min} to {max} seconds"))
+                } else {
+                    Err(format!("must be {min} to {max} seconds"))
                 }
             }
             (SettingKind::Text, SettingValue::Text(v)) => {

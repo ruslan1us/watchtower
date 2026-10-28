@@ -337,6 +337,10 @@ pub fn shown_value(key: SettingKey, value: &SettingValue) -> String {
         (_, SettingValue::Bool(true)) => "on".to_owned(),
         (_, SettingValue::Bool(false)) => "off".to_owned(),
         (SettingKey::LogsFollowSecs, SettingValue::Int(0)) => "off".to_owned(),
+        (SettingKey::UsageRefreshSecs, SettingValue::Int(n)) if *n > 0 && n % 60 == 0 => {
+            format!("{} min", n / 60)
+        }
+        (SettingKey::UsageRefreshSecs, SettingValue::Int(n)) => format!("{n} s"),
         (SettingKey::PollIntervalSecs | SettingKey::LogsFollowSecs, SettingValue::Int(n)) => {
             format!("{n} s")
         }

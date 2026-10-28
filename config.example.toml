@@ -128,6 +128,23 @@ color_depth = "auto"
 # Default: true
 track_subagents = true
 
+# Each account's plan usage, for your information only (doc/0043). Off by
+# default. When on, tower runs `<command> -p --output-format stream-json
+# --verbose --no-session-persistence --safe-mode /usage` for each account
+# in its own empty folder (~/.config/watchtower/usage): Claude Code's
+# /usage as a local command, with no model turn, nothing saved and none of
+# your hooks or MCP servers. The header shows the numbers Claude Code
+# reports after each account (`5h 24% · 7d 12%`), the details panel when
+# they reset. Tower never sorts, suggests or acts on them, and they are not
+# in `tower status --json`.
+[usage]
+# Default: false
+show = false
+# Seconds between one account's probes; `r` also refreshes values older than
+# a minute. 60 to 3600.
+# Default: 300
+refresh_secs = 300
+
 # Accounts (doc/0003). Each one is a Claude Code config dir with its own
 # login and background-session supervisor.
 #

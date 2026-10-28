@@ -1,6 +1,6 @@
 # 0001. Thin wrapper over the Claude Code CLI
 
-- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md)
+- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md) · the plan usage probe added by [0043](0043-plan-usage-display.md)
 - Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -107,6 +107,13 @@ listing names, plus each plugin's `.claude-plugin/plugin.json`. All on a
 worker thread, never written. These are the user's own configuration with a
 documented layout, not Claude Code's internal state; tower still reads no
 `jobs/`, `daemon/`, transcript, credential or plugin record file.
+
+*Amended by [0043](0043-plan-usage-display.md):* when the user turns on the plan usage
+display, tower also runs `<account command> -p --output-format stream-json
+--verbose --no-session-persistence --safe-mode /usage` per account, as a
+background call like the others (worker thread, own process group,
+captured output, a timeout), in tower's own `usage/` folder. It reads only
+that command's output.
 
 Tower has no PTY handling, no process supervision, no tmux, no Agent SDK and no
 direct API calls. It does not read, write or refresh credentials.

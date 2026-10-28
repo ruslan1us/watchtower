@@ -19,6 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::subtree::{self, Part};
 use super::theme::{Lb, Theme, rfit};
+use super::usage::{HeaderUsage, header_piece};
 use super::{DETACH_HINT, FOOTER_HELP, MARKER, StatusPiece, age_column, fit, row_columns};
 use crate::app::{App, Entry, LogsPanel, Severity};
 use crate::groups::{self, Group, GroupKey, Grouping};
@@ -91,7 +92,7 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
     ])
     .areas(area);
 
-    draw_header(frame, app, header, tall, th);
+    draw_header(frame, app, header, tall, now_ms, th);
     let wide = area.width >= SIDE_MIN_WIDTH;
     let full = app.logs().is_some_and(LogsPanel::full_screen);
     match app.logs().is_some() {
@@ -238,7 +239,7 @@ pub(super) fn account_chip(app: &App, name: &str, th: Theme) -> (String, Style) 
     }
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, now_ms: i64, th: Theme) {
     let mode = match app.grouping() {
         Grouping::State => " by state ",
         Grouping::Project => " by project ",
@@ -281,11 +282,18 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
         }
         l
     };
-    let accounts = |with_groups: bool| {
+    // Each account's chip, its plan usage when shown (doc/0043), then its
+    // group and session count.
+    let accounts = |with_groups: bool, how: HeaderUsage| {
         let mut l = Lb::new();
         for a in &app.config().accounts {
             let (chip, style) = account_chip(app, &a.name, th);
             l.push(chip, style);
+            let used = header_piece(app, &a.name, now_ms, how, th);
+            let gap = if used.is_some() { "  " } else { " " };
+            if let Some(used) = used {
+                l.append(used);
+            }
             if with_groups {
                 let n = app
                     .sessions()
@@ -297,26 +305,30 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, th: Theme) 
                 } else {
                     format!("{} · ", a.group)
                 };
-                l.push(format!(" {group}{n}  "), th.muted());
+                l.push(format!("{gap}{group}{n}  "), th.muted());
             } else {
-                l.push(" ", th.muted());
+                l.push(gap, th.muted());
             }
         }
         l
     };
-    // Narrower: short pill labels, then no account groups, then no
-    // accounts, then no Stopped and Interactive pills.
+    // Narrower: short pill labels, then no account groups, then no week's
+    // usage, then no age of stale usage, then no usage numbers (doc/0043),
+    // then no accounts, then no Stopped and Interactive pills.
     let mut chosen = None;
-    for (short, acc, with_groups, all) in [
-        (false, true, true, true),
-        (true, true, true, true),
-        (true, true, false, true),
-        (true, false, false, true),
-        (true, false, false, false),
+    for (short, acc, with_groups, how, all) in [
+        (false, true, true, HeaderUsage::Both, true),
+        (true, true, true, HeaderUsage::Both, true),
+        (true, true, false, HeaderUsage::Both, true),
+        (true, true, false, HeaderUsage::Session, true),
+        (true, true, false, HeaderUsage::Bare, true),
+        (true, true, false, HeaderUsage::None, true),
+        (true, false, false, HeaderUsage::None, true),
+        (true, false, false, HeaderUsage::None, false),
     ] {
         let p = pills(short, all);
         let a = if acc {
-            accounts(with_groups)
+            accounts(with_groups, how)
         } else {
             Lb::new()
         };

@@ -30,6 +30,18 @@ const MAX_VALUE_ROWS: usize = 3;
 /// The most rows the side panel's keys take (doc/0041).
 const MAX_KEY_ROWS: usize = 2;
 
+/// The most rows the side panel's `usage` value takes (doc/0043).
+const MAX_USAGE_ROWS: usize = 8;
+
+/// The most rows each value of [`ValueRows`] takes.
+const MAX_ROWS: ValueRows = [
+    MAX_VALUE_ROWS,
+    MAX_VALUE_ROWS,
+    MAX_VALUE_ROWS,
+    MAX_VALUE_ROWS,
+    MAX_USAGE_ROWS,
+];
+
 /// What the panel describes.
 enum Subject<'a> {
     Session(&'a MergedSession),
@@ -518,9 +530,45 @@ fn fit_line(l: Lb, width: usize) -> Lb {
 }
 
 /// How many rows each wrapped value of the side panel may take, in the
-/// order the free rows go to them (doc/0041): folder, `git`, status, name.
-/// A group's title uses the first.
-type ValueRows = [usize; 4];
+/// order the free rows go to them (doc/0041): folder, `git`, status, name,
+/// and the owner's plan usage (doc/0043). A group's title uses the first.
+type ValueRows = [usize; 5];
+
+/// The side panel's `usage` lines for the owner of `m`, at most `rows` of
+/// them (doc/0043): nothing while `[usage] show` is off or the owner is
+/// unknown.
+fn usage_lines(
+    app: &App,
+    m: &MergedSession,
+    width: usize,
+    rows: usize,
+    now_ms: i64,
+    th: Theme,
+) -> Vec<Lb> {
+    let Some(rows_of) =
+        owner(app, m).and_then(|a| super::usage::detail_rows(app, &a.name, now_ms, th))
+    else {
+        return Vec::new();
+    };
+    let room = value_room(width);
+    // The first rows first; a value that gets fewer rows than it needs
+    // ends in `…`.
+    let mut budget = rows.max(1);
+    let mut parts: Vec<(String, Style)> = Vec::new();
+    for r in rows_of {
+        if budget == 0 {
+            break;
+        }
+        let wrapped = wrap_capped(&r.text, room, r.rows.min(budget));
+        budget -= wrapped.len();
+        parts.extend(wrapped.into_iter().map(|part| (part, r.style)));
+    }
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(k, (part, style))| kv(if k == 0 { "usage" } else { "" }, part, style, th))
+        .collect()
+}
 
 /// The side panel's lines for a session, `width` columns wide, its values
 /// wrapped onto at most `rows` rows each. `name` is the full name when the
@@ -545,7 +593,7 @@ fn session_lines(
     }
     // The background-task sentence is tower's own and is shown whole
     // while the panel has the rows (doc/0032).
-    let [folder_rows, git_rows, status_rows, name_rows] = rows;
+    let [folder_rows, git_rows, status_rows, name_rows, usage_rows] = rows;
     let status_rows = if groups::bg_task(s) && status_rows >= MAX_VALUE_ROWS {
         usize::MAX
     } else {
@@ -573,8 +621,9 @@ fn session_lines(
     let folder = paths::shorten_home(&s.cwd, app.home());
     lines.extend(kv_wrapped("folder", &folder, width, folder_rows, text, th));
     lines.extend(git_lines(app, m, width, git_rows, th));
+    lines.push(account_line(app, m, "account", th));
+    lines.extend(usage_lines(app, m, width, usage_rows, now_ms, th));
     lines.extend([
-        account_line(app, m, "account", th),
         kv("id", id, text, th),
         kv("kind", kind, text, th),
         Lb::new(),
@@ -654,17 +703,17 @@ pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Them
     // The values take the free rows: each up to MAX_VALUE_ROWS when all
     // fit, else one row each and the rows left over to them in turn.
     let fitting = |body_h: usize| -> Option<Vec<Lb>> {
-        let full = build([MAX_VALUE_ROWS; 4]);
+        let full = build(MAX_ROWS);
         if full.len() <= body_h {
             return Some(full);
         }
-        let mut rows: ValueRows = [1; 4];
+        let mut rows: ValueRows = [1; 5];
         let mut lines = build(rows);
         if lines.len() > body_h {
             return None;
         }
         for k in 0..rows.len() {
-            while rows[k] < MAX_VALUE_ROWS {
+            while rows[k] < MAX_ROWS[k] {
                 rows[k] += 1;
                 let more = build(rows);
                 if more.len() > body_h {
@@ -681,9 +730,9 @@ pub fn draw_side(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Them
         // A second row of keys gives its row back to the values first.
         None if keys.len() > 1 => {
             keys = key_rows(app, &subject, width, 1, th);
-            fitting(body(1)).unwrap_or_else(|| build([1; 4]))
+            fitting(body(1)).unwrap_or_else(|| build([1; 5]))
         }
-        None => build([1; 4]),
+        None => build([1; 5]),
     };
     let body_h = body(keys.len());
     for (k, l) in lines.into_iter().enumerate() {

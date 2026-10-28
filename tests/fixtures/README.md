@@ -81,6 +81,20 @@ on stdout (see `cli-output/logs-stopped.stderr`).
 | `stop.stdout` | `claude stop <id>` on a session that was already stopped | `stopped <id>`. Noted from the console. |
 | `rm.stdout` | `claude rm <id>` | `removed <id>`. Captured to a file; the console showed the same. |
 
+### `usage/` — `claude -p --output-format stream-json … "/usage"` stdout
+
+Shaped after a capture with Claude Code **2.1.312** (WSL, 2026-10-28) of the plan
+usage probe of [0043](../../doc/0043-plan-usage-display.md): one JSON value per line,
+`system`, `assistant` (with `usage_report`) and `result`. Every value is made up (the
+percentages, reset times, time zone, ids, paths and the `/usage` text, shortened), and
+fields tower does not read were left out. None of them is a capture byte for byte.
+
+| File | What it shows |
+|---|---|
+| `plan.jsonl` | A subscription: `session` 24 %, `weekly_all` 12 %, a `weekly_scoped` limit for `Fable` 3 %, all `severity: normal`; extra usage off. The layout of the capture. |
+| `no-plan.jsonl` | **hand-written**: `usage_report: null`, as for a logged-out account, an API key or usage billing (from research, not captured). |
+| `odd.jsonl` | **hand-written**: a line that is not JSON, float and string percentages, `warning`, `critical` and an unknown `severity`, an unknown `kind` with a `surface` scope, a limit with only `percent`, a value that is not an object, extra usage on, and the text "Showing last-known usage · rate limited until 1:30pm". |
+
 ### Exit codes
 
 | Command | Exit code | Source |

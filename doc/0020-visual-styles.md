@@ -1,6 +1,6 @@
 # 0020. Visual styles: dashboard and minimal
 
-- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21 · values wrap, titles cut with `…`, two-row key line by [0041](0041-details-panel-values-wrap.md) · group separators and the status line fitted to the width, amended 2026-10-21 (UI audit)
+- Status: Accepted · 2026-10-19 · colour section superseded by [0021](0021-dashboard-themes.md) · spinner only for `state: working`, amended by [0032](0032-background-task-after-a-finished-turn.md) · `git` line and a four-line strip added by [0037](0037-git-summary-and-shell.md) · minimal columns and window titles fitted to the width, amended 2026-10-21 · values wrap, titles cut with `…`, two-row key line by [0041](0041-details-panel-values-wrap.md) · group separators and the status line fitted to the width, amended 2026-10-21 (UI audit) · plan usage in the header, the details panel and the minimal title added by [0043](0043-plan-usage-display.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -38,7 +38,11 @@ from the same app state in both ([0006](0006-session-states-and-grouping.md),
   the right each account as a chip with its group and session count. From
   26 rows, and only with colour, a bar shows each state's share. Narrower
   headers use short pill labels, then drop the account groups, then the
-  accounts, then the Stopped and Interactive pills.
+  accounts, then the Stopped and Interactive pills. *Amended by
+  [0043](0043-plan-usage-display.md):* while the plan usage display is on, each account's
+  chip is followed by its `5h 24% · 7d 12%`; after the account groups the
+  week's number goes first, then a stale value's age, then the numbers,
+  before the accounts.
 - Sessions panel: `N of M shown` in its title when folded groups, the
   filter or `i` hide rows, else the session count; a column header from 26
   rows; each group as a separator joined to the border

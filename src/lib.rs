@@ -63,6 +63,9 @@
 //! - [`shell`]: `!`, a shell in the selected session's folder (doc/0037).
 //! - [`gitinfo`]: the details panel's `git` line, read with `git status`
 //!   on worker threads and cached per folder (doc/0037).
+//! - [`usage`]: each account's plan usage, opt-in and informational: the
+//!   `/usage` probe, its parser, hiding the probe's own row and the
+//!   schedule (doc/0043).
 //! - [`tui`]: the terminal runtime and event loop.
 //! - [`args`]: command-line arguments.
 //! - [`status`]: `tower status [--json]`, one merged snapshot without the
@@ -111,3 +114,4 @@ pub mod templates;
 pub mod tui;
 pub mod ui;
 pub mod update;
+pub mod usage;

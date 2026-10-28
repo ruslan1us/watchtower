@@ -29,6 +29,7 @@ mod settings;
 mod subtree;
 mod templates;
 mod theme;
+mod usage;
 
 use theme::{Look, Theme};
 
@@ -212,7 +213,7 @@ fn draw_minimal(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) {
     ])
     .areas(frame.area());
 
-    draw_title(frame, app, title);
+    draw_title(frame, app, title, now_ms);
     let full = app.logs().is_some_and(LogsPanel::full_screen);
     match app.logs().is_some() {
         false => draw_list(frame, app, list, now_ms),
@@ -593,7 +594,7 @@ pub(crate) fn draw_logs_in(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_title(frame: &mut Frame, app: &App, area: Rect, now_ms: i64) {
     let n = app.sessions().len();
     let accounts: Vec<&str> = app
         .config()
@@ -601,15 +602,34 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|a| a.name.as_str())
         .collect();
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" tower ", Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(format!(
             " {n} session{}  ·  accounts: {}",
             if n == 1 { "" } else { "s" },
             accounts.join(", ")
         )),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    // Each account's plan usage, `main 24%/12%`, when all of it fits
+    // (doc/0043).
+    let used: Vec<(String, Style)> = accounts
+        .iter()
+        .filter_map(|a| usage::compact(app, a, now_ms))
+        .collect();
+    if !used.is_empty() {
+        let mut extra = vec![Span::raw("  ·  usage: ")];
+        for (k, (text, style)) in used.into_iter().enumerate() {
+            if k > 0 {
+                extra.push(Span::raw(", "));
+            }
+            extra.push(Span::styled(text, style));
+        }
+        let width = |s: &[Span]| s.iter().map(|s| s.content.width()).sum::<usize>();
+        if width(&spans) + width(&extra) <= usize::from(area.width) {
+            spans.extend(extra);
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// The text columns of one row: name, project, detail, account. The

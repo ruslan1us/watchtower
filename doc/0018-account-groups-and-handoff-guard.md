@@ -1,6 +1,6 @@
 # 0018. Account groups and the hand-off guard
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · the open item on limit-related claims resolved for display only by [0043](0043-plan-usage-display.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
@@ -107,7 +107,11 @@ around limits.
 
 - Whether usage limits count as "restrictions" under the Usage Policy effective
   November 12, 2026. Until that is clear, tower stays manual and neutral and
-  makes no limit-related claims.
+  makes no limit-related claims. *Resolved for display only by [0043](0043-plan-usage-display.md):*
+  the owner decided that tower may show, opt-in, the numbers Claude Code
+  itself reports. Tower still makes no claims and no suggestions, and
+  nothing of it reaches the hand-off (its picker, confirmation and status
+  texts) or any automatic action.
 - Cross-account messaging: ~~whether the orchestrator's `SendMessage` reaches
   sessions hosted by another account~~ it does: verified 2026-10-19 (Claude
   Code 2.1.303), and the reply comes back too ([0010](0010-orchestrator.md)).

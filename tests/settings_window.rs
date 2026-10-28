@@ -955,3 +955,88 @@ fn an_empty_hand_off_prompt_is_saved_and_shown_as_none() {
         Some("hand-off prompt must not start with '-'")
     );
 }
+
+// ---- plan usage (doc/0043) ----------------------------------------------------
+
+#[test]
+fn the_usage_toggle_is_saved_into_a_usage_table_and_applied() {
+    let (env, mut app) = opened();
+    select(&mut app, "show plan usage");
+    assert_eq!(
+        value(&app, SettingKey::UsageShow),
+        SettingValue::Bool(false)
+    );
+    press(&mut app, key(KeyCode::Enter));
+    assert_eq!(value(&app, SettingKey::UsageShow), SettingValue::Bool(true));
+    let effects = save(&mut app);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(app.config().usage_show, "applied at once");
+    let after = file(&env);
+    assert!(after.ends_with("\n[usage]\nshow = true\n"), "{after}");
+    assert!(after.starts_with(CONFIG), "the rest is kept: {after}");
+    // Back to the default: the key goes.
+    press(&mut app, key(KeyCode::Delete));
+    save(&mut app);
+    assert!(!app.config().usage_show);
+    assert!(!file(&env).contains("show = true"), "{}", file(&env));
+}
+
+#[test]
+fn the_usage_refresh_steps_through_one_to_fifteen_minutes() {
+    let (env, mut app) = opened();
+    select(&mut app, "usage refresh");
+    let refresh = |app: &App| value(app, SettingKey::UsageRefreshSecs);
+    assert_eq!(refresh(&app), SettingValue::Int(300));
+    for want in [600, 900, 60, 120] {
+        press(&mut app, key(KeyCode::Right));
+        assert_eq!(refresh(&app), SettingValue::Int(want));
+    }
+    press(&mut app, key(KeyCode::Left));
+    press(&mut app, key(KeyCode::Left));
+    assert_eq!(refresh(&app), SettingValue::Int(900), "wraps around");
+    save(&mut app);
+    assert_eq!(app.config().usage_refresh_secs, 900);
+    assert!(
+        file(&env).contains("[usage]\nrefresh_secs = 900\n"),
+        "{}",
+        file(&env)
+    );
+    // The pick list names the steps in minutes.
+    press(&mut app, key(KeyCode::Enter));
+    match &win(&app).mode {
+        Mode::Pick(pick) => assert_eq!(pick.items, ["1 min", "2 min", "5 min", "10 min", "15 min"]),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_usage_refresh_is_never_off_and_at_least_a_minute() {
+    let (_env, app) = opened();
+    let s = &win(&app).session;
+    let key = SettingKey::UsageRefreshSecs;
+    assert_eq!(key.toml_key(), "[usage] refresh_secs");
+    assert_eq!(SettingKey::UsageShow.toml_key(), "[usage] show");
+    assert_eq!(key.section(), Section::General);
+    assert_eq!(
+        s.check(key, &SettingValue::Int(0)).unwrap_err(),
+        "must be 60 to 3600 seconds"
+    );
+    assert!(s.check(key, &SettingValue::Int(59)).is_err());
+    assert!(
+        s.check(key, &SettingValue::Int(90)).is_ok(),
+        "a hand-edited value"
+    );
+    assert_eq!(
+        watchtower::settings::shown_value(key, &SettingValue::Int(90)),
+        "90 s"
+    );
+    assert_eq!(
+        watchtower::settings::shown_value(key, &SettingValue::Int(600)),
+        "10 min"
+    );
+    // The logs-follow interval keeps its off.
+    assert!(
+        s.check(SettingKey::LogsFollowSecs, &SettingValue::Int(0))
+            .is_ok()
+    );
+}

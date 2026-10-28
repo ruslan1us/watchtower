@@ -69,6 +69,7 @@ use crate::sidecar::{
 };
 use crate::subagents::{self, Subagent};
 use crate::templates::{self, TemplateList, TemplateLoad, TemplatePicker};
+use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
@@ -226,6 +227,10 @@ pub enum Effect {
     /// ([`crate::gitinfo::GitRunner::status`]), then call
     /// [`App::git_finished`] (doc/0037).
     GitStatus(GitJob),
+    /// Run one plan-usage probe on a worker thread
+    /// ([`crate::usage::run_probe`]), then call [`App::usage_finished`]
+    /// (doc/0043).
+    ProbeUsage(UsageJob),
     /// Hand the terminal to a shell in a session's folder exactly like an
     /// attach ([`crate::shell::run`]), then call [`App::shell_finished`]
     /// (doc/0037).
@@ -1413,6 +1418,12 @@ pub struct App {
     /// Whether the last frame drew a details panel that shows the `git`
     /// line; only then is git asked (doc/0037).
     git_shown: bool,
+    /// Each account's plan usage and its probes (doc/0043).
+    usage: UsageBoard,
+    /// Tower's usage folder: the probe's own row is hidden (doc/0043).
+    usage_folder: ProbeFolder,
+    /// Local time for the usage texts; UTC in tests.
+    pub clock: Clock,
 }
 
 impl App {
@@ -1510,6 +1521,12 @@ impl App {
             keyboard_enhanced: false,
             git: GitCache::default(),
             git_shown: false,
+            usage: UsageBoard::default(),
+            usage_folder: ProbeFolder {
+                path: usage::dir(&default_dir),
+                canonical: None,
+            },
+            clock: Clock::LOCAL,
         }
     }
 
@@ -1525,6 +1542,7 @@ impl App {
     pub fn set_config_dir(&mut self, config_dir: &std::path::Path) {
         self.orchestrator_dir = orchestrator::dir(config_dir);
         self.templates_dir = templates::dir(config_dir);
+        self.usage_folder = ProbeFolder::for_config_dir(config_dir);
     }
 
     /// The templates folder (doc/0036).
@@ -2362,7 +2380,11 @@ impl App {
     /// when the panel is open and
     /// this was the poll of the shown session's account (one refresh per
     /// poll, doc/0009).
-    pub fn apply_poll(&mut self, update: PollUpdate) -> Vec<Effect> {
+    pub fn apply_poll(&mut self, mut update: PollUpdate) -> Vec<Effect> {
+        // The usage probe's own transient row is no session (doc/0043).
+        if let Ok(listing) = update.result.as_mut() {
+            self.usage_folder.hide(listing);
+        }
         let Some(poll) = self.polls.iter_mut().find(|p| p.name == update.account) else {
             return Vec::new();
         };
@@ -3444,6 +3466,16 @@ impl App {
                 }
             }
             Action::Refresh => {
+                // Usage older than a minute is asked again too (doc/0043).
+                if self.config.usage_show {
+                    let names: Vec<&str> = self
+                        .config
+                        .accounts
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect();
+                    self.usage.refresh(&names, Instant::now());
+                }
                 self.set_message("refreshing…", Severity::Info);
                 return vec![Effect::PollNow];
             }
@@ -4955,7 +4987,84 @@ impl App {
         if let Some(load) = self.start_command_load() {
             effects.push(Effect::LoadCommands(load));
         }
+        effects.extend(self.start_usage(now));
         effects
+    }
+
+    // ---- plan usage (doc/0043) ---------------------------------------------
+
+    /// The usage probes to start now: only while `[usage] show` is on,
+    /// each account every `refresh_secs`, the first at once, one per
+    /// account and [`crate::usage::MAX_RUNNING`] in all at a time.
+    pub fn start_usage(&mut self, now: Instant) -> Vec<Effect> {
+        if !self.config.usage_show {
+            return Vec::new();
+        }
+        let names: Vec<&str> = self
+            .config
+            .accounts
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        let due = self.usage.due(&names, now, self.config.usage_interval());
+        due.iter()
+            .filter_map(|name| self.config.account(name))
+            .map(|account| {
+                Effect::ProbeUsage(UsageJob {
+                    account: account.clone(),
+                    dir: self.usage_folder.path.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Records a finished usage probe: the folder's canonical path, so
+    /// the probe's row is recognised, and the result.
+    pub fn usage_finished(
+        &mut self,
+        job: &UsageJob,
+        folder: Option<PathBuf>,
+        result: Result<Probed, String>,
+    ) {
+        if let Some(folder) = folder {
+            self.usage_folder.canonical = Some(folder);
+        }
+        self.usage_received(&job.account.name, result, Instant::now(), sidecar::now_ms());
+    }
+
+    /// Records `account`'s probe result as of `now` and wall-clock
+    /// `now_ms` (tests feed results with it).
+    pub fn usage_received(
+        &mut self,
+        account: &str,
+        result: Result<Probed, String>,
+        now: Instant,
+        now_ms: i64,
+    ) {
+        let interval = self.config.usage_interval();
+        self.usage.finished(account, result, now, now_ms, interval);
+    }
+
+    /// What to show for `account`'s usage at wall-clock `now_ms`; `None`
+    /// while `[usage] show` is off (doc/0043).
+    pub fn usage_shown(&self, account: &str, now_ms: i64) -> Option<Shown<'_>> {
+        if !self.config.usage_show {
+            return None;
+        }
+        Some(match self.usage.get(account) {
+            Some(a) => a.shown(now_ms, self.config.usage_interval()),
+            None => Shown::Waiting,
+        })
+    }
+
+    /// The usage board (tests).
+    pub fn usage_board(&self) -> &UsageBoard {
+        &self.usage
+    }
+
+    /// The usage folder whose rows are hidden.
+    pub fn usage_folder(&self) -> &ProbeFolder {
+        &self.usage_folder
     }
 
     // ---- the details panel's git line and the shell (doc/0037) -----------
@@ -5252,6 +5361,11 @@ impl App {
         }
         if live.logs_follow_secs != self.config.logs_follow_secs {
             effects.push(Effect::SetLogsFollow(live.logs_follow()));
+        }
+        // Turned off: the values go; turned on again, probes start at once
+        // (doc/0043).
+        if self.config.usage_show && !live.usage_show {
+            self.usage.reset();
         }
         self.style = live.ui_style;
         self.set_theme(live.ui_theme);

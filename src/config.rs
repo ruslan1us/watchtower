@@ -382,6 +382,12 @@ pub struct Config {
     /// read the files they write (doc/0029). When `false`, no `--settings`
     /// is passed and the files are ignored.
     pub track_subagents: bool,
+    /// `[usage] show` (default `false`): probe and show each account's plan
+    /// usage, informational only (doc/0043).
+    pub usage_show: bool,
+    /// `[usage] refresh_secs`: seconds between one account's usage probes;
+    /// 60 to 3600 ([`crate::usage::REFRESH_RANGE`], doc/0043).
+    pub usage_refresh_secs: u64,
 }
 
 /// Where the config came from: the file tower looked at and whether it was
@@ -463,6 +469,14 @@ struct RawConfig {
     accounts: Vec<RawAccount>,
     ui: Option<RawUi>,
     sessions: Option<RawSessions>,
+    usage: Option<RawUsage>,
+}
+
+/// The `[usage]` table (doc/0043).
+#[derive(Debug, Default, Deserialize)]
+struct RawUsage {
+    show: Option<bool>,
+    refresh_secs: Option<u64>,
 }
 
 /// The `[sessions]` table (doc/0029).
@@ -592,6 +606,18 @@ impl Config {
                 LOGS_FOLLOW_RANGE.end()
             )));
         }
+        let usage = raw.usage.unwrap_or_default();
+        let usage_refresh_secs = usage
+            .refresh_secs
+            .unwrap_or(crate::usage::DEFAULT_REFRESH_SECS);
+        let range = crate::usage::REFRESH_RANGE;
+        if !range.contains(&usage_refresh_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "[usage] refresh_secs must be {} to {} seconds, not {usage_refresh_secs}",
+                range.start(),
+                range.end()
+            )));
+        }
         let ui = raw.ui.unwrap_or_default();
         let ui_style = match ui.style {
             Some(style) => UiStyle::parse(&style)?,
@@ -626,6 +652,8 @@ impl Config {
             ui_theme,
             ui_color_depth,
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
+            usage_show: usage.show.unwrap_or(false),
+            usage_refresh_secs,
         })
     }
 
@@ -649,6 +677,11 @@ impl Config {
     /// `logs_follow_secs = 0` turns it off (doc/0031).
     pub fn logs_follow(&self) -> Option<std::time::Duration> {
         (self.logs_follow_secs > 0).then(|| std::time::Duration::from_secs(self.logs_follow_secs))
+    }
+
+    /// The time between one account's usage probes (doc/0043).
+    pub fn usage_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.usage_refresh_secs)
     }
 }
 
@@ -707,9 +740,13 @@ mod tests {
             accounts,
             ui,
             sessions,
+            usage,
         } = raw;
         let RawSessions { track_subagents } = sessions.expect("[sessions] is documented");
         assert!(track_subagents.is_some());
+        let RawUsage { show, refresh_secs } = usage.expect("[usage] is documented");
+        assert!(show.is_some());
+        assert!(refresh_secs.is_some());
         let RawUi {
             style,
             theme,

@@ -32,6 +32,10 @@ What it adds on top:
   ([Slash commands](#slash-commands)).
 - **Subagents under their session.** A working session tower started shows its running
   subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
+- **Plan usage, if you turn it on.** With `[usage] show = true` the header shows the
+  numbers Claude Code's own `/usage` reports after each account (`5h 24% · 7d 12%`), and
+  the details panel when they reset. Off by default and for your information only
+  ([Plan usage](#plan-usage)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
   panel for the selected session; `[ui] style = "minimal"` gives the plain list
   ([Configuration](#configuration)).
@@ -50,9 +54,11 @@ with `[sessions] track_subagents = false` ([0029](doc/0029-tracking-subagents.md
 It never reads, stores or passes on credentials or session tokens, never runs
 `claude setup-token`, never proxies or routes requests, and has no hosted, shared or
 multi-user mode: it is a single-user local tool around the unmodified official `claude`
-binary. There is no quick reply without attaching, no usage or limit display, no automatic
-or limit-based hand-off, no pinning and no chat or diff views. The full list of non-goals
-is in [0014](doc/0014-v1-scope.md).
+binary. The quick reply (`t`) sends a session a text without attaching, and the plan
+usage display is opt-in and only shows what Claude Code reports
+([0043](doc/0043-plan-usage-display.md)). There is no automatic or limit-based hand-off,
+no sorting, suggestion or action based on usage, no pinning and no chat or diff views.
+The full list of non-goals is in [0014](doc/0014-v1-scope.md).
 
 ## Accounts and terms
 
@@ -177,7 +183,7 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 Press `c` in tower to change settings: the Settings window
 ([0024](doc/0024-settings-window.md)) edits the style, theme and colour depth
 (previewed as you browse), the new-session defaults, the project folders, the hand-off prompt and guard,
-the poll interval, the background logs follow and subagent tracking; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
+the poll interval, the background logs follow, subagent tracking and the plan usage display; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
 and keeps your comments and formatting; resetting a setting to its default removes the
@@ -297,6 +303,46 @@ does not parse is not applied; the status line shows the error until it is fixed
   logs_follow_secs = 0
   ```
 
+- **Plan usage.** `[usage] show = true` turns on the [plan usage](#plan-usage) display;
+  `[usage] refresh_secs` (default `300`, `60` to `3600`) is the time between one
+  account's probes.
+
+  ```toml
+  [usage]
+  show = true
+  refresh_secs = 600
+  ```
+
+## Plan usage
+
+Off by default. With `[usage] show = true` (or `show plan usage` in the Settings window)
+tower asks each account's Claude Code for its plan usage every `refresh_secs` seconds
+(default 5 minutes), one account at a time, and shows only the numbers Claude Code
+itself reports ([0043](doc/0043-plan-usage-display.md)):
+
+- In the dashboard's header, after each account's chip: `5h 24% · 7d 12%` (the current
+  session's and the week's share), coloured by Claude Code's own severity, dimmed with
+  its age (`· 20m ago`) when it is old or the last probe failed. A narrow header drops
+  the week's number first, then the numbers. `—` means no plan data: the account is
+  logged out, uses an API key or is billed by usage.
+- In the details panel, for the selected session's account: each limit with when it
+  resets, in your local time (`5h 24% · resets 18:00`, `7d 12% · resets Tue 08:00`,
+  per-model weekly limits by name), extra usage when it is on, and the age of an old value.
+- In the minimal style, a compact `main 24%/12%` in the title line when it fits.
+
+The probe is `<command> -p --output-format stream-json --verbose --no-session-persistence
+--safe-mode /usage`, run in tower's own empty folder `~/.config/watchtower/usage/`:
+Claude Code's `/usage` as a local command, with no model turn and no tokens, nothing
+saved, and none of your hooks or MCP servers (`--safe-mode`). Each probe is a short-lived
+Claude Code process (about two seconds). While it runs, `claude agents` lists it as an
+interactive session in that folder; tower hides that row. `r` also asks again for values
+older than a minute. When Claude Code says it is rate limited, tower waits until the time
+it states.
+
+The numbers are for your information only: tower never sorts, ranks or suggests anything
+by them, never acts on them, and never shows them in the hand-off windows or in `tower
+status --json`. When an account hits its limits, see [Accounts and terms](#accounts-and-terms).
+
 ## Prompt templates
 
 Texts you type again and again (review instructions, say) can live as templates: one
@@ -386,7 +432,7 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `/` | Text filter on name, project and account; `Esc` clears it |
 | `p` | Group by state / by project |
 | `i` | Show / hide interactive sessions |
-| `r` | Refresh now |
+| `r` | Refresh now (also the [plan usage](#plan-usage) older than a minute, when it is on) |
 | `c` | Settings window ([0024](doc/0024-settings-window.md)) |
 | `e` | Rename the session: a stopped one is woken with `/rename` and stopped again, without attaching; for a running one tower attaches and you type `/rename <name>` there, then `Ctrl+Z` ([0027](doc/0027-rename-sessions.md)) |
 | `!` | A shell (`$SHELL`, else `/bin/sh`) in the session's folder; `exit` returns to tower ([0037](doc/0037-git-summary-and-shell.md)) |
@@ -499,6 +545,8 @@ Next to the config, in `~/.config/watchtower/`:
 - `templates/`: your prompt templates; tower creates the empty folder and only reads
   the files
   ([0036](doc/0036-prompt-templates.md)).
+- `usage/`: the empty folder the [plan usage](#plan-usage) probe runs in, created
+  (mode `0700`) when the display is on ([0043](doc/0043-plan-usage-display.md)).
 
 ## Safety notes
 

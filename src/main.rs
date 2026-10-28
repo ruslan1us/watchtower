@@ -92,7 +92,17 @@ fn status(json: bool) -> ExitCode {
     if let Some(w) = warning {
         eprintln!("tower: {}", shown(&w));
     }
-    let results = status::poll_all(&config.accounts, &watchtower::cli::CliRunner::new());
+    // A running tower's usage probe is no session (doc/0043).
+    let probes = watchtower::usage::ProbeFolder::for_config_dir(&dirs.config_dir);
+    let results = status::poll_all(&config.accounts, &watchtower::cli::CliRunner::new())
+        .into_iter()
+        .map(|result| {
+            result.map(|mut listing| {
+                probes.hide(&mut listing);
+                listing
+            })
+        })
+        .collect();
     let (mut report, warnings) = status::build(
         &config,
         &source,

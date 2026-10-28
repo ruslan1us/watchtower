@@ -1,6 +1,6 @@
 # 0024. Settings window
 
-- Status: Accepted · 2026-10-19 · the logs-follow row added by [0031](0031-logs-follow-interval.md) · an empty hand-off prompt allowed by [0033](0033-hand-off-without-a-prompt.md) · the colour-depth row added by [0038](0038-light-and-16-colour-themes.md) · detail-panel values wrap inside a padding column, amended 2026-10-21
+- Status: Accepted · 2026-10-19 · the logs-follow row added by [0031](0031-logs-follow-interval.md) · an empty hand-off prompt allowed by [0033](0033-hand-off-without-a-prompt.md) · the colour-depth row added by [0038](0038-light-and-16-colour-themes.md) · detail-panel values wrap inside a padding column, amended 2026-10-21 · the two plan usage rows added by [0043](0043-plan-usage-display.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0022](0022-tower-writes-its-own-config.md)
 
 ## Context
@@ -58,7 +58,11 @@ and must not start with `-`.
 depth` (`[ui] color_depth`) in Appearance after the theme, a choice of
 `auto`, `truecolor`, `256`, `16`, previewed live like the style and theme
 (the header says `colour depth 16`), its pick list saying what `auto`
-finds. `[[accounts]]` are shown read-only with the note
+finds.
+*Amended by [0043](0043-plan-usage-display.md):* also `show plan usage` (`[usage] show`, a
+toggle) and `usage refresh` (`[usage] refresh_secs`, stepped `1 min`,
+`2 min`, `5 min`, `10 min`, `15 min` like the logs-follow row, never off)
+in General after `track subagents`. `[[accounts]]` are shown read-only with the note
 that a wrong command or config dir can wake sessions under the wrong
 account; `e` is the way to edit them.
 

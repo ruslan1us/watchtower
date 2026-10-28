@@ -1,6 +1,6 @@
 # 0014. Scope of v1 and non-goals
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · the non-goal "usage and limit display per account" superseded by [0043](0043-plan-usage-display.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0004](0004-account-hand-off.md), [0007](0007-visual-only-attention.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -58,7 +58,9 @@ conversation with `R` ([0019](0019-resume-past-sessions.md)).
 - Chat views, diffs, PR or merge-request buttons: attach and work in Claude
   Code as usual.
 - Tower-only tags or custom groups.
-- Usage and limit display per account.
+- ~~Usage and limit display per account.~~ *Superseded by [0043](0043-plan-usage-display.md):* an
+  opt-in display of the numbers Claude Code reports, informational only;
+  the next bullet still holds.
 - Automatic hand-off, and hand-off suggestions based on usage or limit data.
   This is a firm non-goal, not a deferral: a hand-off continues a session
   under another of the user's own accounts only when the user asks, and usage

@@ -658,6 +658,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 }
             }
             Effect::GitStatus(job) => rt.jobs.git(job),
+            Effect::ProbeUsage(job) => rt.jobs.usage(job),
             Effect::Shell(req) => {
                 let termination = rt.termination;
                 let shell = crate::shell::program_from_env();

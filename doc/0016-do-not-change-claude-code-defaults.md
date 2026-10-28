@@ -1,6 +1,6 @@
 # 0016. Never change Claude Code's own behaviour
 
-- Status: Accepted · 2026-10-18 · observe-only subagent hooks with `--settings` allowed by [0029](0029-tracking-subagents.md)
+- Status: Accepted · 2026-10-18 · observe-only subagent hooks with `--settings` allowed by [0029](0029-tracking-subagents.md) · the plan usage probe's flags allowed by [0043](0043-plan-usage-display.md)
 - Related: [reference](reference/claude-code-cli.md), [0001](0001-thin-wrapper-over-claude-cli.md), [0005](0005-attach-and-detach.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md)
 
 ## Context
@@ -34,6 +34,12 @@ defaults.
   behaviour does not change; they are combined with the user's own hooks, and
   no Claude Code file is written. `[sessions] track_subagents = false` turns
   this off. Nothing else is ever passed with `--settings`.
+- *Amended by [0043](0043-plan-usage-display.md):* while the plan usage display is on, tower
+  runs `-p --output-format stream-json --verbose --no-session-persistence
+  --safe-mode "/usage"` per account in its own empty folder. It is no user
+  session: `/usage` is a local command (no model turn), nothing is saved,
+  and `--safe-mode` keeps the user's hooks and MCP servers from running
+  every few minutes. No setting is changed.
 - When Claude Code itself is configured differently by the user, tower respects
   that and reports CLI errors as they come.
 

@@ -709,3 +709,55 @@ fn subagents_of_working_rows_only() {
     let report = parse(&setup.run(&["status", "--json"]));
     assert_eq!(by_name(&report, "run-test-suite")["subagents"], json!([]));
 }
+
+/// Plan usage (doc/0043) never reaches the orchestrator: `tower status
+/// --json` runs no `/usage`, has no usage fields even with `[usage] show =
+/// true`, and hides a running tower's probe row in `<config dir>/usage`.
+#[test]
+fn status_has_no_usage_and_hides_the_probe_row() {
+    let _guard = lock();
+    let mut all = rows("mixed-states.json");
+    let setup = Setup::two("true", "true");
+    let probe_dir = setup.config_dir().join("usage");
+    std::fs::create_dir_all(&probe_dir).unwrap();
+    all.push(json!({
+        "pid": NO_PID + 99,
+        "cwd": probe_dir.display().to_string(),
+        "kind": "interactive",
+        "startedAt": 1_767_225_600_000_i64,
+        "sessionId": "1a2b3c4d-0000-4000-8000-0000000000aa",
+        "name": "usage-8b",
+        "status": "idle"
+    }));
+    let main = setup.serve("main.json", &all);
+    let setup = Setup {
+        fakes: vec![Fake::new("claude", &main), Fake::new("claude-alt", &main)],
+        ..setup
+    };
+    setup.write_config(
+        "[usage]\nshow = true\n\
+         [[accounts]]\nname = \"main\"\ncommand = \"claude\"\n\
+         [[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\nconfig_dir = \"~/.claude-alt\"\n",
+    );
+    let out = setup.run(&["status", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = parse(&out);
+    assert!(
+        !sessions(&report).iter().any(|r| r["name"] == "usage-8b"),
+        "the probe row is hidden"
+    );
+    assert_eq!(sessions(&report).len(), all.len() - 1);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for needle in ["usage", "rate_limits", "percent"] {
+        assert!(!text.contains(needle), "{needle:?} in {text}");
+    }
+    for fake in &setup.fakes {
+        for argv in fake.all_argv() {
+            assert_eq!(argv, ["agents", "--json", "--all"]);
+        }
+    }
+}
