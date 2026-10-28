@@ -1,5 +1,9 @@
 # Watchtower
 
+[![CI](https://github.com/ruslan1us/watchtower/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ruslan1us/watchtower/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ruslan1us/watchtower)](https://github.com/ruslan1us/watchtower/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/ruslan1us/watchtower)](LICENSE)
+
 Watchtower (`tower`) is a terminal UI for keeping track of many parallel Claude Code
 background sessions. It is a thin front end over Claude Code's own commands: sessions are
 started with `claude --bg`, listed with `claude agents --json --all`, and entered,
