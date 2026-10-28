@@ -1,6 +1,6 @@
 # 0042. Slash-command suggestions in the task field
 
-- Status: Accepted · 2026-10-28
+- Status: Accepted · 2026-10-28 · claude.ai's synced skills added 2026-10-28
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0008](0008-new-session-dialog.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [CLI reference](reference/claude-code-cli.md#skills-and-custom-commands-the--menu)
 - Amends: [0001](0001-thin-wrapper-over-claude-cli.md) (what tower reads outside the CLI), [0008](0008-new-session-dialog.md) (the task field), [0011](0011-keybindings.md) (keys of the task field and the reply text), [0040](0040-quick-reply.md) (the reply text)
 
@@ -23,6 +23,11 @@ documented ([CLI reference](reference/claude-code-cli.md#skills-and-custom-comma
   the repository root (the first folder with a `.git`, at most 16 levels up; outside a
   repository only the folder itself); a `.claude` that is the account's config dir counts
   as personal only;
+- *claude.ai*: the skills synced from claude.ai, `<config dir>/skills/synced/<bucket>/<skill>/SKILL.md`:
+  every folder directly under `skills/synced/` is a bucket (files, hidden entries and the
+  zero-byte `.bucket-<bucket id>` markers next to the bucket folders are left out; a link
+  is followed, as for personal skills), and each bucket is read like a personal `skills/`
+  folder. They are offered under their plain name (`/<skill>`), tagged `claude.ai`;
 - *plugin*: the entries of each plugin that `<account command> plugin list --json`, run in
   the folder with the account's command ([0003](0003-accounts-and-session-ownership.md)),
   reports with `enabled: true`. `project` and `local` installs whose `projectPath` is
@@ -34,11 +39,19 @@ documented ([CLI reference](reference/claude-code-cli.md#skills-and-custom-comma
 Names follow the docs: `/<skill folder>` or the frontmatter `name`, `/<a>:<b>` for
 `commands/a/b.md` (subfolders at most 3 deep), `/<plugin>:<name>` for plugins. Clashes:
 a skill over a command file, then personal over project, then the folder nearer the
-repository root; within one source the first found (folders in name order); plugins are
-namespaced, and of two plugins with one name the first listed wins. `user-invocable: false`
-hides an entry. Built-in commands, bundled skills, managed skills, MCP prompts, workflows,
-claude.ai's synced skills (`skills/synced/`) and components added by marketplace entries
-are not offered.
+repository root, then a synced skill (assumed, not verified: that in Claude Code a personal
+or project entry of the same name keeps the plain name); within one source the first found (folders in name order,
+buckets too); plugins are namespaced, and of two plugins with one name the first listed
+wins. `user-invocable: false` hides an entry. A skill folder named `synced` stays reserved
+(also inside a bucket). Built-in commands, bundled skills, managed skills, MCP prompts,
+workflows and components added by marketplace entries are not offered.
+
+*Synced skills and built-ins.* Claude Code's own menu shows a synced skill whose plain name
+is also a built-in command or workflow under a namespaced form instead
+(`/anthropic-skills:<skill>` for the one bucket seen). Tower does not know the built-ins,
+so it offers such a skill as `/<skill>`; and since how a bucket's namespace is derived is
+not known, tower makes none up: the filter matches synced entries by their plain name
+only, and `anthropic-skills:` matches nothing.
 
 **What is read, and how.** Only the head of each file: lines up to the closing `---` of a
 frontmatter that opens on the first line, and, without a `description`, up to the first
@@ -67,7 +80,7 @@ non-blank character of the whole text and the cursor is inside that first word (
 with a second `/`, a path, does not count). It lists the matches of the word (ignoring
 case): names starting with it, then names whose part after a `:` does, then names
 containing it, at most 8 rows at once, each `/name [argument-hint]`, the description
-dimmed and the source tag right-aligned (`personal`, `project`, `plugin <name>`); the
+dimmed and the source tag right-aligned (`personal`, `project`, `claude.ai`, `plugin <name>`); the
 description and then the tag are left out when the row is too narrow, cuts end with `…`.
 It is a bordered window titled `Commands`, inside the host's border and padding, below the
 cursor's row (above it when there is no room below); its keys are on its bottom border,
@@ -90,7 +103,10 @@ forbids Claude Code's internal state (`jobs/`, `daemon/`, transcripts, credentia
 plugin records and caches tower would have to interpret) because it is undocumented and can
 change in any release. Skill and command files are the user's own documented configuration,
 written by the user or shipped by a plugin, with a documented layout and frontmatter; the
-plugin folders are the ones the CLI itself reports (`installPath`). Tower reads them the way
+plugin folders are the ones the CLI itself reports (`installPath`). The synced skills are
+the user's claude.ai skills in a documented place (`skills/synced/`), plain skill folders
+with the usual frontmatter; only their bucket level is observed rather than documented, and
+a change there only means fewer suggestions. Tower reads them the way
 an editor would, read-only and only their heads, and runs one documented read-only CLI
 command. It touches no session, settings file or Claude Code state and changes nothing about
 how Claude Code behaves ([0016](0016-do-not-change-claude-code-defaults.md)): the accepted
@@ -101,8 +117,9 @@ text is only the task passed to `--bg` or the reply as before.
 - The owner's skills are a few keys away, with their argument hints, under the account
   the session will run with.
 - Suggestions can differ from Claude Code's menu: tower does not see `skillOverrides`,
-  managed or synced skills, workflows, marketplace-entry components, or names Claude Code
-  refuses for reasons not documented. A suggestion is only text; Claude Code decides what
+  managed skills, workflows, marketplace-entry components, or names Claude Code refuses
+  for reasons not documented; a synced skill that clashes with a built-in is offered as
+  `/<skill>`, where Claude Code shows `/<namespace>:<skill>`. A suggestion is only text; Claude Code decides what
   it runs.
 - One `plugin list` call per dialog opening, account or project change and reply window,
   plus small file reads, all off the UI thread.
@@ -122,5 +139,12 @@ text is only the task passed to `--bg` or the reply as before.
 
 ## Open items
 
-- Whether Claude Code's menu shows the synced, managed and workflow entries tower leaves
-  out, and in which order it ranks matches.
+- Whether Claude Code's menu shows the managed and workflow entries tower leaves out, and
+  in which order it ranks matches.
+- How Claude Code derives a synced bucket's namespace (seen: `anthropic-skills`), so that
+  tower could offer the namespaced form when a synced skill clashes with a built-in.
+
+Resolved: claude.ai's synced skills (verified with Claude Code 2.1.312 in WSL,
+2026-10-28; [CLI reference](reference/claude-code-cli.md#skills-and-custom-commands-the--menu)).
+Claude Code's menu offers them under their plain name with their description; they are now
+offered, as above.

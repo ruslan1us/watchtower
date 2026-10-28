@@ -1,7 +1,7 @@
 //! Slash-command suggestions in the task field (doc/0042).
 //!
 //! **What is offered.** The skills and custom commands Claude Code shows in
-//! its own `/` menu, from three sources (rules in
+//! its own `/` menu, from four sources (rules in
 //! `doc/reference/claude-code-cli.md`, "Skills and custom commands"):
 //!
 //! - *personal*: `<config dir>/skills/<name>/SKILL.md` and
@@ -9,12 +9,15 @@
 //!   `CLAUDE_CONFIG_DIR`, else `~/.claude`);
 //! - *project*: `.claude/skills` and `.claude/commands` of the folder and of
 //!   every parent up to the repository root;
+//! - *claude.ai*: the skills synced from claude.ai,
+//!   `<config dir>/skills/synced/<bucket>/<name>/SKILL.md`, under their
+//!   plain name, below personal and project entries of the same name;
 //! - *plugin*: the enabled plugins `<account command> plugin list --json`
 //!   reports, read under the folder it names (`readFromFolder`, else
 //!   `installPath`), namespaced `/<plugin>:<name>`.
 //!
 //! Built-in commands, bundled skills, managed (enterprise) skills, MCP
-//! prompts, workflows and skills synced from claude.ai are not offered.
+//! prompts and workflows are not offered.
 //!
 //! **What is read** ([`read_head`]): only the start of each file, up to the
 //! closing `---` of its frontmatter (and, without a `description`, up to the
@@ -78,16 +81,20 @@ pub enum Origin {
     Personal,
     /// The project's `.claude/skills` / `.claude/commands`.
     Project,
+    /// A skill synced from claude.ai (`<config dir>/skills/synced/`).
+    Synced,
     /// An enabled plugin, by its namespace (the manifest's `name`).
     Plugin(String),
 }
 
 impl Origin {
-    /// The menu's source tag: `personal`, `project`, `plugin <name>`.
+    /// The menu's source tag: `personal`, `project`, `claude.ai`,
+    /// `plugin <name>`.
     pub fn tag(&self) -> String {
         match self {
             Origin::Personal => "personal".to_owned(),
             Origin::Project => "project".to_owned(),
+            Origin::Synced => "claude.ai".to_owned(),
             Origin::Plugin(name) => format!("plugin {name}"),
         }
     }
@@ -153,13 +160,14 @@ impl CommandLoad {
         }
     }
 
-    /// Runs the load: the personal and project folders, then
+    /// Runs the load: the personal, project and synced folders, then
     /// `<account command> plugin list --json` in the folder (with
     /// [`PLUGIN_LIST_TIMEOUT`]) and the enabled plugins' folders. A failed
     /// plugin listing only leaves the plugins out.
     pub fn run(&self, runner: &CliRunner) -> CommandList {
         let personal = personal(&self.account.config_dir);
         let project = project(&self.folder, &self.account.config_dir);
+        let synced = synced(&self.account.config_dir);
         let runner = runner.clone().with_timeout(PLUGIN_LIST_TIMEOUT);
         let installs = match runner.run_in(&self.account, &self.folder, PLUGIN_LIST_ARGS) {
             Ok(out) if out.success() => parse_plugin_list(&out.stdout_text(), &self.folder),
@@ -172,21 +180,25 @@ impl CommandLoad {
                 break;
             }
         }
-        merge(personal, project, plugins)
+        merge(personal, project, synced, plugins)
     }
 }
 
-/// The final list: personal and project entries by precedence (a skill
-/// over a command file, then personal over project; within one source the
-/// first found), then the plugins' (namespaced, the first plugin with a
-/// name wins), sorted by name ignoring case, at most [`MAX_COMMANDS`].
+/// The final list: personal, project and synced entries by precedence (a
+/// skill over a command file, then personal over project; a synced skill
+/// below all of them, as Claude Code gives the plain name to the others;
+/// within one source the first found), then the plugins' (namespaced, the
+/// first plugin with a name wins), sorted by name ignoring case, at most
+/// [`MAX_COMMANDS`].
 pub fn merge(
     personal: Vec<SlashCommand>,
     project: Vec<SlashCommand>,
+    synced: Vec<SlashCommand>,
     plugins: Vec<SlashCommand>,
 ) -> CommandList {
-    let mut plain: Vec<SlashCommand> = personal.into_iter().chain(project).collect();
+    let mut plain: Vec<SlashCommand> = personal.into_iter().chain(project).chain(synced).collect();
     let rank = |c: &SlashCommand| match (c.kind, &c.origin) {
+        (_, Origin::Synced) => 4,
         (Kind::Skill, Origin::Personal) => 0,
         (Kind::Skill, _) => 1,
         (Kind::Command, Origin::Personal) => 2,
@@ -825,6 +837,28 @@ pub fn personal(config_dir: &Path) -> Vec<SlashCommand> {
         None,
         &mut out,
     );
+    out
+}
+
+/// The skills synced from claude.ai into the account whose config dir is
+/// `config_dir`: every bucket folder directly under `skills/synced/`
+/// (folders in name order; files, hidden entries and the `.bucket-<id>`
+/// markers left out; links followed, as for personal skills), each a
+/// folder of `<name>/SKILL.md` folders read like personal skills. Plain
+/// names: the bucket's namespace (`anthropic-skills:` for one bucket) is
+/// not known to tower, so none is made up.
+pub fn synced(config_dir: &Path) -> Vec<SlashCommand> {
+    let root = config_dir.join("skills").join("synced");
+    let mut out = Vec::new();
+    for bucket in names_in(&root) {
+        if out.len() >= MAX_COMMANDS {
+            break;
+        }
+        let dir = root.join(&bucket);
+        if dir.is_dir() {
+            scan_skills(&dir, None, &Origin::Synced, None, &mut out);
+        }
+    }
     out
 }
 

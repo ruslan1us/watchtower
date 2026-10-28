@@ -1,6 +1,6 @@
 //! Slash-command suggestions (doc/0042): the frontmatter reader, the
-//! personal, project and plugin scans from temp folders (plugins listed by
-//! a fake `claude`), precedence and plugin names, the menu's keys in the
+//! personal, project, claude.ai (synced) and plugin scans from temp folders
+//! (plugins listed by a fake `claude`), precedence and plugin names, the menu's keys in the
 //! new-session dialog and the quick reply window, the app's loads and
 //! cache, and the menu drawn in both styles.
 
@@ -20,8 +20,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use watchtower::app::{App, Effect};
 use watchtower::cli::CliRunner;
 use watchtower::commands::{
-    self, CommandList, CommandLoad, Commands, Kind, MAX_HEAD_BYTES, MenuView, Origin, SlashCommand,
-    SlashMenu, matches, parse_frontmatter, parse_head, parse_plugin_list, read_head, trigger,
+    self, CommandList, CommandLoad, Commands, Kind, MAX_COMMANDS, MAX_DIR_ENTRIES, MAX_HEAD_BYTES,
+    MenuView, Origin, SlashCommand, SlashMenu, matches, parse_frontmatter, parse_head,
+    parse_plugin_list, read_head, trigger,
 };
 use watchtower::config::{Account, UiStyle, UiTheme};
 use watchtower::dialog::{Field, TextArea};
@@ -58,7 +59,7 @@ fn cmd(name: &str, hint: Option<&str>, origin: Origin) -> SlashCommand {
 }
 
 fn list_of(items: Vec<SlashCommand>) -> CommandList {
-    commands::merge(items, Vec::new(), Vec::new())
+    commands::merge(items, Vec::new(), Vec::new(), Vec::new())
 }
 
 fn text_at_end(s: &str) -> TextArea {
@@ -276,7 +277,7 @@ fn project_entries_come_from_the_folder_and_its_parents_up_to_the_repository() {
         [repo.clone(), repo.join("packages"), sub.clone()]
     );
     let found = commands::project(&sub, config.path());
-    let list = commands::merge(Vec::new(), found, Vec::new());
+    let list = commands::merge(Vec::new(), found, Vec::new(), Vec::new());
     assert_eq!(names(&list.commands), ["release", "shared", "web-only"]);
     // The repository root's wins.
     assert_eq!(by_name(&list.commands, "shared").description, "root one");
@@ -294,6 +295,187 @@ fn a_project_in_the_home_folder_does_not_count_the_personal_folder_twice() {
     skill(&home.path().join(".claude"), "mine", "x\n");
     let found = commands::project(home.path(), &home.path().join(".claude"));
     assert!(found.is_empty(), "{:?}", names(&found));
+}
+
+/// A skill synced from claude.ai: `skills/synced/<bucket>/<name>/SKILL.md`.
+fn synced_skill(config: &Path, bucket: &str, name: &str, text: &str) {
+    write(
+        &config
+            .join("skills/synced")
+            .join(bucket)
+            .join(name)
+            .join("SKILL.md"),
+        text,
+    );
+}
+
+/// A synced skill's frontmatter as claude.ai writes it (made up).
+fn synced_text(name: &str, description: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {description}\ncompatibility: any\nlicense: Example\n---\nBody\n"
+    )
+}
+
+const BUCKET_A: &str = "0a0a0a0a-0000-4000-8000-000000000001_0b0b0b0b-0000-4000-8000-000000000002";
+const BUCKET_B: &str = "0c0c0c0c-0000-4000-8000-000000000003_0d0d0d0d-0000-4000-8000-000000000004";
+
+#[test]
+fn synced_skills_are_read_from_every_bucket() {
+    let config = tempfile::tempdir().unwrap();
+    let c = config.path();
+    let synced = c.join("skills/synced");
+    // The zero-byte markers next to the bucket folders.
+    write(&synced.join(format!(".bucket-{BUCKET_A}")), "");
+    write(&synced.join(format!(".bucket-{BUCKET_B}")), "");
+    synced_skill(
+        c,
+        BUCKET_A,
+        "fill-forms",
+        &synced_text("fill-forms", "Fill a form"),
+    );
+    synced_skill(
+        c,
+        BUCKET_A,
+        "sheet-tidy",
+        &synced_text("sheet-tidy", "Tidy a sheet"),
+    );
+    synced_skill(
+        c,
+        BUCKET_A,
+        "quiet",
+        "---\nname: quiet\nuser-invocable: false\n---\n",
+    );
+    synced_skill(c, BUCKET_A, ".cache", &synced_text("cache", "hidden"));
+    synced_skill(c, BUCKET_A, "synced", &synced_text("synced", "reserved"));
+    synced_skill(
+        c,
+        BUCKET_B,
+        "deck-notes",
+        &synced_text("deck-notes", "Notes"),
+    );
+    // The same name in a later bucket: the first bucket's wins.
+    synced_skill(
+        c,
+        BUCKET_B,
+        "sheet-tidy",
+        &synced_text("sheet-tidy", "Later"),
+    );
+    // Hidden folders and files at the bucket level are not buckets, and a
+    // `SKILL.md` right in a bucket is not a skill.
+    synced_skill(c, ".hidden", "secret", &synced_text("secret", "hidden"));
+    write(&synced.join("notes.txt"), "not a bucket");
+    write(
+        &synced.join(BUCKET_A).join("SKILL.md"),
+        "---\ndescription: x\n---\n",
+    );
+    // A bucket may be a link to a folder elsewhere.
+    let elsewhere = tempfile::tempdir().unwrap();
+    write(
+        &elsewhere.path().join("linked-skill/SKILL.md"),
+        &synced_text("linked-skill", "Linked"),
+    );
+    std::os::unix::fs::symlink(elsewhere.path(), synced.join("linked-bucket")).unwrap();
+
+    let found = commands::synced(c);
+    let mut got = names(&found);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "deck-notes",
+            "fill-forms",
+            "linked-skill",
+            "sheet-tidy",
+            "sheet-tidy"
+        ]
+    );
+    assert!(found.iter().all(|e| e.origin == Origin::Synced));
+    assert!(found.iter().all(|e| e.kind == Kind::Skill));
+    assert_eq!(by_name(&found, "fill-forms").description, "Fill a form");
+    let list = commands::merge(Vec::new(), Vec::new(), found, Vec::new());
+    assert_eq!(
+        names(&list.commands),
+        ["deck-notes", "fill-forms", "linked-skill", "sheet-tidy"]
+    );
+    assert_eq!(
+        by_name(&list.commands, "sheet-tidy").description,
+        "Tidy a sheet"
+    );
+    // Not personal ones, and `synced` stays reserved there.
+    assert!(commands::personal(c).is_empty());
+    // No config dir, no `synced` folder: nothing.
+    assert!(commands::synced(&c.join("missing")).is_empty());
+}
+
+#[test]
+fn synced_skills_come_after_personal_and_project_entries_of_the_same_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config");
+    skill(&config, "fill-forms", "---\ndescription: Personal\n---\n");
+    write(&config.join("commands/sheet-tidy.md"), "Personal command\n");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    write(
+        &project.join(".claude/commands/deck-notes.md"),
+        "Project command\n",
+    );
+    for name in ["fill-forms", "sheet-tidy", "deck-notes", "only-synced"] {
+        synced_skill(&config, BUCKET_A, name, &synced_text(name, "Synced"));
+    }
+    let list = commands::merge(
+        commands::personal(&config),
+        commands::project(&project, &config),
+        commands::synced(&config),
+        Vec::new(),
+    );
+    assert_eq!(
+        names(&list.commands),
+        ["deck-notes", "fill-forms", "only-synced", "sheet-tidy"]
+    );
+    let origin = |n: &str| by_name(&list.commands, n).origin.clone();
+    assert_eq!(origin("fill-forms"), Origin::Personal);
+    assert_eq!(origin("sheet-tidy"), Origin::Personal);
+    assert_eq!(by_name(&list.commands, "sheet-tidy").kind, Kind::Command);
+    assert_eq!(origin("deck-notes"), Origin::Project);
+    assert_eq!(origin("only-synced"), Origin::Synced);
+    assert_eq!(Origin::Synced.tag(), "claude.ai");
+}
+
+#[test]
+fn synced_skills_have_no_made_up_namespace() {
+    let list = list_of(vec![
+        cmd("long-study", None, Origin::Synced),
+        cmd(
+            "review-kit:long-study",
+            None,
+            Origin::Plugin("review-kit".into()),
+        ),
+    ]);
+    let found =
+        |q: &str| -> Vec<String> { matches(&list, q).iter().map(|c| c.name.clone()).collect() };
+    assert_eq!(found("long"), ["long-study", "review-kit:long-study"]);
+    // claude.ai's namespace for a bucket is not known: no match for it.
+    assert!(found("anthropic-skills:").is_empty());
+    assert!(found("anthropic-skills:long").is_empty());
+}
+
+#[test]
+fn synced_skills_keep_the_listing_caps() {
+    let config = tempfile::tempdir().unwrap();
+    let c = config.path();
+    let text = "---\ndescription: d\n---\n";
+    // One bucket over the folder-listing cap, three more over the list cap.
+    for i in 0..MAX_DIR_ENTRIES + 20 {
+        synced_skill(c, "bucket-a", &format!("a{i:04}"), text);
+    }
+    let one = commands::synced(c);
+    assert_eq!(one.len(), MAX_DIR_ENTRIES);
+    for bucket in ["bucket-b", "bucket-c", "bucket-d"] {
+        for i in 0..500 {
+            synced_skill(c, bucket, &format!("{bucket}-{i:04}"), text);
+        }
+    }
+    assert_eq!(commands::synced(c).len(), MAX_COMMANDS);
 }
 
 #[test]
@@ -325,7 +507,7 @@ fn precedence_skill_over_command_then_personal_over_project() {
         Origin::Plugin("review-kit".into()),
         "plugin",
     )];
-    let list = commands::merge(personal, project, plugins);
+    let list = commands::merge(personal, project, Vec::new(), plugins);
     assert_eq!(
         names(&list.commands),
         ["Alpha", "deploy", "review", "review-kit:deploy"]
@@ -542,6 +724,18 @@ fn a_load_reads_every_source_and_lists_plugins_with_the_accounts_command() {
         "triage",
         "---\ndescription: Triage\n---\n",
     );
+    synced_skill(
+        &config,
+        BUCKET_A,
+        "fix-bug",
+        &synced_text("fix-bug", "Synced fix"),
+    );
+    synced_skill(
+        &config,
+        BUCKET_A,
+        "sheet-tidy",
+        &synced_text("sheet-tidy", "Tidy"),
+    );
     let plugin = plugin_dir(tmp.path(), Some(r#"{"name": "review-kit"}"#));
     skill(&plugin, "code-review", "---\ndescription: Review\n---\n");
 
@@ -564,8 +758,9 @@ fn a_load_reads_every_source_and_lists_plugins_with_the_accounts_command() {
     let list = load.run(&CliRunner::new());
     assert_eq!(
         names(&list.commands),
-        ["fix-bug", "review-kit:code-review", "triage"]
+        ["fix-bug", "review-kit:code-review", "sheet-tidy", "triage"]
     );
+    assert_eq!(by_name(&list.commands, "sheet-tidy").origin, Origin::Synced);
     assert_eq!(
         by_name(&list.commands, "fix-bug").description,
         "Personal fix"
@@ -588,7 +783,7 @@ fn a_load_reads_every_source_and_lists_plugins_with_the_accounts_command() {
     };
     assert_eq!(
         names(&load.run(&CliRunner::new()).commands),
-        ["fix-bug", "triage"]
+        ["fix-bug", "sheet-tidy", "triage"]
     );
 }
 
@@ -1003,6 +1198,31 @@ fn the_menu_draws_in_both_styles() {
             let all = render(&mut app, w, h).join("\n");
             assert!(all.contains(commands::LOADING_TEXT), "{what}\n{all}");
         }
+    }
+}
+
+#[test]
+fn a_synced_skill_draws_with_the_claude_ai_tag() {
+    for style in [UiStyle::Minimal, UiStyle::Dashboard] {
+        let mut app = app_single();
+        app.style = style;
+        let _root = dialog(&mut app);
+        answer(
+            &mut app,
+            vec![
+                cmd("fill-forms", None, Origin::Synced),
+                cmd("fix-bug", None, Origin::Project),
+            ],
+        );
+        type_in(&mut app, "/fill");
+        let all = render(&mut app, 80, 24).join("\n");
+        let row = all
+            .lines()
+            .find(|l| l.contains("/fill-forms"))
+            .unwrap_or_else(|| panic!("{style:?}\n{all}"));
+        assert!(row.contains("about fill-forms"), "{style:?}\n{all}");
+        assert!(row.contains("claude.ai"), "{style:?}\n{all}");
+        assert!(!all.contains("/fix-bug"), "{style:?}: filtered\n{all}");
     }
 }
 

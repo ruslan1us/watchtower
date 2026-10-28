@@ -469,13 +469,27 @@ built-in commands, bundled skills, MCP prompts and workflows, which tower does n
 | Nested | `<subdir>/.claude/skills/…` below the start folder, loaded only once Claude touches a file there | — |
 | Plugin | `<plugin root>/skills/<name>/SKILL.md` | `<plugin root>/commands/*.md` |
 | Enterprise | the managed settings folder's `.claude/skills/` | — |
-| claude.ai | synced into `~/.claude/skills/synced/` | — |
+| claude.ai | synced into `~/.claude/skills/synced/` (layout below) | — |
 
 "If you set `CLAUDE_CONFIG_DIR`, every `~/.claude` path on this page lives under that
 directory instead" ([.claude directory](https://code.claude.com/docs/en/claude-directory)):
 an account's personal folders are under its config dir. Plugins shared through a
 repository are not scanned from `.claude/plugins/`. A skill folder named `synced` (any
 case) or `anthropic-skills` is reserved.
+
+**Synced skills** (verified with Claude Code 2.1.312 in WSL, 2026-10-28; the layout is not
+documented): `<config dir>/skills/synced/<bucket id>/<skill>/SKILL.md`, with a zero-byte
+marker file `<config dir>/skills/synced/.bucket-<bucket id>` next to each bucket folder.
+A bucket id looks like `<uuid>_<uuid>`; one bucket held 14 skills. Each `SKILL.md` has a
+normal frontmatter: a plain `name` equal to the folder name, `description`, and fields
+such as `compatibility` and `license`. Claude Code's interactive `/` menu offers them under
+their **plain name** (`/<skill>`) with their description. When the plain name clashes with
+a built-in command or workflow, the menu shows a namespaced form instead: a synced skill
+whose name was also a built-in "[dynamic workflow]" appeared as
+`/anthropic-skills:<skill>` (the namespace of that bucket; how it is derived for other
+buckets is not known). Not verified: which entry keeps the plain name when a personal or
+project skill has the same name as a synced one; tower assumes the personal or project entry
+does (its order: personal and project entries first, then synced skills).
 
 **Names** (documented):
 
@@ -500,7 +514,8 @@ case) or `anthropic-skills` is reserved.
 one both load (`/deploy` is the root's). Not documented: which of a personal command and a
 project skill with the same name wins, and which of a start folder's and a parent folder's
 `.claude/skills` wins; tower takes a skill over a command first, then personal over
-project, and the folder nearer the repository root.
+project, and the folder nearer the repository root, and puts claude.ai's synced skills
+below all of them.
 
 **Frontmatter** (documented): read only when the opening `---` is the file's first line.
 All fields are optional. `description`, when missing, is "the first non-empty line of the
@@ -780,9 +795,10 @@ subscription; how Watchtower uses it: [0043](../0043-plan-usage-display.md).
 
 ## Not yet verified
 
-- Whether the skills synced from claude.ai (`~/.claude/skills/synced/`), managed skills and
-  workflows show in the `/` menu the way the docs suggest; tower does not offer them
-  ([0042](../0042-slash-command-suggestions.md)).
+- Whether managed skills and workflows show in the `/` menu the way the docs suggest;
+  tower does not offer them ([0042](../0042-slash-command-suggestions.md)). (claude.ai's
+  synced skills: verified, see [Skills and custom commands](#skills-and-custom-commands-the--menu).)
+- How Claude Code derives a synced bucket's namespace (seen: `anthropic-skills`).
 - How long `claude plugin list --json` takes with many plugins, and whether it ever prints
   something before the JSON on stdout.
 

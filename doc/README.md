@@ -59,7 +59,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
 | 0040 | [Quick reply](0040-quick-reply.md) | Accepted (slash-command suggestions by 0042) |
 | 0041 | [Long values in the details panel wrap](0041-details-panel-values-wrap.md) | Accepted |
-| 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted |
+| 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted (claude.ai synced skills added 2026-10-28) |
 | 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI

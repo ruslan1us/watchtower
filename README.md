@@ -27,8 +27,8 @@ What it adds on top:
   without attaching ([Quick reply](#quick-reply)).
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
 - **Slash-command suggestions.** Typing `/` at the start of a task or a quick reply lists
-  your skills and custom commands (personal, the project's, enabled plugins') with their
-  descriptions and argument hints, as Claude Code's own prompt does
+  your skills and custom commands (personal, the project's, synced from claude.ai, enabled
+  plugins') with their descriptions and argument hints, as Claude Code's own prompt does
   ([Slash commands](#slash-commands)).
 - **Subagents under their session.** A working session tower started shows its running
   subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
@@ -376,15 +376,21 @@ dialog's account and project (for a reply: the session's owner and folder):
   (`~/.claude`, or its `CLAUDE_CONFIG_DIR`);
 - project: `.claude/skills` and `.claude/commands` of the project and its parent folders up
   to the repository root;
+- claude.ai: the skills claude.ai syncs into `skills/synced/<bucket>/` of the account's
+  config dir, under their plain name (`/<name>`); a personal or project entry of the same
+  name wins;
 - plugins: the enabled plugins `<account command> plugin list --json` reports, as
   `/<plugin>:<name>` (e.g. `/review-kit:code-review`).
 
 Each row shows `/name`, its `argument-hint` (e.g. `/fix-bug [ticket]`), the description and
-where it comes from (`personal`, `project`, `plugin <name>`). Typing filters (names that
+where it comes from (`personal`, `project`, `claude.ai`, `plugin <name>`). Typing filters (names that
 start with the text first), `↑` / `↓` choose, `Tab` or `Enter` insert `/name ` and close the
 menu, `Esc` closes only the menu; with the menu closed every key keeps its meaning. After
 an insert the argument hint stays in the field's hint row while you type the rest. Entries
-with `user-invocable: false` are hidden; built-in commands are not listed.
+with `user-invocable: false` are hidden; built-in commands are not listed. Claude Code
+shows a synced skill whose name is also a built-in under a namespaced form (such as
+`/anthropic-skills:<name>`); tower does not know the built-ins or that namespace, so it
+offers the plain `/<name>`.
 
 Tower reads only the frontmatter of each file (at most 16 KiB), on a worker thread, and
 never writes there; the list is refreshed when the dialog opens, when its account or

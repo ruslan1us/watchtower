@@ -421,8 +421,8 @@ const SKILL_DESCRIPTION: &str = "Fix a bug from a ticket: reproduce it, write a 
     fix it and open a pull request";
 const CYR_DESCRIPTION: &str = "Проверь миграции базы данных и убедись, что откат работает";
 
-/// Slash commands from every source, with long names, a long hint and a
-/// Cyrillic description (doc/0042).
+/// Slash commands from every source (claude.ai's synced skills too), with
+/// long names, a long hint and a Cyrillic description (doc/0042).
 fn slash_commands() -> CommandList {
     let c = |name: &str, hint: Option<&str>, description: &str, origin: Origin| SlashCommand {
         name: name.into(),
@@ -451,6 +451,12 @@ fn slash_commands() -> CommandList {
                 Origin::Project,
             ),
         ],
+        vec![c(
+            "fill-forms",
+            None,
+            "Fill in a form from a document",
+            Origin::Synced,
+        )],
         vec![
             c(
                 LONG_SKILL,
