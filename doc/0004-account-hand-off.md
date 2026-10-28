@@ -64,7 +64,9 @@ Moving a session to another account is the user's decision, made per session. To
 ## Open items
 
 - Whether effort survives the wake. The `note:` lists `--name`, `--permission-mode` (when set at dispatch) and `--model` only; the resume docs say auto mode is restored when the account still qualifies.
-- Whether a session stopped by the ~1 h idle rule (not by `stop`) keeps its account when its owner wakes it.
+- ~~Whether a session stopped by the ~1 h idle rule (not by `stop`) keeps its account when its owner wakes it.~~
+  It does: verified by the owner 2026-10-28 with a session on the second account (`alt`),
+  stopped by the idle rule and attached from tower.
 - Hand-off between accounts that do not share history has not been tested.
 - The output of the copy case (wording of its `note:` line, exit code) has not been captured; tower only compares the short id.
 - Tower's implementation has been tested against fake commands only; the end-to-end hand-off with real accounts, including how long a stopped process takes to leave the listing, is still to be checked on a host with two accounts.

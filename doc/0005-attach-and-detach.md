@@ -214,5 +214,6 @@ The same procedure is used by dispatch-and-attach in the new-session dialog
   screen so the message stays readable. Tower currently uses this fallback.
 - Whether the no-op signal handlers are needed at all in practice; verify with
   the tmux harness ([0015](0015-testing-strategy.md)).
-- Waking a session that was stopped by Claude Code's idle rule (about 1 hour)
-  rather than by `claude stop`: confirm the owning account is kept.
+- ~~Waking a session that was stopped by Claude Code's idle rule (about 1 hour)
+  rather than by `claude stop`: confirm the owning account is kept.~~ Verified by the
+  owner 2026-10-28: attaching such a session on `alt` from tower kept `alt`.
