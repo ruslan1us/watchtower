@@ -53,6 +53,7 @@ use watchtower::actions::RemoveError;
 use watchtower::app::{
     App, DIALOG_KEY_TABLE, Effect, KEY_TABLE, LOGS_KEY_TABLE, Overlay, Severity,
 };
+use watchtower::commands::{CommandList, Kind as CommandKind, Origin, SlashCommand};
 use watchtower::config::{ColorDepth, Config, UiStyle, UiTheme};
 use watchtower::config_edit::SettingKey;
 use watchtower::dispatch::{DispatchError, MODEL_CHOICES};
@@ -329,6 +330,88 @@ fn templates() -> TemplateList {
             },
         ],
         ..TemplateList::default()
+    }
+}
+
+const LONG_SKILL: &str = "review-kit:review-the-pull-request-with-a-very-strict-checklist";
+const SKILL_HINT: &str = "[ticket-link] [priority]";
+const SKILL_DESCRIPTION: &str = "Fix a bug from a ticket: reproduce it, write a failing test, \
+    fix it and open a pull request";
+const CYR_DESCRIPTION: &str = "Проверь миграции базы данных и убедись, что откат работает";
+
+/// Slash commands from every source, with long names, a long hint and a
+/// Cyrillic description (doc/0042).
+fn slash_commands() -> CommandList {
+    let c = |name: &str, hint: Option<&str>, description: &str, origin: Origin| SlashCommand {
+        name: name.into(),
+        description: description.into(),
+        argument_hint: hint.map(str::to_owned),
+        origin,
+        kind: CommandKind::Skill,
+    };
+    let plugin = || Origin::Plugin("review-kit".into());
+    watchtower::commands::merge(
+        vec![
+            c(
+                "fix-bug",
+                Some(SKILL_HINT),
+                SKILL_DESCRIPTION,
+                Origin::Personal,
+            ),
+            c("standup", None, "", Origin::Personal),
+        ],
+        vec![
+            c("проверить-миграции", None, CYR_DESCRIPTION, Origin::Project),
+            c(
+                "frontend:component",
+                Some("<name>"),
+                "A new component",
+                Origin::Project,
+            ),
+        ],
+        vec![
+            c(
+                LONG_SKILL,
+                None,
+                "Review the diff against main, strictly",
+                plugin(),
+            ),
+            c(
+                "review-kit:code-review",
+                None,
+                "Review the changes",
+                plugin(),
+            ),
+            c("review-kit:fix-lint", None, "Fix the lint errors", plugin()),
+            c(
+                "review-kit:fix-types",
+                None,
+                "Fix the type errors",
+                plugin(),
+            ),
+            c(
+                "review-kit:fixtures",
+                None,
+                "Refresh the test fixtures",
+                plugin(),
+            ),
+        ],
+    )
+}
+
+/// The slash-command load the app asks for, answered with `list` (none:
+/// still loading).
+fn with_commands(app: &mut App, list: Option<CommandList>) {
+    let effects = app.tick(Instant::now());
+    let load = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::LoadCommands(load) => Some(load.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no command load in {effects:?}"));
+    if let Some(list) = list {
+        app.commands_loaded(&load, list);
     }
 }
 
@@ -819,6 +902,67 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
             }),
         );
         b
+    });
+
+    // The slash-command menu in the task field (doc/0042).
+    s!("dialog-slash-loading", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, None);
+            type_in(app, "/");
+        })
+    });
+    s!("dialog-slash-all", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, Some(slash_commands()));
+            type_in(app, "/");
+        })
+    });
+    s!("dialog-slash-filtered", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, Some(slash_commands()));
+            type_in(app, "/fi");
+            press(app, key(KeyCode::Down));
+        })
+    });
+    s!("dialog-slash-long", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, Some(slash_commands()));
+            type_in(app, "/review-the");
+        })
+    });
+    s!("dialog-slash-hint", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, Some(slash_commands()));
+            type_in(app, "/fix-b");
+            press(app, key(KeyCode::Tab));
+            type_in(app, "https://tickets.example.com/browse/PAY-1234");
+        })
+    });
+    s!("dialog-slash-lower", || {
+        dialog_then(|app| {
+            tabs(app, 1);
+            with_commands(app, Some(slash_commands()));
+            type_in(app, "\n\n\n\n/");
+        })
+    });
+    s!("reply-slash-all", || {
+        let mut app = reply_open("print-date");
+        with_commands(&mut app, Some(slash_commands()));
+        type_in(&mut app, "/");
+        just(app)
+    });
+    s!("reply-slash-hint", || {
+        let mut app = reply_open("print-date");
+        with_commands(&mut app, Some(slash_commands()));
+        type_in(&mut app, "/fix-b");
+        press(&mut app, key(KeyCode::Enter));
+        type_in(&mut app, "PAY-1234");
+        just(app)
     });
 
     // The template picker, over the dialog and the quick reply window.
@@ -1332,6 +1476,12 @@ fn known() -> &'static [(String, Kind)] {
             "could not reach the background service",
             "accounts: main, alt, spare",
             "in a session: Ctrl+Z returns to tower",
+            "loading commands…",
+            LONG_SKILL,
+            SKILL_DESCRIPTION,
+            CYR_DESCRIPTION,
+            "Review the diff against main, strictly",
+            "plugin review-kit",
         ] {
             value(s);
         }
@@ -1382,6 +1532,7 @@ fn known() -> &'static [(String, Kind)] {
             "Enter attach · Ctrl+U clear · Esc cancel",
             "Enter new line · Ctrl+S send · Ctrl+P template · Esc cancel",
             "↑↓ choose · type to filter · Enter insert · Esc close",
+            "↑↓ choose · Tab insert · Esc close",
             "Enter keep · Esc clear",
             "Enter continue under this account · Esc cancel",
             "Enter attach with this account · Esc cancel",

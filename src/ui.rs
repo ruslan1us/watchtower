@@ -21,6 +21,7 @@
 //! below it, taking half the space either way. Its lines are never wrapped:
 //! a narrow panel clips the right-hand side (doc/0009).
 
+mod commands;
 mod dashboard;
 mod detail;
 mod dialog;

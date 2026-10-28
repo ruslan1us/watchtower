@@ -1,7 +1,8 @@
 //! Rendering of the new-session dialog (doc/0008), with its template
 //! picker over it (doc/0036), the resume window of `R` (doc/0019), the
 //! rename window of `e` (doc/0027) and the quick reply window of `t` with
-//! its template picker (doc/0040). Pure drawing from the [`Dialog`],
+//! its template picker (doc/0040); both text fields host the slash-command
+//! menu (doc/0042). Pure drawing from the [`Dialog`],
 //! [`ResumeWindow`], [`RenameWindow`] and [`ReplyWindow`] state.
 
 use ratatui::Frame;
@@ -645,10 +646,16 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
     }
     p.line(Line::raw(""));
 
-    // Task: label row, then the wrapped text.
+    // Task: label row (the placeholder, or an accepted slash command's
+    // argument hint, doc/0042), then the wrapped text.
     let mut spans = vec![label(Field::Task, focused, look)];
     if dialog.task.is_blank() {
         spans.extend(look.hint_spans(longest_fit(TASK_PLACEHOLDERS, value_w)));
+    } else if let Some((name, hint)) = dialog.slash.argument_hint(&dialog.task) {
+        spans.push(Span::styled(
+            super::shorten(&format!("{name} {hint}"), value_w),
+            look.hint(),
+        ));
     } else {
         spans.push(Span::styled("", look.hint()));
     }
@@ -749,6 +756,13 @@ pub fn draw(frame: &mut Frame, app: &App, dialog: &Dialog, area: Rect, look: Loo
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
+        // The slash-command menu under the task's cursor row (doc/0042).
+        if focused == Field::Task
+            && editing
+            && let Some(view) = dialog.slash.view(&dialog.task)
+        {
+            super::commands::draw_menu(p.frame, &view, inner, pos.y, look);
+        }
     }
     if let Some(picker) = &dialog.templates {
         super::templates::draw_picker(p.frame, picker, rect, look);
@@ -1066,9 +1080,22 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
     let footer = [hint_row(REPLY_KEYS, width)];
     let text_w = width.saturating_sub(2).max(1);
     let (rows, (crow, ccol)) = text_rows(&window.text, text_w);
-    // Text, blank, plan and messages, blank, footer.
+    // Text, blank (or an accepted slash command's argument hint, doc/0042),
+    // plan and messages, blank, footer.
     let fixed = 1 + below.len() + 1 + footer.len();
-    let wanted = fixed + rows.len().clamp(3, TASK_ROWS);
+    let mut wanted = fixed + rows.len().clamp(3, TASK_ROWS);
+    // The window grows so the slash-command menu fits below the cursor
+    // over the text rows and the blank row after them; the plan and the
+    // keys stay visible.
+    let menu = if editing {
+        window.slash.view(&window.text)
+    } else {
+        None
+    };
+    if let Some(view) = &menu {
+        let menu_h = usize::from(super::commands::menu_height(view));
+        wanted = wanted.max(fixed + (crow.min(TASK_ROWS - 1) + menu_h).min(TASK_ROWS));
+    }
     let h = (wanted as u16 + 2)
         .max(picker_room(window.templates.as_ref(), w))
         .min(area.height.saturating_sub(2))
@@ -1118,7 +1145,13 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
             ]));
         }
     }
-    p.line(Line::raw(""));
+    match window.slash.argument_hint(&window.text) {
+        Some((name, hint)) => p.line(Line::styled(
+            super::shorten(&format!("{name} {hint}"), width),
+            look.hint(),
+        )),
+        None => p.line(Line::raw("")),
+    }
     for line in below {
         p.line(line);
     }
@@ -1131,6 +1164,9 @@ pub fn draw_reply(frame: &mut Frame, _app: &App, window: &ReplyWindow, area: Rec
         && pos.y < inner.y + inner.height
     {
         p.frame.set_cursor_position(pos);
+        if let Some(view) = &menu {
+            super::commands::draw_menu(p.frame, view, inner, pos.y, look);
+        }
     }
     if let Some(picker) = &window.templates {
         super::templates::draw_picker(p.frame, picker, rect, look);

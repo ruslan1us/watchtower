@@ -3,7 +3,8 @@
 //! the orchestrator's start, `stop`, `rm`, the hand-off sequence,
 //! the rename of a stopped session and the quick reply — and the file work that
 //! could block on a slow disk or a hung network mount — sidecar saves and
-//! reloads, the project scan, the template load — each run on its own
+//! reloads, the project scan, the template load, the slash-command load
+//! (doc/0042) — each run on its own
 //! short-lived worker thread so the UI never blocks (doc/0001, doc/0002,
 //! doc/0004, doc/0008, doc/0009, doc/0027, doc/0036, doc/0040). Results come back over a channel as [`JobResult`]s;
 //! [`JobResult::apply`] hands them to the [`App`]. A hand-off, a rename and
@@ -41,6 +42,7 @@ use crate::app::{
     RenameJob, ReplyJob, SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
+use crate::commands::{CommandList, CommandLoad};
 use crate::config::ConfigError;
 use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
@@ -104,6 +106,9 @@ pub enum JobResult {
     Templates(u64, TemplateList),
     /// A finished `git status` for the details panel (doc/0037).
     Git(GitJob, GitState),
+    /// The slash commands of an account and folder (doc/0042), boxed to
+    /// keep the enum small.
+    Commands(Box<CommandLoad>, CommandList),
 }
 
 impl JobResult {
@@ -145,6 +150,10 @@ impl JobResult {
             JobResult::Templates(id, list) => app.templates_loaded(id, list),
             JobResult::Git(job, state) => {
                 app.git_finished(job, state);
+                Vec::new()
+            }
+            JobResult::Commands(load, list) => {
+                app.commands_loaded(&load, list);
                 Vec::new()
             }
         }
@@ -487,6 +496,19 @@ impl Jobs {
         };
         self.launch("templates", load, fail, |_, _, load| {
             JobResult::Templates(load.id, load.run())
+        });
+    }
+
+    /// Reads the slash commands of `load`'s account and folder (doc/0042):
+    /// the files, and `plugin list --json` with the account's command. A
+    /// load that panics or cannot start reports an empty list.
+    pub fn commands(&self, load: CommandLoad) {
+        let fail = |load: CommandLoad, _: CliError| {
+            JobResult::Commands(Box::new(load), CommandList::default())
+        };
+        self.launch("commands", load, fail, |runner, _, load| {
+            let list = load.run(runner);
+            JobResult::Commands(Box::new(load), list)
         });
     }
 

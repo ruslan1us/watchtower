@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md)
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -94,6 +94,14 @@ handed off are refused until it reports back.
 | `Ctrl+Enter`, fallback `Alt+Enter` | Dispatch and attach immediately |
 | `Ctrl+T` | After a `Workspace not trusted` error: suspend tower and run the account's interactive command in the project to accept trust, then retry the dispatch ([0008](0008-new-session-dialog.md)) |
 | `Esc` | Cancel (confirm if the task is not empty) |
+
+**Slash-command menu** (*added by [0042](0042-slash-command-suggestions.md)*),
+in the dialog's task field and the quick reply text, while `/` starts the text
+and the cursor is in that word: `↑` / `↓` choose (wrapping), `Tab` or `Enter`
+insert `/name `, `Esc` closes the menu only; typing filters. With the menu
+closed (or still loading, except `Esc`) the keys keep their meaning above;
+`Shift+Tab`, `Alt+Enter` and `Ctrl` keys are never the menu's. The help
+overlay does not list these keys; the menu shows them on its border.
 
 **Template picker** (*added by [0036](0036-prompt-templates.md)*, `Ctrl+P` in
 the dialog): typed characters filter by name, `Backspace` edits and `Ctrl+U`

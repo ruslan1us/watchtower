@@ -26,6 +26,10 @@ What it adds on top:
   [prompt template](#prompt-templates)) as your next prompt, under its own account and id,
   without attaching ([Quick reply](#quick-reply)).
 - A new-session dialog, a logs panel that replays `claude logs`, and a text filter.
+- **Slash-command suggestions.** Typing `/` at the start of a task or a quick reply lists
+  your skills and custom commands (personal, the project's, enabled plugins') with their
+  descriptions and argument hints, as Claude Code's own prompt does
+  ([Slash commands](#slash-commands)).
 - **Subagents under their session.** A working session tower started shows its running
   subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
@@ -36,7 +40,9 @@ What it adds on top:
 
 Tower never runs, supervises or reconfigures agents. It has no PTY handling, no tmux, no
 Agent SDK and no direct API calls, and it does not read Claude Code's internal files
-([0001](doc/0001-thin-wrapper-over-claude-cli.md)). It never changes Claude
+([0001](doc/0001-thin-wrapper-over-claude-cli.md)); for the slash-command suggestions it
+only reads the heads of your own skill and command files and asks `claude plugin list
+--json` which plugins are enabled ([0042](doc/0042-slash-command-suggestions.md)). It never changes Claude
 Code's settings, keybindings or defaults ([0016](doc/0016-do-not-change-claude-code-defaults.md)).
 The one thing it adds to the sessions it starts is a `--settings` file with three
 observe-only hooks that record their running subagents in tower's own files; turn it off
@@ -313,6 +319,32 @@ directly in it count; hidden files and subfolders are ignored, and symlinks, fil
 64 KiB, empty files and files that are not UTF-8 are skipped, with a note in the status
 line ([0036](doc/0036-prompt-templates.md)).
 
+## Slash commands
+
+In the new-session dialog's task field and the [quick reply](#quick-reply) text, a `/` as
+the first character opens a **Commands** menu below the cursor, like the one in Claude
+Code's prompt. It lists the skills and custom commands Claude Code would offer for the
+dialog's account and project (for a reply: the session's owner and folder):
+
+- personal: `skills/<name>/SKILL.md` and `commands/**/*.md` in the account's config dir
+  (`~/.claude`, or its `CLAUDE_CONFIG_DIR`);
+- project: `.claude/skills` and `.claude/commands` of the project and its parent folders up
+  to the repository root;
+- plugins: the enabled plugins `<account command> plugin list --json` reports, as
+  `/<plugin>:<name>` (e.g. `/review-kit:code-review`).
+
+Each row shows `/name`, its `argument-hint` (e.g. `/fix-bug [ticket]`), the description and
+where it comes from (`personal`, `project`, `plugin <name>`). Typing filters (names that
+start with the text first), `↑` / `↓` choose, `Tab` or `Enter` insert `/name ` and close the
+menu, `Esc` closes only the menu; with the menu closed every key keeps its meaning. After
+an insert the argument hint stays in the field's hint row while you type the rest. Entries
+with `user-invocable: false` are hidden; built-in commands are not listed.
+
+Tower reads only the frontmatter of each file (at most 16 KiB), on a worker thread, and
+never writes there; the list is refreshed when the dialog opens, when its account or
+project changes, and when a reply window opens. The exact rules (names, precedence, limits,
+symlinks) are in [0042](doc/0042-slash-command-suggestions.md).
+
 ## Quick reply
 
 `t` on a session opens its **Reply to** window: type the text (or `Ctrl+P` for a template;
@@ -395,6 +427,7 @@ New-session dialog ([0008](doc/0008-new-session-dialog.md)):
 | `Enter` | New line in the task field; next field elsewhere |
 | `Ctrl+G` | Edit the task in `$VISUAL`, else `$EDITOR` |
 | `Ctrl+P` | Insert a [prompt template](#prompt-templates) into the task |
+| `/` (at the start of the task) | [Slash-command](#slash-commands) menu: `↑` / `↓` choose, `Tab` / `Enter` insert, `Esc` closes the menu |
 | `Ctrl+S` | Start in the background |
 | `Ctrl+Enter`, `Alt+Enter` | Start and attach |
 | `Ctrl+T` | After `Workspace not trusted`: run the account's command in the folder to accept trust, then retry |
@@ -406,6 +439,7 @@ Quick reply window ([0040](doc/0040-quick-reply.md)):
 |---|---|
 | `Enter`, `Ctrl+J` | New line |
 | `Ctrl+P` | Insert a [prompt template](#prompt-templates) at the cursor |
+| `/` (at the start of the text) | [Slash-command](#slash-commands) menu, as in the dialog |
 | `Ctrl+S` | Send |
 | `Ctrl+T` | After `Workspace not trusted`: run the owner's command in the folder to accept trust, then send once more |
 | `Esc` | Cancel (asks first if text was typed) |

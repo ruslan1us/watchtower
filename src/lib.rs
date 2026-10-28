@@ -57,6 +57,9 @@
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
 //! - [`templates`]: prompt templates from `<config dir>/templates` and the
 //!   reusable picker that inserts one (doc/0036).
+//! - [`commands`]: the slash-command suggestions of the task field: the
+//!   account's, the project's and the enabled plugins' skills and commands,
+//!   read on a worker thread, and the menu that completes them (doc/0042).
 //! - [`shell`]: `!`, a shell in the selected session's folder (doc/0037).
 //! - [`gitinfo`]: the details panel's `git` line, read with `git status`
 //!   on worker threads and cached per folder (doc/0037).
@@ -76,6 +79,7 @@ pub mod app;
 pub mod args;
 pub mod attach;
 pub mod cli;
+pub mod commands;
 pub mod config;
 pub mod config_edit;
 pub mod dialog;

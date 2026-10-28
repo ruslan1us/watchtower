@@ -1,6 +1,6 @@
 # 0008. New-session dialog
 
-- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md) · template key added by [0036](0036-prompt-templates.md)
+- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md) · template key added by [0036](0036-prompt-templates.md) · slash-command suggestions in the task field added by [0042](0042-slash-command-suggestions.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0036](0036-prompt-templates.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -41,6 +41,13 @@ cancels.
 *Amended by [0036](0036-prompt-templates.md):* `Ctrl+P` (from any field) opens the
 template picker over the dialog; a picked template fills a blank task field or goes in at
 the task cursor, and the task field takes the focus.
+
+*Amended by [0042](0042-slash-command-suggestions.md):* typing `/` as the first
+non-blank character of the task opens a menu of the chosen account's, project's
+and enabled plugins' skills and commands; `↑` / `↓`, `Tab` / `Enter` and `Esc`
+work on the menu while it is open, and an accepted command's `argument-hint`
+shows on the task's label row. Changing the account or the project loads that
+pair's list.
 
 *Amended 2026-10-21 (UI audit):* the dialog's key hints are one row, never wrapped or
 cut, joined by ` · ` in this order: `Tab/Shift+Tab field`, `Enter new line` (`Enter next

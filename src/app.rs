@@ -35,6 +35,7 @@ use ratatui::widgets::ListState;
 
 use crate::actions::{Fallback, Removal, RemoveError, StopError};
 use crate::activity;
+use crate::commands::{CommandKey, CommandList, CommandLoad, Commands};
 use crate::config::ConfigError;
 use crate::config::{Account, ColorDepth, Config, ConfigSource, UiStyle, UiTheme};
 use crate::config_edit::{self, ConfigCheck, ConfigSnapshot, EditSession, SaveError, SaveOutcome};
@@ -205,6 +206,12 @@ pub enum Effect {
     /// for the picker that was just opened, then call
     /// [`App::templates_loaded`] (doc/0036).
     LoadTemplates(TemplateLoad),
+    /// Read the slash commands of an account and a project folder on a
+    /// worker thread ([`CommandLoad::run`]): the personal and project
+    /// skill and command files and `<account command> plugin list --json`
+    /// with the enabled plugins' files, then call [`App::commands_loaded`]
+    /// (doc/0042). [`App::tick`] asks for it.
+    LoadCommands(CommandLoad),
     /// Send a quick reply on a worker thread ([`reply::run`]): stop a live
     /// session, wait until it is gone, wake it under its owner with the
     /// text; report steps to [`App::reply_step`], then call
@@ -224,6 +231,18 @@ pub enum Effect {
     /// (doc/0037).
     Shell(ShellRequest),
 }
+
+/// The slash commands of one account and folder (doc/0042): the last list
+/// and the load that refreshes it.
+#[derive(Debug, Clone, Default)]
+struct CommandCache {
+    list: Option<Arc<CommandList>>,
+    loading: Option<u64>,
+}
+
+/// Above this many cached account-and-folder lists, the idle ones no window
+/// shows are dropped.
+const COMMAND_CACHE_MAX: usize = 32;
 
 /// The note shown while the config's accounts differ from the ones tower
 /// started with: they are not applied live (doc/0022).
@@ -1340,6 +1359,11 @@ pub struct App {
     /// Template loads started; a picker waits for the one it was opened
     /// with.
     template_loads: u64,
+    /// The slash commands by account and folder (doc/0042), with the load
+    /// that refreshes each.
+    commands: HashMap<CommandKey, CommandCache>,
+    /// Slash-command loads started.
+    command_loads: u64,
     /// The subagent settings file and folder, when enabled (doc/0029).
     subagent_paths: Option<SubagentPaths>,
     /// Running subagents by `sessionId`, from the last read.
@@ -1463,6 +1487,8 @@ impl App {
             orchestrator_dir,
             templates_dir,
             template_loads: 0,
+            commands: HashMap::new(),
+            command_loads: 0,
             subagent_paths: None,
             subagents: HashMap::new(),
             subagent_io: SubagentIo::default(),
@@ -1545,6 +1571,120 @@ impl App {
             self.set_message(note, Severity::Warning);
         }
         Vec::new()
+    }
+
+    // ---- slash-command suggestions (doc/0042) -------------------------------
+
+    /// The account and folder whose slash commands the open dialog's task
+    /// field offers: the chosen account and project (none while no project
+    /// is chosen).
+    fn dialog_command_key(&self) -> Option<CommandKey> {
+        let d = self.dialog.as_ref()?;
+        let account = self.config.accounts.get(d.account.index())?;
+        let project = d.selected_project()?;
+        Some(CommandKey {
+            account: account.name.clone(),
+            folder: project.path.clone(),
+        })
+    }
+
+    /// The account and folder of the open reply window: the owner and the
+    /// session's folder.
+    fn reply_command_key(&self) -> Option<CommandKey> {
+        let r = self.reply.as_ref()?;
+        Some(CommandKey {
+            account: r.account.clone(),
+            folder: r.folder.clone()?,
+        })
+    }
+
+    /// What the cache has for `key`: the last list, else `Loading`.
+    fn cached_commands(&self, key: &CommandKey) -> Commands {
+        match self.commands.get(key).and_then(|c| c.list.clone()) {
+            Some(list) => Commands::Ready(list),
+            None => Commands::Loading,
+        }
+    }
+
+    /// Points the dialog's and the reply window's menus at the account and
+    /// folder they show now, and returns the load that refreshes the list
+    /// of one whose account or folder changed, or that just opened
+    /// (doc/0042): at most one load per tick and none while one for the
+    /// same account and folder runs. The cached list shows meanwhile.
+    pub fn start_command_load(&mut self) -> Option<CommandLoad> {
+        let wanted = [self.dialog_command_key(), self.reply_command_key()];
+        let mut start = None;
+        for (host, want) in wanted.into_iter().enumerate() {
+            let current = match host {
+                0 => self.dialog.as_ref().map(|d| d.slash.key().cloned()),
+                _ => self.reply.as_ref().map(|r| r.slash.key().cloned()),
+            };
+            let Some(current) = current else {
+                continue;
+            };
+            if current == want {
+                continue;
+            }
+            let commands = want
+                .as_ref()
+                .map_or(Commands::None, |k| self.cached_commands(k));
+            match host {
+                0 => {
+                    if let Some(d) = self.dialog.as_mut() {
+                        d.slash.set_source(want.clone(), commands);
+                    }
+                }
+                _ => {
+                    if let Some(r) = self.reply.as_mut() {
+                        r.slash.set_source(want.clone(), commands);
+                    }
+                }
+            }
+            if start.is_none()
+                && let Some(key) = want
+                && let Some(account) = self.config.account(&key.account).cloned()
+            {
+                let entry = self.commands.entry(key.clone()).or_default();
+                if entry.loading.is_none() {
+                    self.command_loads += 1;
+                    entry.loading = Some(self.command_loads);
+                    start = Some(CommandLoad {
+                        id: self.command_loads,
+                        account,
+                        folder: key.folder,
+                    });
+                }
+            }
+        }
+        start
+    }
+
+    /// Takes a finished slash-command load (doc/0042): the list is cached
+    /// for its account and folder and shown by the menus pointed at them.
+    pub fn commands_loaded(&mut self, load: &CommandLoad, list: CommandList) {
+        let key = load.key();
+        let list = Arc::new(list);
+        let entry = self.commands.entry(key.clone()).or_default();
+        if entry.loading == Some(load.id) {
+            entry.loading = None;
+        }
+        entry.list = Some(Arc::clone(&list));
+        if let Some(d) = self.dialog.as_mut()
+            && d.slash.key() == Some(&key)
+        {
+            d.slash.set_commands(Commands::Ready(Arc::clone(&list)));
+        }
+        if let Some(r) = self.reply.as_mut()
+            && r.slash.key() == Some(&key)
+        {
+            r.slash.set_commands(Commands::Ready(list));
+        }
+        // Keep the cache small: drop idle lists no window shows.
+        if self.commands.len() > COMMAND_CACHE_MAX {
+            let shown = [self.dialog_command_key(), self.reply_command_key()];
+            self.commands
+                .retain(|k, c| c.loading.is_some() || shown.iter().any(|s| s.as_ref() == Some(k)));
+        }
     }
 
     /// The orchestrator's folder (doc/0010).
@@ -4096,13 +4236,17 @@ impl App {
         let Some(id) = m.session.id.clone() else {
             return;
         };
-        self.reply = Some(ReplyWindow::new(
+        let folder =
+            (!m.session.cwd.is_empty()).then(|| paths::expand_tilde(&m.session.cwd, &self.home));
+        let mut window = ReplyWindow::new(
             key.to_owned(),
             id,
             m.session.display_name(),
             m.session.has_live_process(),
             account.name,
-        ));
+        );
+        window.folder = folder;
+        self.reply = Some(window);
     }
 
     fn reply_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -4807,6 +4951,9 @@ impl App {
         let mut effects = self.attach_progress(now);
         if let Some(job) = self.start_git(now) {
             effects.push(Effect::GitStatus(job));
+        }
+        if let Some(load) = self.start_command_load() {
+            effects.push(Effect::LoadCommands(load));
         }
         effects
     }

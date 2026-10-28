@@ -20,6 +20,7 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::commands::SlashMenu;
 use crate::config::{Account, Config};
 use crate::dispatch::{
     self, BYPASS_PERMISSIONS, DEFAULT_CHOICE, DEFAULT_PERMISSION_MODE, DispatchRequest,
@@ -239,6 +240,37 @@ impl TextArea {
     /// The cursor as (line, char column).
     pub fn cursor(&self) -> (usize, usize) {
         (self.row, self.col)
+    }
+
+    /// The number of lines (at least one).
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// The chars of line `row` (empty past the last line).
+    pub fn line(&self, row: usize) -> &[char] {
+        self.lines.get(row).map_or(&[], Vec::as_slice)
+    }
+
+    /// Moves the cursor to `row`, char column `col` (clamped to the text).
+    pub fn set_cursor(&mut self, row: usize, col: usize) {
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.lines[self.row].len());
+    }
+
+    /// Replaces chars `start..end` of line `row` with `with` (one line) and
+    /// puts the cursor after it (doc/0042: an accepted slash command).
+    pub fn replace_range(&mut self, row: usize, start: usize, end: usize, with: &str) {
+        let Some(line) = self.lines.get_mut(row) else {
+            return;
+        };
+        let end = end.min(line.len());
+        let start = start.min(end);
+        let new: Vec<char> = with.chars().filter(|c| !c.is_control()).collect();
+        let n = new.len();
+        line.splice(start..end, new);
+        self.row = row;
+        self.col = start + n;
     }
 
     /// True when the text is empty or whitespace only.
@@ -520,6 +552,9 @@ pub struct Dialog {
     /// The template picker, while it is open over the dialog (doc/0036);
     /// it takes every key.
     pub templates: Option<TemplatePicker>,
+    /// The slash-command menu of the task field (doc/0042); the app points
+    /// it at the list of the chosen account and project.
+    pub slash: SlashMenu,
 }
 
 impl Dialog {
@@ -555,6 +590,7 @@ impl Dialog {
             status: DialogStatus::Editing,
             prompt: None,
             templates: None,
+            slash: SlashMenu::default(),
         }
     }
 
@@ -616,6 +652,18 @@ impl Dialog {
     pub fn set_task(&mut self, text: &str) {
         self.task = TextArea::new(text);
         self.field = Field::Task;
+        self.slash.sync(&self.task);
+    }
+
+    /// True while the task field's slash-command menu is open (doc/0042):
+    /// the task field has the focus, nothing else is open over the dialog
+    /// and the menu has something to show.
+    pub fn slash_open(&self) -> bool {
+        self.field == Field::Task
+            && self.prompt.is_none()
+            && self.templates.is_none()
+            && !self.is_starting()
+            && self.slash.view(&self.task).is_some()
     }
 
     /// Puts a picked template into the task field (doc/0036): it fills a
@@ -633,6 +681,12 @@ impl Dialog {
     /// `y` / `n` of the dialog's questions are also read under a Cyrillic
     /// layout (doc/0011).
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogAction {
+        let action = self.dialog_key(key);
+        self.slash.sync(&self.task);
+        action
+    }
+
+    fn dialog_key(&mut self, key: KeyEvent) -> DialogAction {
         let key = layout::shortcut_key(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -661,6 +715,10 @@ impl Dialog {
         }
         if self.is_starting() {
             // The fields stay as they are until the dispatch reports back.
+            return DialogAction::None;
+        }
+        // The slash-command menu takes its keys first (doc/0042).
+        if self.field == Field::Task && self.slash.handle_key(&mut self.task, &key) {
             return DialogAction::None;
         }
         match key.code {
@@ -1100,6 +1158,11 @@ pub struct ReplyWindow {
     /// The template picker, while it is open over the window (doc/0036);
     /// it takes every key.
     pub templates: Option<TemplatePicker>,
+    /// The session's folder (its `cwd`, `~` expanded): the project whose
+    /// slash commands the menu offers (doc/0042); `None` without one.
+    pub folder: Option<PathBuf>,
+    /// The slash-command menu of the text (doc/0042).
+    pub slash: SlashMenu,
 }
 
 impl ReplyWindow {
@@ -1116,7 +1179,16 @@ impl ReplyWindow {
             error: None,
             prompt: None,
             templates: None,
+            folder: None,
+            slash: SlashMenu::default(),
         }
+    }
+
+    /// True while the text's slash-command menu is open (doc/0042):
+    /// nothing else is open over the window and the menu has something to
+    /// show.
+    pub fn slash_open(&self) -> bool {
+        self.prompt.is_none() && self.templates.is_none() && self.slash.view(&self.text).is_some()
     }
 
     /// Puts a picked template into the text (doc/0036): it fills a blank
@@ -1146,6 +1218,12 @@ impl ReplyWindow {
     /// first when text was typed). `Ctrl`/`Alt` keys and the questions'
     /// `y` / `n` are also read under a Cyrillic layout.
     pub fn handle_key(&mut self, key: KeyEvent) -> ReplyAction {
+        let action = self.reply_key(key);
+        self.slash.sync(&self.text);
+        action
+    }
+
+    fn reply_key(&mut self, key: KeyEvent) -> ReplyAction {
         let key = layout::shortcut_key(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if let Some(prompt) = self.prompt {
@@ -1181,6 +1259,11 @@ impl ReplyWindow {
                     return self.quit();
                 }
             }
+            return ReplyAction::None;
+        }
+        // The slash-command menu takes its keys first (doc/0042).
+        if self.slash.handle_key(&mut self.text, &key) {
+            self.error = None;
             return ReplyAction::None;
         }
         match key.code {

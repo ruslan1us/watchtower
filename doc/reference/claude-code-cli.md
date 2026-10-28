@@ -26,6 +26,13 @@ Docs referenced:
 - Cross-session messaging: https://code.claude.com/docs/en/cross-session-messaging
 - Permission modes: https://code.claude.com/docs/en/permission-modes
 - Keybindings: https://code.claude.com/docs/en/keybindings
+- Skills and custom commands: https://code.claude.com/docs/en/skills,
+  https://code.claude.com/docs/en/slash-commands,
+  https://code.claude.com/docs/en/claude-directory
+- Plugins: https://code.claude.com/docs/en/plugins-reference (manifest),
+  https://code.claude.com/docs/en/plugins/components,
+  https://code.claude.com/docs/en/plugins/loading,
+  https://code.claude.com/docs/en/plugins/cli-reference
 
 Example accounts used throughout: `main` (command `claude`, config dir `~/.claude`) and
 `alt` (command `claude-alt`, a wrapper that sets `CLAUDE_CONFIG_DIR=~/.claude-alt`).
@@ -444,6 +451,126 @@ session lists (each supervisor hosts its own sessions):
   stop at the account boundary.
 - Not checked separately: `notify_when_idle` across accounts.
 
+## Skills and custom commands (the `/` menu)
+
+Read 2026-10-28 from the docs listed above; used by the task field's suggestions
+([0042](../0042-slash-command-suggestions.md)). Claude Code's own `/` menu also lists
+built-in commands, bundled skills, MCP prompts and workflows, which tower does not offer.
+
+**Where Claude Code looks** (documented, [skills](https://code.claude.com/docs/en/skills),
+[.claude directory](https://code.claude.com/docs/en/claude-directory)):
+
+| Source | Skills | Command files |
+|---|---|---|
+| Personal | `~/.claude/skills/<name>/SKILL.md` | `~/.claude/commands/*.md` ("project and global") |
+| Project | `.claude/skills/<name>/SKILL.md` in the start folder and every parent up to the repository root | `.claude/commands/*.md`, also searched in parent folders |
+| Nested | `<subdir>/.claude/skills/…` below the start folder, loaded only once Claude touches a file there | — |
+| Plugin | `<plugin root>/skills/<name>/SKILL.md` | `<plugin root>/commands/*.md` |
+| Enterprise | the managed settings folder's `.claude/skills/` | — |
+| claude.ai | synced into `~/.claude/skills/synced/` | — |
+
+"If you set `CLAUDE_CONFIG_DIR`, every `~/.claude` path on this page lives under that
+directory instead" ([.claude directory](https://code.claude.com/docs/en/claude-directory)):
+an account's personal folders are under its config dir. Plugins shared through a
+repository are not scanned from `.claude/plugins/`. A skill folder named `synced` (any
+case) or `anthropic-skills` is reserved.
+
+**Names** (documented):
+
+- A skill is `/<folder name>`; its frontmatter `name` sets the name the `/` menu shows
+  ("unless another command already uses that name"), and the folder name still invokes it.
+- A command file is `/<file stem>`; a subfolder adds a segment: `.claude/commands/frontend/component.md`
+  is `/frontend:component`. Command files take the skill frontmatter except `name` and `paths`.
+- A plugin's entries are `/<plugin>:<name>`: `skills/review/SKILL.md` is `/my-plugin:review`,
+  `name: fancy` makes it `/my-plugin:fancy` (it replaces the last segment);
+  `commands/db/migrate.md` is `/my-plugin:db:migrate`. A plugin with a `SKILL.md` at its root,
+  no `skills/` folder and no `skills` key is one skill, named by its `name`, else the plugin's
+  folder name.
+- The plugin prefix is the manifest's `name` (`.claude-plugin/plugin.json`); without a
+  manifest, the marketplace entry name (the part of the listed `id` before `@`). A
+  manifest name has no spaces, `@`, `:`, path separators, control or bidirectional
+  characters.
+- Names with `<` or `>`, zero-width spaces or control characters are refused and the
+  entry does not load.
+
+**Precedence** (documented): enterprise over personal over project; a skill over a file in
+`commands/`; a plugin skill never clashes (namespaced); a project-root skill and a nested
+one both load (`/deploy` is the root's). Not documented: which of a personal command and a
+project skill with the same name wins, and which of a start folder's and a parent folder's
+`.claude/skills` wins; tower takes a skill over a command first, then personal over
+project, and the folder nearer the repository root.
+
+**Frontmatter** (documented): read only when the opening `---` is the file's first line.
+All fields are optional. `description`, when missing, is "the first non-empty line of the
+markdown content". `argument-hint` is "shown during autocomplete", e.g. `[issue-number]`.
+`user-invocable: false` hides the skill from the `/` menu (Claude can still use it);
+`disable-model-invocation: true` does not hide it. A field name must match exactly; unknown
+fields are ignored. Malformed YAML: "Claude Code loads the skill body with empty metadata,
+so `/skill-name` still works". The `skillOverrides` setting can also hide a skill (tower
+does not read settings, so it does not see that).
+
+**Symlinks** (documented): a `<skill-name>` entry in the personal or project folder can be
+a symlink to a folder elsewhere. In plugins, a component path or symlink that resolves
+outside the plugin's folder is rejected (`path escapes plugin directory`).
+
+**Plugin layout and manifest** (documented,
+[manifest](https://code.claude.com/docs/en/plugins-reference),
+[components](https://code.claude.com/docs/en/plugins/components)):
+
+- The manifest is optional, at `.claude-plugin/plugin.json`; `name` is its only required
+  key. Unknown top-level keys are stripped.
+- `skills`: a path or an array of paths (`./…`, or `.` for the root), each a folder of
+  `<name>/SKILL.md` folders or one folder holding a `SKILL.md`; it **adds to** the default
+  `skills/` scan.
+- `commands`: a path, an array of paths (flat `.md` files or folders of them), or an object
+  map of name to `{ source | content, description, argumentHint, model, allowedTools }`; it
+  **replaces** the default `commands/` scan.
+- Component paths start with `./`, must stay inside the plugin root and exist; on Linux a
+  path with a backslash is rejected.
+- A marketplace entry can add components to the manifest's (its `skills`, `commands`);
+  tower does not read marketplace entries, so those are not offered.
+
+**`claude plugin list --json`** (documented,
+[CLI reference](https://code.claude.com/docs/en/plugins/cli-reference); the shape also seen
+on the owner's server, sanitized below; in WSL with 2.1.312 and no plugin it prints `[]`):
+
+```json
+[
+  {
+    "id": "review-kit@example-market",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/user/.claude/plugins/cache/example-market/review-kit/1.0.0",
+    "installedAt": "2026-10-01T09:00:00.000Z",
+    "lastUpdated": "2026-10-20T09:00:00.000Z",
+    "projectEnabled": false
+  }
+]
+```
+
+- One object per installation. `id`, `version`, `scope`, `enabled` and `installPath` are
+  always present. `id` is `name@marketplace`, `name@inline` (session-only),
+  `name@skills-dir` (a plugin folder under a `skills` folder) or `name@synced`.
+- `scope`: `user`, `project`, `local` or `managed`; `user` or `project` for skills-folder
+  plugins; `session`; `synced`. `projectPath` (project and local scope) names the project
+  the install belongs to.
+- `enabled`: "whether the plugin is enabled in your merged settings", which include the
+  current folder's project settings, so tower runs the listing in the project folder.
+  `projectEnabled` (2.1.285+) only says whether the project's shared
+  `.claude/settings.json` turns it on; `enabled` already merges it with the local and
+  managed settings.
+- `installPath`: the folder the plugin loads from, except for a plugin loaded in place from
+  its marketplace's folder, which has `readFromFolder` (2.1.289+) instead.
+- Other fields (`errors`, `notes`, `mcpServers`, `hasUserConfig`, …) appear when they apply.
+  With `--available` the output is an object whose `installed` field holds the array.
+- `claude plugin details <name>` prints a component inventory as text; tower does not parse
+  it.
+
+Not documented, chosen conservatively by tower: how deep subfolders of `commands/` may go
+(tower: 3 levels), whether a plugin with `errors` still offers its commands (tower: it
+keeps them).
+
 ## Subagents in background sessions
 
 Verified with Claude Code 2.1.303:
@@ -579,6 +706,12 @@ https://code.claude.com/docs/en/hooks):
 | `logs` with another account's command | `job not found` | not captured | verified (output) |
 
 ## Not yet verified
+
+- Whether the skills synced from claude.ai (`~/.claude/skills/synced/`), managed skills and
+  workflows show in the `/` menu the way the docs suggest; tower does not offer them
+  ([0042](../0042-slash-command-suggestions.md)).
+- How long `claude plugin list --json` takes with many plugins, and whether it ever prints
+  something before the JSON on stdout.
 
 - Whether Claude Code limits the length or characters of a session name set with `/rename`.
 
