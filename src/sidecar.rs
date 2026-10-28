@@ -598,6 +598,13 @@ impl Sidecar {
         }
     }
 
+    /// The owner fields of `key`'s record in memory, as [`read_owner`]
+    /// gives them for the file: what `tower wake` compares right before it
+    /// wakes a session (doc/0044).
+    pub fn owner_record(&self, key: &str) -> Option<OwnerRecord> {
+        self.sessions.get(key).map(OwnerRecord::of)
+    }
+
     /// The recorded account and its source for a session key.
     pub fn owner(&self, key: &str) -> Option<(&str, &AccountSource)> {
         let rec = self.sessions.get(key)?;

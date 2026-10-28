@@ -11,8 +11,10 @@
 //!   Haiku model (auto mode is unavailable there), `default_effort` and the
 //!   short [`START_PROMPT`].
 //! - [`prepare`]: creates the folder (`0700`) and writes the instruction file
-//!   [`INSTRUCTIONS_FILE`] from [`TEMPLATE`] when it is missing; an existing
-//!   file is never touched, so the user's edits stay.
+//!   [`INSTRUCTIONS_FILE`] from [`TEMPLATE`] when it is missing or still an
+//!   unedited version tower shipped (doc/0044); a file the user edited and a
+//!   symlink are never touched. [`refresh`] does the same at tower's start
+//!   for a folder that exists.
 //! - [`start`]: [`prepare`], then [`dispatch::run`]; the worker thread of
 //!   [`crate::jobs`] calls it.
 
@@ -118,7 +120,7 @@ pub fn instructions(tower: &Path) -> String {
 
 /// `word` as one shell word: unchanged when it holds only safe characters,
 /// else in single quotes.
-pub(crate) fn shell_word(word: &str) -> String {
+pub fn shell_word(word: &str) -> String {
     let safe = !word.is_empty()
         && word
             .chars()
@@ -130,33 +132,160 @@ pub(crate) fn shell_word(word: &str) -> String {
     }
 }
 
+/// SHA-256 of every template tower has shipped in
+/// `assets/orchestrator/CLAUDE.md`, as written in the repository (with
+/// [`TOWER_PLACEHOLDER`]), oldest first. An instruction file that is one of
+/// them once the tower path is put back as the placeholder was written by
+/// tower and never edited, so it may be replaced by the current template
+/// (doc/0044). A change to the template must add its hash here; a test
+/// checks that [`TEMPLATE`] is listed.
+pub const SHIPPED_TEMPLATES: [&str; 4] = [
+    // 2026-10-18, the first template.
+    "099754bfc1f4e682e462f8a791299f13b726875a2c2f0c0b101195b7ce91d87b",
+    // 2026-10-19, the orchestrator group.
+    "9b3f1ea087731c3704a26e5c1edb4d4f75f02046fe0279a2a00d5f5da67ebfd1",
+    // 2026-10-19, subagents in `status --json`.
+    "604411db52edc5f2bb06d7fb0cda1f81996b4b6410358d1e198e7e0cc6a5ca4b",
+    // 2026-10-28, `tower dispatch` and `tower wake` (doc/0044).
+    "85f1d5abe584df6b08132956144566c22e77947f765ca261c748d5a4f308545c",
+];
+
+/// What [`prepare`] or [`refresh`] did with the instruction file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Instructions {
+    /// Written: it was missing, or an unedited older version tower wrote.
+    Written,
+    /// Already the current text; nothing written. Also a missing folder
+    /// for [`refresh`].
+    Current,
+    /// The user edited it (it matches no version tower shipped): left as
+    /// it is (doc/0010). The TUI says so once (doc/0044).
+    Edited,
+    /// A symlink in its place: left alone.
+    Linked,
+}
+
+/// SHA-256 of `text`, lowercase hex.
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Whether `text` is a file tower wrote from one of [`SHIPPED_TEMPLATES`],
+/// unedited. The tower path is the word in its first ``Run `<tower> status
+/// --json` ``, the line every version starts its instructions with; it is
+/// put back as the placeholder everywhere it follows a backtick (the
+/// current form), or only in that line (the older versions, which name the
+/// binary only there; this also covers an older file written with the bare
+/// fallback `tower`, a word the template uses elsewhere too).
+pub fn is_shipped(text: &str) -> bool {
+    const BEFORE: &str = "Run `";
+    const AFTER: &str = " status --json`";
+    let Some(start) = text.find(BEFORE).map(|i| i + BEFORE.len()) else {
+        return false;
+    };
+    let Some(len) = text[start..].find(AFTER) else {
+        return false;
+    };
+    let word = &text[start..start + len];
+    if word.is_empty() || word.contains('\n') {
+        return false;
+    }
+    let everywhere = text.replace(&format!("`{word} "), &format!("`{TOWER_PLACEHOLDER} "));
+    let once = format!(
+        "{}{TOWER_PLACEHOLDER}{}",
+        &text[..start],
+        &text[start + len..]
+    );
+    [everywhere, once]
+        .iter()
+        .any(|t| SHIPPED_TEMPLATES.contains(&sha256_hex(t).as_str()))
+}
+
 /// Creates `dir` with mode `0700` when it is missing (parents too) and
-/// writes [`INSTRUCTIONS_FILE`] there (mode `0600`) when it is missing. An
-/// existing file, including a symlink or one the user edited, is never
-/// overwritten: the file is only ever created new. A write that fails
-/// halfway removes the partial file, so the next start writes it again.
-/// Returns true when the file was written.
-pub fn prepare(dir: &Path, tower: &Path) -> io::Result<bool> {
+/// writes [`INSTRUCTIONS_FILE`] there (mode `0600`) from [`instructions`]
+/// for `tower` when it is missing, or when it is an unedited version tower
+/// wrote ([`is_shipped`]) that differs from the current one, so an older
+/// file gets the current rules (doc/0044). A file the user edited is never
+/// overwritten ([`Instructions::Edited`], doc/0010), nor is a symlink in its
+/// place. The write is atomic (a temp file in the folder, fsync, rename),
+/// so a failure leaves the old file.
+pub fn prepare(dir: &Path, tower: &Path) -> io::Result<Instructions> {
     if !dir.is_dir() {
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
+    write_instructions(dir, tower)
+}
+
+/// [`prepare`] for a folder that already exists, run at tower's start so an
+/// orchestrator that is listed (or stopped) reads the current rules on its
+/// next start or when told to re-read the file (doc/0044). A missing folder
+/// is left missing: the orchestrator is created only on `o` (doc/0010).
+pub fn refresh(dir: &Path, tower: &Path) -> io::Result<Instructions> {
+    if !dir.is_dir() {
+        return Ok(Instructions::Current);
+    }
+    write_instructions(dir, tower)
+}
+
+/// The status-line note for an edited instruction file at `file`
+/// (doc/0044).
+pub fn edited_note(file: &Path) -> String {
+    format!(
+        "orchestrator instructions were edited; the new dispatch and wake rules aren't in \
+         them; delete {} to get tower's version",
+        file.display()
+    )
+}
+
+fn write_instructions(dir: &Path, tower: &Path) -> io::Result<Instructions> {
     let file = dir.join(INSTRUCTIONS_FILE);
-    let mut f = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&file)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+    let text = instructions(tower);
+    match fs::symlink_metadata(&file) {
+        Ok(meta) if meta.file_type().is_symlink() => return Ok(Instructions::Linked),
+        Ok(meta) if !meta.is_file() => {
+            return Err(io::Error::other(format!(
+                "{} is not a file",
+                file.display()
+            )));
+        }
+        Ok(_) => {
+            let old = fs::read(&file)?;
+            if old == text.as_bytes() {
+                return Ok(Instructions::Current);
+            }
+            let shipped = std::str::from_utf8(&old).is_ok_and(is_shipped);
+            if !shipped {
+                return Ok(Instructions::Edited);
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
-    };
-    if let Err(e) = f.write_all(instructions(tower).as_bytes()) {
+    }
+    let tmp = dir.join(format!(".{INSTRUCTIONS_FILE}.{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let written = (|| {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
         drop(f);
-        let _ = fs::remove_file(&file);
+        fs::rename(&tmp, &file)
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    Ok(true)
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(Instructions::Written)
 }
 
 /// Why the orchestrator did not start.
@@ -191,10 +320,11 @@ pub fn start(
     Ok(dispatch::run(runner, request)?)
 }
 
-/// The path of the running `tower` binary for the instructions, `tower`
-/// when it cannot be determined.
+/// The path of the running `tower` binary for the instructions (a
+/// ` (deleted)` suffix after `tower update` dropped, as for the hooks,
+/// doc/0029), `tower` when it cannot be determined.
 pub fn current_tower() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tower"))
+    crate::subagents::running_exe().unwrap_or_else(|_| PathBuf::from("tower"))
 }
 
 #[cfg(test)]

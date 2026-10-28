@@ -329,6 +329,12 @@ had finished a turn, `state: done`, `status: idle`):
   was the next turn. A multi-line prompt whose lines start with `-v` and
   `--help` passed after `--` arrived intact too. So `--` ends the options
   and does not count as a flag that starts a copy.
+- A new session takes it too (verified 2026-10-28, Claude Code 2.1.312, WSL):
+  `claude --bg --name <name> -- "- reply with the single word DASH, without using
+  tools"` exited 0, printed `backgrounded · <id> · <name>`, gave no option error, and
+  the session ran the text as its prompt (`claude logs` showed the text and the reply
+  `DASH`). `tower dispatch` passes `--` only before a task that starts with `-`
+  ([0044](../0044-orchestrator-starts-and-wakes-sessions.md)).
 - A session's `SendMessage` to another session arrives there as that
   agent's message, not as the user's prompt.
 
@@ -786,6 +792,7 @@ subscription; how Watchtower uses it: [0043](../0043-plan-usage-display.md).
 | `--bg` in an untrusted folder | stderr ``Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry.``; empty stdout | 1 | verified |
 | `--resume <sessionId> --bg` without a prompt (stopped session) | stdout `backgrounded · <id> · <name> (idle — send a prompt to start)`; stderr `note: woke session <id> with its saved options (…).` | 0 | verified |
 | `--resume <sessionId> --bg "text"` (session still running) | stdout `backgrounded · <copy id>` plus hint lines; stderr ``note: session <id> is already running in the background, so this started a copy as <copy id>. `claude attach <id>` opens the original.`` | 0 | verified (2.1.306) |
+| `--bg [--name <name>] -- "<task>"` (task starting with `-`) | stdout `backgrounded · <id> · <name>`; the task is the prompt | 0 | verified (2.1.312) |
 | `--resume <sessionId> --bg -- "<text>"` (stopped session; text may start with `-`, may span lines) | stdout `backgrounded · <id> · <name>`; stderr `note: woke session <id> with its saved options (--name, --model).` | 0 | verified (2.1.306) |
 | `--resume <sessionId> --bg "/rename X"` (stopped session) | stdout `backgrounded · <id> · <old name>`; stderr `note: woke session <id> with its saved options (--name, --model).` | not captured | verified (2.1.303) |
 | `--resume <sessionId> --bg --name X` (stopped session) | stdout `backgrounded · <copy id> · X (idle — …)`; stderr `note: background session <id> keeps its own saved options, so the flags you passed started a copy as <copy id>. …` | not captured | verified (2.1.303) |

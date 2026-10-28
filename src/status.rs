@@ -27,7 +27,7 @@ use crate::cli::CliRunner;
 use crate::config::{Account, Config, ConfigSource};
 use crate::groups::{self, Group};
 use crate::listing::{Kind, Listing, Session, State, Status, WaitingFor};
-use crate::merge::{AccountListing, EnvironReader, Resolver};
+use crate::merge::{AccountListing, EnvironReader, MergedSession, Resolver};
 use crate::paths;
 use crate::sidecar::Sidecar;
 use crate::subagents::{self, Subagent};
@@ -150,18 +150,31 @@ pub fn poll_all(accounts: &[Account], runner: &CliRunner) -> Vec<Result<Listing,
     })
 }
 
-/// Builds the report from one poll result per configured account (in
-/// config order). Also returns warnings for stderr: rows the parser
-/// skipped.
-pub fn build(
+/// The merged rows of one poll, before they become a [`Report`]: what
+/// `tower status` prints and what `tower wake` looks the session up in
+/// (doc/0044).
+#[derive(Debug, Clone)]
+pub struct Merged {
+    /// The merged sessions with their resolved owners, in display order.
+    pub sessions: Vec<MergedSession>,
+    /// The accounts whose listing failed.
+    pub errors: Vec<AccountError>,
+    /// Warnings for stderr: rows the parser skipped.
+    pub warnings: Vec<String>,
+}
+
+/// Merges one poll result per configured account (in config order) and
+/// resolves the owners with the same [`Resolver`] the TUI uses (doc/0017).
+/// Records the sidecar keeps under a short id (a dispatch not yet seen by a
+/// TUI, doc/0008) count for the row with that id; `sidecar` itself is not
+/// changed.
+pub fn merge(
     config: &Config,
-    source: &ConfigSource,
     home: &Path,
     results: Vec<Result<Listing, String>>,
     sidecar: &Sidecar,
     environ: &dyn EnvironReader,
-    now_ms: i64,
-) -> (Report, Vec<String>) {
+) -> Merged {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let mut listings = Vec::new();
@@ -186,8 +199,39 @@ pub fn build(
             }
         }
     }
+    let mut adopted = sidecar.clone();
+    adopted.adopt_short_id_records(
+        listings
+            .iter()
+            .filter_map(|l| l.sessions.as_ref())
+            .flatten(),
+    );
     let mut resolver = Resolver::new(&config.accounts, home, environ);
-    let merged = resolver.merge(&listings, sidecar);
+    let sessions = resolver.merge(&listings, &adopted);
+    Merged {
+        sessions,
+        errors,
+        warnings,
+    }
+}
+
+/// Builds the report from one poll result per configured account (in
+/// config order). Also returns warnings for stderr: rows the parser
+/// skipped.
+pub fn build(
+    config: &Config,
+    source: &ConfigSource,
+    home: &Path,
+    results: Vec<Result<Listing, String>>,
+    sidecar: &Sidecar,
+    environ: &dyn EnvironReader,
+    now_ms: i64,
+) -> (Report, Vec<String>) {
+    let Merged {
+        sessions: merged,
+        errors,
+        warnings,
+    } = merge(config, home, results, sidecar, environ);
     let sessions = merged
         .into_iter()
         .map(|m| {

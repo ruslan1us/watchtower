@@ -70,6 +70,10 @@
 //! - [`args`]: command-line arguments.
 //! - [`status`]: `tower status [--json]`, one merged snapshot without the
 //!   TUI (doc/0010).
+//! - [`control`]: `tower dispatch` and `tower wake`, starting and waking
+//!   sessions from the command line (doc/0044).
+//! - [`wake`]: finding, checking and waking a session without a live
+//!   process for `tower wake` (doc/0044).
 //! - [`subagents`]: the observe-only hooks passed to sessions tower starts,
 //!   `tower hook`, and the per-session subagent files it keeps (doc/0029).
 
@@ -85,6 +89,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod config_edit;
+pub mod control;
 pub mod dialog;
 pub mod dispatch;
 pub mod editor;
@@ -115,3 +120,4 @@ pub mod tui;
 pub mod ui;
 pub mod update;
 pub mod usage;
+pub mod wake;

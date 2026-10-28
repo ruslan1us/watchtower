@@ -1,6 +1,7 @@
 //! `tower`: the Watchtower TUI. All logic lives in the library; this only
 //! parses arguments, loads config and state, and starts the TUI, or runs
-//! `tower status` or `tower update` without it.
+//! `tower status`, `tower dispatch`, `tower wake` or `tower update` without
+//! it.
 
 use std::process::ExitCode;
 
@@ -21,6 +22,17 @@ fn main() -> ExitCode {
         // Handled above, before arguments that are not UTF-8 could panic.
         Ok(Command::Hook { .. }) => return ExitCode::SUCCESS,
         Ok(Command::Status { json }) => return status(json),
+        Ok(Command::Dispatch(args)) => {
+            return control(|dirs, config, runner, out, err| {
+                watchtower::control::dispatch(dirs, config, &args, runner, out, err)
+            });
+        }
+        Ok(Command::Wake(args)) => {
+            return control(|dirs, config, runner, out, err| {
+                let environ = watchtower::merge::ProcEnviron;
+                watchtower::control::wake(dirs, config, &args, runner, &environ, out, err)
+            });
+        }
         Ok(Command::Update {
             check,
             version,
@@ -138,6 +150,40 @@ fn status(json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::from(status::exit_code(&config, &report))
+}
+
+/// `tower dispatch` and `tower wake` (doc/0044): load the config, warn
+/// about an inherited `CLAUDE_CONFIG_DIR`, and run `work` with no terminal.
+/// A config error exits with [`watchtower::control::EXIT_USAGE`].
+fn control(
+    work: impl FnOnce(
+        &Dirs,
+        &Config,
+        &watchtower::cli::CliRunner,
+        &mut dyn std::io::Write,
+        &mut dyn std::io::Write,
+    ) -> u8,
+) -> ExitCode {
+    use watchtower::control::EXIT_USAGE;
+    let Some(dirs) = Dirs::from_env() else {
+        eprintln!("tower: cannot determine the home directory (HOME is not set)");
+        return ExitCode::from(EXIT_USAGE);
+    };
+    let config = match Config::load(&dirs) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("tower: {}", shown(&err));
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    let inherited = std::env::var_os(watchtower::cli::CONFIG_DIR_VAR);
+    if let Some(w) = watchtower::cli::inherited_config_dir_warning(inherited.as_deref()) {
+        eprintln!("tower: {}", shown(&w));
+    }
+    let runner = watchtower::cli::CliRunner::new();
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    ExitCode::from(work(&dirs, &config, &runner, &mut out, &mut err))
 }
 
 /// `tower hook` (doc/0029): records one Claude Code hook payload from stdin

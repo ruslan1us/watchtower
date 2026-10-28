@@ -25,9 +25,9 @@ This directory records the design decisions behind it, one file per decision.
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted (input still waiting after a read re-arms crossterm's reader, 2026-10-28) |
 | 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029; busy rows outside `working` amended by 0032; header folders fitted to the width, 2026-10-21) |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted (rename wake amended by 0027) |
-| 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036; slash-command suggestions by 0042) |
+| 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036; slash-command suggestions by 0042; dispatch path shared with `tower dispatch` by 0044) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
-| 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029) |
+| 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029; role, rules and updating an unedited instruction file amended by 0044) |
 | 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040; `!` shell key by 0037; slash-command menu keys by 0042; `r` refreshes usage by 0043) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
@@ -57,10 +57,11 @@ This directory records the design decisions behind it, one file per decision.
 | 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted (side-panel `git` wrapping, long-branch rule, zero counts and key line amended by 0041) |
 | 0038 | [Light themes, a 16-colour theme and the colour depth](0038-light-and-16-colour-themes.md) | Accepted |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
-| 0040 | [Quick reply](0040-quick-reply.md) | Accepted (slash-command suggestions by 0042) |
+| 0040 | [Quick reply](0040-quick-reply.md) | Accepted (slash-command suggestions by 0042; wake path shared with `tower wake` by 0044) |
 | 0041 | [Long values in the details panel wrap](0041-details-panel-values-wrap.md) | Accepted |
 | 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted (claude.ai synced skills added 2026-10-28) |
 | 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted |
+| 0044 | [The orchestrator starts and wakes sessions when asked](0044-orchestrator-starts-and-wakes-sessions.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

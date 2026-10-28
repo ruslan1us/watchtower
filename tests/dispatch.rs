@@ -578,3 +578,39 @@ fn a_timeout_says_the_session_may_have_started() {
     });
     assert!(!spawn.to_string().contains("may have started"));
 }
+
+#[test]
+fn end_of_options_lets_a_dash_task_through_after_dashes() {
+    // doc/0044: `tower dispatch` passes a task starting with `-` after
+    // `--`; the dialog (doc/0008) keeps refusing it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = request(dir.path(), "-v: list the tests");
+    assert_eq!(
+        req.validate_for(false),
+        Err(ValidationError::LeadingDash { field: "task" })
+    );
+    req.end_options = true;
+    assert_eq!(req.validate_for(false), Ok(()));
+    assert_eq!(
+        req.args(),
+        strings(&[
+            "--bg",
+            "--permission-mode",
+            "auto",
+            "--",
+            "-v: list the tests"
+        ])
+    );
+    // Any other task is passed as the dialog passes it, without `--`.
+    let mut plain = request(dir.path(), "list the tests");
+    plain.end_options = true;
+    assert_eq!(
+        plain.args(),
+        strings(&["--bg", "--permission-mode", "auto", "list the tests"])
+    );
+    // Names and options still must not start with `-`.
+    let mut named = request(dir.path(), "-v: list the tests");
+    named.end_options = true;
+    named.name = Some("-n".into());
+    assert!(named.validate_for(false).is_err());
+}

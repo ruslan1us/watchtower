@@ -541,6 +541,23 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     {
         app.add_warning(crate::subagents::no_hooks_warning(&err));
     }
+    // An existing orchestrator folder gets the current instructions
+    // (doc/0044); the folder itself is created only on `o` (doc/0010).
+    // A file the user edited is kept, with one note (doc/0010, doc/0044).
+    let tower = crate::orchestrator::current_tower();
+    let file = app
+        .orchestrator_dir()
+        .join(crate::orchestrator::INSTRUCTIONS_FILE);
+    match crate::orchestrator::refresh(app.orchestrator_dir(), &tower) {
+        Ok(crate::orchestrator::Instructions::Edited) => {
+            app.add_warning(crate::orchestrator::edited_note(&file));
+        }
+        Ok(_) => {}
+        Err(err) => app.add_warning(format!(
+            "orchestrator: cannot update {}: {err}",
+            file.display()
+        )),
+    }
     app.set_config_source(source);
     app.color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     // What `[ui] color_depth = "auto"` stands for, from COLORTERM and

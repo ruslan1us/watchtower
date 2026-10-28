@@ -24,7 +24,7 @@ use watchtower::dispatch::{DispatchError, Dispatched};
 use watchtower::groups::Group;
 use watchtower::jobs::Jobs;
 use watchtower::listing::parse_listing;
-use watchtower::orchestrator::{self, StartError};
+use watchtower::orchestrator::{self, Instructions, StartError};
 use watchtower::poller::PollUpdate;
 use watchtower::sidecar::{AccountSource, Sidecar};
 
@@ -565,12 +565,49 @@ fn help_and_footer_offer_o() {
 
 // ---- the folder and CLAUDE.md -------------------------------------------------
 
+/// An earlier template (`tests/fixtures/orchestrator/CLAUDE.md.<n>`) as the
+/// tower at `tower` wrote it.
+fn shipped(n: usize, tower: &Path) -> String {
+    let path = fake_claude::fixture_path(&format!("orchestrator/CLAUDE.md.{n}"));
+    let template = std::fs::read_to_string(path).unwrap();
+    template.replace(
+        orchestrator::TOWER_PLACEHOLDER,
+        &orchestrator::shell_word(&tower.to_string_lossy()),
+    )
+}
+
 #[test]
-fn the_folder_is_private_and_the_instructions_are_written_once() {
+fn every_shipped_template_is_listed_the_current_one_too() {
+    use sha2::{Digest, Sha256};
+    let hex = |t: &str| -> String {
+        Sha256::digest(t.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    assert!(
+        orchestrator::SHIPPED_TEMPLATES.contains(&hex(orchestrator::TEMPLATE).as_str()),
+        "add the new template's hash to SHIPPED_TEMPLATES"
+    );
+    for n in 1..=3 {
+        let path = fake_claude::fixture_path(&format!("orchestrator/CLAUDE.md.{n}"));
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(
+            orchestrator::SHIPPED_TEMPLATES.contains(&hex(&text).as_str()),
+            "version {n}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_file_is_written_private_in_a_private_folder() {
     let root = tempfile::tempdir().unwrap();
     let dir = orchestrator::dir(&root.path().join("watchtower"));
     let tower = Path::new("/opt/tools/bin/tower");
-    assert!(orchestrator::prepare(&dir, tower).unwrap());
+    assert_eq!(
+        orchestrator::prepare(&dir, tower).unwrap(),
+        Instructions::Written
+    );
     let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700);
     let file = dir.join("CLAUDE.md");
@@ -580,12 +617,139 @@ fn the_folder_is_private_and_the_instructions_are_written_once() {
         "{text}"
     );
     assert!(text.contains("`tower status --json`"), "{text}");
+    assert!(
+        text.contains("`/opt/tools/bin/tower dispatch --project"),
+        "{text}"
+    );
+    assert!(text.contains("`/opt/tools/bin/tower wake <id>`"), "{text}");
     assert!(!text.contains(orchestrator::TOWER_PLACEHOLDER));
+    let file_mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(file_mode, 0o600);
+    // The same content is not written again.
+    assert_eq!(
+        orchestrator::prepare(&dir, tower).unwrap(),
+        Instructions::Current
+    );
+}
 
-    // The user's edits stay.
-    std::fs::write(&file, "my own notes\n").unwrap();
-    assert!(!orchestrator::prepare(&dir, Path::new("/other/tower")).unwrap());
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "my own notes\n");
+#[test]
+fn an_unedited_older_version_is_replaced_by_the_current_one() {
+    let tower = Path::new("/opt/tools/bin/tower");
+    for (n, written_by) in [
+        (1, Path::new("/usr/local/bin/tower")),
+        (2, Path::new("/opt/my tools/tower")),
+        (3, Path::new("tower")),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let dir = orchestrator::dir(root.path());
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("CLAUDE.md");
+        let old = shipped(n, written_by);
+        assert!(orchestrator::is_shipped(&old), "version {n}");
+        std::fs::write(&file, &old).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            orchestrator::refresh(&dir, tower).unwrap(),
+            Instructions::Written,
+            "version {n}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            orchestrator::instructions(tower)
+        );
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["CLAUDE.md"], "no temp file is left");
+    }
+    // The current version written for another binary path is tower's too.
+    let root = tempfile::tempdir().unwrap();
+    let dir = orchestrator::dir(root.path());
+    assert_eq!(
+        orchestrator::prepare(&dir, Path::new("/old/place/tower")).unwrap(),
+        Instructions::Written
+    );
+    assert_eq!(
+        orchestrator::prepare(&dir, tower).unwrap(),
+        Instructions::Written
+    );
+    let text = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+    assert!(
+        text.contains("`/opt/tools/bin/tower status --json`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_edited_file_is_kept_and_noted() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = orchestrator::dir(root.path());
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("CLAUDE.md");
+    let tower = Path::new("/opt/tools/bin/tower");
+    for edited in [
+        "my own notes\n".to_owned(),
+        shipped(3, tower).replace("Keep answers short.", "Answer in German."),
+        format!(
+            "{}\n- One more rule of mine.\n",
+            orchestrator::instructions(tower)
+        ),
+    ] {
+        assert!(!orchestrator::is_shipped(&edited));
+        std::fs::write(&file, &edited).unwrap();
+        assert_eq!(
+            orchestrator::refresh(&dir, tower).unwrap(),
+            Instructions::Edited
+        );
+        assert_eq!(
+            orchestrator::prepare(&dir, tower).unwrap(),
+            Instructions::Edited
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+    }
+    let note = orchestrator::edited_note(&file);
+    assert_eq!(
+        note,
+        format!(
+            "orchestrator instructions were edited; the new dispatch and wake rules aren't \
+             in them; delete {} to get tower's version",
+            file.display()
+        )
+    );
+    // The TUI shows it once however often it is added.
+    let mut app = app_two();
+    app.add_warning(note.clone());
+    app.add_warning(note.clone());
+    let status = status_text(&app);
+    assert_eq!(
+        status
+            .matches("orchestrator instructions were edited")
+            .count(),
+        1,
+        "{status}"
+    );
+}
+
+#[test]
+fn refresh_updates_an_existing_folder_and_never_creates_one() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = orchestrator::dir(root.path());
+    let tower = Path::new("/opt/tools/bin/tower");
+    assert_eq!(
+        orchestrator::refresh(&dir, tower).unwrap(),
+        Instructions::Current
+    );
+    assert!(!dir.exists(), "the folder is created only on `o`");
+    // A folder without the file gets it.
+    std::fs::create_dir(&dir).unwrap();
+    assert_eq!(
+        orchestrator::refresh(&dir, tower).unwrap(),
+        Instructions::Written
+    );
+    assert!(dir.join("CLAUDE.md").is_file());
 }
 
 #[test]
@@ -596,8 +760,34 @@ fn an_existing_folder_keeps_its_mode_and_a_symlinked_file_is_left_alone() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
     let target = root.path().join("shared.md");
     std::os::unix::fs::symlink(&target, dir.join("CLAUDE.md")).unwrap();
-    assert!(!orchestrator::prepare(&dir, Path::new("/t/tower")).unwrap());
+    let linked = Instructions::Linked;
+    assert_eq!(
+        orchestrator::prepare(&dir, Path::new("/t/tower")).unwrap(),
+        linked
+    );
+    assert_eq!(
+        orchestrator::refresh(&dir, Path::new("/t/tower")).unwrap(),
+        linked
+    );
     assert!(!target.exists(), "a dangling link is not followed");
+    // A link to an unedited older version is not replaced either.
+    std::fs::write(&target, shipped(1, Path::new("/t/tower"))).unwrap();
+    assert_eq!(
+        orchestrator::prepare(&dir, Path::new("/t/tower")).unwrap(),
+        linked
+    );
+    std::fs::write(&target, "my own notes\n").unwrap();
+    assert_eq!(
+        orchestrator::prepare(&dir, Path::new("/t/tower")).unwrap(),
+        linked
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "my own notes\n");
+    assert!(
+        std::fs::symlink_metadata(dir.join("CLAUDE.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o750);
 }
@@ -615,12 +805,35 @@ fn the_template_covers_the_role_tools_and_rules() {
         "SendMessage",
         "notify_when_idle",
         "permission prompt",
-        "`stop`, `rm`, `--bg`, `--resume`, `attach`, `respawn` or `daemon`",
+        "Never run `claude --bg`, `--resume`, `stop`, `rm`, `attach`, `respawn` or\n  `daemon` commands yourself",
         "Never change Claude Code settings",
         "unsure",
         "Keep answers short",
+        // doc/0044: starting and waking, only when asked, after confirming.
+        "Only when the user explicitly asks you to start a session or to wake a",
+        "{{TOWER}} dispatch --project <folder> [--account <name>] [--name <name>] \
+         [--model <model>] [--effort <effort>] [--mode <permission mode>] -- '<task text>'",
+        "{{TOWER}} wake <id>",
+        "--text '<text>'",
+        "Ask the user to confirm, and run it only after they say yes.",
+        "the project folder, the account",
+        "the session name, and the\n   exact task text",
+        "Never invent, extend or reword them",
+        "Never wake a session to answer its\n  question or permission prompt on the user's behalf.",
+        "Never use\n  `--account` to move a session to another account.",
+        "Start and wake\n  sessions only with `tower dispatch` and `tower wake`",
+        "Stopping,\n  removing, renaming and handing off sessions are the user's actions",
+        "`n`, then `Ctrl+T`",
     ] {
         assert!(t.contains(needle), "{needle} missing");
+    }
+    // Every other rule of doc/0010 stays.
+    for kept in [
+        "Never answer a session's question or permission prompt on the user's\n  behalf",
+        "Never ask a session to do something that was denied elsewhere",
+        "never guess one",
+    ] {
+        assert!(t.contains(kept), "{kept} missing");
     }
     // A path with a space stays one shell word.
     let text = orchestrator::instructions(Path::new("/opt/my tools/tower"));

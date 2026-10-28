@@ -29,6 +29,10 @@ use crate::config::Account;
 use crate::sidecar::Sidecar;
 use crate::subagents;
 
+/// The end-of-options marker `tower dispatch` passes before a task that
+/// starts with `-` (doc/0044), as the quick reply does (doc/0040).
+pub const END_OF_OPTIONS: &str = crate::reply::END_OF_OPTIONS;
+
 /// The value that omits `--model` or `--effort` (doc/0002, doc/0008).
 pub const DEFAULT_CHOICE: &str = "default";
 
@@ -130,6 +134,11 @@ pub struct DispatchRequest {
     /// `--settings`: tower's settings file with the subagent hooks
     /// (doc/0029), `None` when subagents are not tracked.
     pub settings: Option<PathBuf>,
+    /// `tower dispatch` (doc/0044): a task that starts with `-` is passed
+    /// after `--`, as the quick reply passes its text (doc/0040), instead
+    /// of being refused. The dialog leaves it `false` and refuses such a
+    /// task (doc/0008).
+    pub end_options: bool,
 }
 
 /// Why a [`DispatchRequest`] is not valid. The message is meant for the
@@ -173,6 +182,7 @@ impl DispatchRequest {
             effort: None,
             permission_mode: DEFAULT_PERMISSION_MODE.to_owned(),
             settings: None,
+            end_options: false,
         }
     }
 
@@ -236,7 +246,7 @@ impl DispatchRequest {
                 min: MIN_TASK_CHARS,
             });
         }
-        if task.starts_with('-') {
+        if task.starts_with('-') && !self.end_options {
             return Err(ValidationError::LeadingDash { field: "task" });
         }
         if let Some(name) = self.name_arg() {
@@ -275,6 +285,9 @@ impl DispatchRequest {
 
     /// The arguments after the account command: `--bg [--name N]
     /// [--model M] [--effort E] --permission-mode P [--settings F] <task>`.
+    /// With [`Self::end_options`], a task that starts with `-` follows
+    /// `--` (doc/0044); any other task is passed exactly as the dialog
+    /// passes it.
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["--bg".to_owned()];
         let mut push = |flag: &str, value: Option<&str>| {
@@ -289,7 +302,11 @@ impl DispatchRequest {
         push("--permission-mode", Some(self.permission_mode_arg()));
         let settings = self.settings.as_deref().map(Path::to_string_lossy);
         push("--settings", settings.as_deref());
-        args.push(self.task_arg().to_owned());
+        let task = self.task_arg();
+        if self.end_options && task.starts_with('-') {
+            args.push(END_OF_OPTIONS.to_owned());
+        }
+        args.push(task.to_owned());
         args
     }
 

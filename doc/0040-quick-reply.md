@@ -1,6 +1,6 @@
 # 0040. Quick reply
 
-- Status: Accepted · 2026-10-21 · slash-command suggestions in the text added by [0042](0042-slash-command-suggestions.md)
+- Status: Accepted · 2026-10-21 · slash-command suggestions in the text added by [0042](0042-slash-command-suggestions.md) · the wake of a stopped session from the command line, `tower wake`, added by [0044](0044-orchestrator-starts-and-wakes-sessions.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [CLI reference](reference/claude-code-cli.md#sending-a-prompt-to-a-background-session)
 - Amends: the session list keys of [0011](0011-keybindings.md) (`t`), and [0036](0036-prompt-templates.md) (the template picker is also used in the reply window)
 

@@ -1,6 +1,6 @@
 # 0008. New-session dialog
 
-- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md) · template key added by [0036](0036-prompt-templates.md) · slash-command suggestions in the task field added by [0042](0042-slash-command-suggestions.md)
+- Status: Accepted · 2026-10-18 · `--settings` for subagent hooks added by [0029](0029-tracking-subagents.md) · template key added by [0036](0036-prompt-templates.md) · slash-command suggestions in the task field added by [0042](0042-slash-command-suggestions.md) · the same dispatch from the command line, `tower dispatch`, added by [0044](0044-orchestrator-starts-and-wakes-sessions.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0036](0036-prompt-templates.md), [reference](reference/claude-code-cli.md)
 
 ## Context
@@ -89,6 +89,10 @@ Dispatch runs, with the project as working directory:
 - The task is trimmed and passed as one argument, never through a shell. The dialog rejects
   a task, name or option value that starts with `-`, because the CLI would read it as an
   option (whether `--` would end the options for `--bg` is not verified).
+  *Amended by [0044](0044-orchestrator-starts-and-wakes-sessions.md):* `tower dispatch`
+  builds the same request from the command line and passes a task that starts with `-`
+  after `--`, which `--bg` takes as the prompt (verified 2.1.312); the dialog still
+  refuses it.
 - Tower parses `backgrounded · <id> · <name>` from stdout and ignores the hint lines after
   it. stderr carries progress (`Starting background service…`) and error text; it is shown
   only when the dispatch fails.

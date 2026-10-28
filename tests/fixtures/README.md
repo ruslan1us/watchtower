@@ -95,6 +95,14 @@ fields tower does not read were left out. None of them is a capture byte for byt
 | `no-plan.jsonl` | **hand-written**: `usage_report: null`, as for a logged-out account, an API key or usage billing (from research, not captured). |
 | `odd.jsonl` | **hand-written**: a line that is not JSON, float and string percentages, `warning`, `critical` and an unknown `severity`, an unknown `kind` with a `surface` scope, a limit with only `percent`, a value that is not an object, extra usage on, and the text "Showing last-known usage · rate limited until 1:30pm". |
 
+### `orchestrator/` — earlier orchestrator templates
+
+`CLAUDE.md.1` to `CLAUDE.md.3` are the versions of `assets/orchestrator/CLAUDE.md`
+tower shipped before [0044](../../doc/0044-orchestrator-starts-and-wakes-sessions.md),
+taken from the repository's history unchanged (with the `{{TOWER}}` placeholder).
+They are not CLI captures: the tests check that an unedited file tower wrote from one of
+them is replaced by the current template, and that their hashes are listed.
+
 ### Exit codes
 
 | Command | Exit code | Source |
