@@ -208,22 +208,121 @@ fn in_crossterm_input<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
-/// Waits up to `timeout` for input and returns the events it carries: none
-/// on a timeout or a signal, `Err` once the terminal is gone. crossterm is
-/// only called when `poll` says input is ready ([`wait_input`]), and then
-/// only with a zero timeout, to read that input and any events it has
-/// already parsed.
-fn next_events(timeout: Duration) -> Result<Vec<Event>, HungUp> {
-    match wait_input(INPUT_FD, timeout) {
-        Input::HangUp => Err(HungUp),
-        Input::Idle => Ok(Vec::new()),
-        Input::Ready => in_crossterm_input(|| {
+/// Reading input that [`wait_input`] found ready (the real one is
+/// [`CrosstermInput`]; tests use fakes).
+pub trait ReadyInput {
+    /// Whether input is still waiting on the terminal, without reading it.
+    fn waiting(&mut self) -> bool;
+    /// The events crossterm has, after reading whatever it sees waiting.
+    fn read(&mut self) -> Result<Vec<Event>, HungUp>;
+    /// Makes crossterm's reader see the input that is already waiting.
+    fn rearm(&mut self);
+}
+
+/// How many times one [`read_ready`] re-arms crossterm's reader; each turn
+/// reads up to 1 KiB, so a long paste is read over several loop turns.
+pub const REARM_LIMIT: usize = 64;
+
+/// What [`read_ready`] read.
+#[derive(Debug, Default, PartialEq)]
+pub struct ReadyEvents {
+    pub events: Vec<Event>,
+    /// Input is still waiting and crossterm read none of it even after a
+    /// re-arm. Not expected; the caller then waits instead of spinning.
+    pub stalled: bool,
+}
+
+/// Reads the input that `poll` found ready, so that every byte waiting on
+/// the terminal becomes an event now, not after the next key press.
+///
+/// crossterm's reader waits with an edge-triggered `epoll` and reads the
+/// terminal only for the readiness it was just told about. When one wait
+/// reports a `SIGWINCH` and terminal input together, it returns the resize
+/// at once and the input's readiness is used up unread: crossterm then sees
+/// nothing until more input arrives, while [`wait_input`] (level-triggered)
+/// keeps reporting it ready. Tower waits on the input alone, so a resize
+/// that comes while tower is idle (the terminal redrawing its window when a
+/// full-screen program starts, or after a hand-over) is always reported
+/// together with the next key, which was then handled only on the key after
+/// it, and the loop spun meanwhile. So, while input is still waiting after
+/// a read, crossterm's reader is re-armed and read again.
+pub fn read_ready(input: &mut impl ReadyInput) -> Result<ReadyEvents, HungUp> {
+    let mut events = input.read()?;
+    for _ in 0..REARM_LIMIT {
+        if !input.waiting() {
+            break;
+        }
+        input.rearm();
+        let more = input.read()?;
+        if more.is_empty() && input.waiting() {
+            return Ok(ReadyEvents {
+                events,
+                stalled: true,
+            });
+        }
+        events.extend(more);
+    }
+    Ok(ReadyEvents {
+        events,
+        stalled: false,
+    })
+}
+
+/// [`ReadyInput`] over the real terminal and crossterm's global reader.
+struct CrosstermInput;
+
+impl ReadyInput for CrosstermInput {
+    fn waiting(&mut self) -> bool {
+        wait_input(INPUT_FD, Duration::ZERO) == Input::Ready
+    }
+
+    fn read(&mut self) -> Result<Vec<Event>, HungUp> {
+        in_crossterm_input(|| {
             let mut events = Vec::new();
             while event::poll(Duration::ZERO).map_err(|_| HungUp)? {
                 events.push(event::read().map_err(|_| HungUp)?);
             }
             Ok(events)
-        }),
+        })
+    }
+
+    fn rearm(&mut self) {
+        wake_input_readers(INPUT_FD);
+    }
+}
+
+/// Wakes whatever waits for input on the terminal `fd`, by setting its
+/// current settings again: Linux wakes a terminal's readers on every
+/// settings change, which gives crossterm's edge-triggered `epoll` a new
+/// edge for the input already waiting ([`read_ready`]). The settings stay
+/// as they are (`TCSANOW`, nothing flushed); nothing is written to the
+/// terminal.
+fn wake_input_readers(fd: RawFd) {
+    // SAFETY: termios is plain data; tcgetattr fills it on success and
+    // tcsetattr reads a valid one.
+    let mut current: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut current) } == 0 {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &current) };
+    }
+}
+
+/// Waits up to `timeout` for input and returns the events it carries: none
+/// on a timeout or a signal, `Err` once the terminal is gone. crossterm is
+/// only called when `poll` says input is ready ([`wait_input`]), and then
+/// only with a zero timeout, to read that input and any events it has
+/// already parsed ([`read_ready`]).
+fn next_events(timeout: Duration) -> Result<Vec<Event>, HungUp> {
+    match wait_input(INPUT_FD, timeout) {
+        Input::HangUp => Err(HungUp),
+        Input::Idle => Ok(Vec::new()),
+        Input::Ready => {
+            let read = read_ready(&mut CrosstermInput)?;
+            if read.stalled && read.events.is_empty() {
+                // Never spin on input crossterm does not read.
+                thread::sleep(timeout);
+            }
+            Ok(read.events)
+        }
     }
 }
 

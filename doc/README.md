@@ -22,7 +22,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038; `[usage]` and the `usage/` folder by 0043) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
-| 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted |
+| 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted (input still waiting after a read re-arms crossterm's reader, 2026-10-28) |
 | 0006 | [Session states, grouping and activity times](0006-session-states-and-grouping.md) | Accepted (rename wake amended by 0027; subagent lines added by 0029; busy rows outside `working` amended by 0032; header folders fitted to the width, 2026-10-21) |
 | 0007 | [Attention is visual only](0007-visual-only-attention.md) | Accepted (rename wake amended by 0027) |
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036; slash-command suggestions by 0042) |

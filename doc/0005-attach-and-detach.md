@@ -1,6 +1,6 @@
 # 0005. Attaching to and detaching from a session
 
-- Status: Accepted · 2026-10-18
+- Status: Accepted · 2026-10-18 · input still waiting after a read re-arms crossterm's reader, amended 2026-10-28
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -157,6 +157,22 @@ or a sleep. As a last resort against the instant between `poll` and
 crossterm's read, a watchdog thread ends tower with 129 when it finds the
 main thread inside crossterm's input code on a hung-up terminal twice, a
 second apart.
+
+*Amended 2026-10-28:* crossterm's reader waits with an edge-triggered
+`epoll` and, when one wait reports a `SIGWINCH` together with terminal input,
+returns the resize and leaves the input unread with its readiness used up;
+it then sees that input only once more arrives. Since tower waits on the
+input alone, a resize while tower is idle (terminals resize their window
+when a full-screen program starts, and after a hand-over) was always
+reported with the next key, which was then handled only after the key after
+it, while the loop spun on the input `poll` kept reporting. So after every
+read, while `poll` still reports input waiting, tower re-arms crossterm's
+reader and reads again: it sets the terminal's current settings again
+(`tcsetattr` with `TCSANOW`, nothing changed or flushed, nothing written),
+and Linux wakes a terminal's readers on every settings change. At most 64
+re-arms per read (a long paste goes on in the next turn); if a re-arm reads
+nothing while input is still waiting, tower waits the turn's timeout
+instead of spinning.
 
 The same procedure is used by dispatch-and-attach in the new-session dialog
 ([0008](0008-new-session-dialog.md)), by the orchestrator key
