@@ -188,7 +188,7 @@ accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt
 
 Press `c` in tower to change settings: the Settings window
 ([0024](doc/0024-settings-window.md)) edits the style, theme and colour depth
-(previewed as you browse), the new-session defaults, the project folders, the hand-off prompt and guard,
+(previewed as you browse), the workspace's card size, the new-session defaults, the project folders, the hand-off prompt and guard,
 the poll interval, the background logs follow, subagent tracking and the plan usage display; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](doc/0022-tower-writes-its-own-config.md): it writes only the keys you change
@@ -429,8 +429,17 @@ experiment: it has not been tried on many terminals (Windows Terminal, Warp and 
 untested), and Claude Code's fullscreen view it relies on is a research preview
 ([0045](doc/0045-workspace-style.md)).
 
+- Nothing attaches at the start: the pane shows **Home**, with no row selected: the version, the
+  counts per group, the sessions that need you, each account's plan usage when `[usage] show` is
+  on, and the main keys. The first `↓` or click chooses a row. `h` or a click on `◆ tower` goes
+  back to Home and closes nothing; an unused terminal is released after 10 minutes as usual.
 - Selecting a running session attaches to it in the pane; moving the selection wakes nothing.
   A stopped session shows `Enter wakes it here`, and only `Enter` does.
+- Sessions are cards, outlined in their state's colour; the selected one is heavy, and `●` and a
+  bold name mark attention. `[ui] card_size` (also in Settings) is `large` (4 rows), `medium`
+  (3, the default) or `small` (2, a coloured edge and no outline). Cards show the account and a
+  `+N` subagent badge; git stays in the pane's title. A click on a card selects it, a click on a
+  group folds or unfolds it, and the wheel moves through the list.
 - `Enter` gives the terminal the keys, and `●` clears then. Every key goes to Claude Code,
   `Ctrl+C` too, except `Ctrl+Z` and `F12`, which return to the list and stay attached. After
   10 minutes without the keys the terminal is released.

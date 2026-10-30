@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use super::{App, AttachRequest, Effect, Overlay, Purpose, Severity};
+use super::{App, AttachRequest, Effect, Entry, Overlay, Purpose, Severity};
 use crate::config::{Account, UiStyle};
 use crate::embed::{self, PaneScreen};
 use crate::merge::MergedSession;
@@ -89,9 +89,14 @@ struct RowInfo {
 }
 
 /// The pane's state in [`App`].
-#[derive(Default)]
 pub(super) struct PaneState {
     focus: PaneFocus,
+    /// The pane shows Home and no row is selected, until a row is chosen. It
+    /// counts only while the workspace is drawn ([`App::pane_home`]).
+    home: bool,
+    /// The user chose a row since the style came on: an arrow leaving Home
+    /// returns to that row, not to the first.
+    chosen: bool,
     /// The row the pane follows, `None` on a header or an empty list.
     selected: Option<String>,
     /// When the selection last changed.
@@ -116,6 +121,29 @@ pub(super) struct PaneState {
     narrow_noted: bool,
 }
 
+impl Default for PaneState {
+    fn default() -> PaneState {
+        PaneState {
+            focus: PaneFocus::default(),
+            home: true,
+            chosen: false,
+            selected: None,
+            since: None,
+            client: None,
+            ended: None,
+            held: None,
+            rect: None,
+            bar: None,
+            bar_rows: Vec::new(),
+            failed: None,
+            wake: None,
+            gesture: false,
+            generations: 0,
+            narrow_noted: false,
+        }
+    }
+}
+
 /// The session a tower action works on, when the action can stop, wake or
 /// remove it: the pane's client on that session goes first.
 fn action_id(effect: &Effect) -> Option<&str> {
@@ -136,6 +164,12 @@ impl App {
     /// Whether the workspace is on the screen.
     pub fn pane_active(&self) -> bool {
         self.style == UiStyle::Workspace && self.pane.rect.is_some() && self.pane.failed.is_none()
+    }
+
+    /// Whether the pane shows Home: the workspace is drawn and no row is
+    /// chosen, so nothing is selected or attached by itself (doc/0045).
+    pub fn pane_home(&self) -> bool {
+        self.pane.home && self.pane_active()
     }
 
     /// Whether a client failed to start, so tower draws the dashboard.
@@ -301,6 +335,11 @@ impl App {
             return Vec::new();
         }
         if !self.pane_active() {
+            // Whenever the style comes on, it starts on Home (doc/0045).
+            if self.style != UiStyle::Workspace {
+                self.pane.home = true;
+                self.pane.chosen = false;
+            }
             let pane = &mut self.pane;
             pane.focus = PaneFocus::List;
             pane.gesture = false;
@@ -354,7 +393,9 @@ impl App {
             .pane
             .since
             .is_some_and(|at| now.saturating_duration_since(at) >= ATTACH_DEBOUNCE);
-        if rested && self.pane_client_key().map(str::to_owned) != key {
+        // Home closes nothing: a client stays, hidden, until the selection
+        // picks another row or the release below (doc/0045).
+        if rested && !self.pane_home() && self.pane_client_key().map(str::to_owned) != key {
             match self.pane_auto_row() {
                 Some(row) => effects.push(self.pane_start(row, now)),
                 None => {
@@ -391,7 +432,10 @@ impl App {
     /// How soon [`App::pane_tick`] has something to do: when the debounce of
     /// a selection ends. The runtime's wait is at most this long.
     pub fn pane_wait(&self, now: Instant) -> Option<Duration> {
-        if !self.pane_active() || self.pane_client_key() == self.pane.selected.as_deref() {
+        if !self.pane_active()
+            || self.pane_home()
+            || self.pane_client_key() == self.pane.selected.as_deref()
+        {
             return None;
         }
         let rested_at = self.pane.since? + ATTACH_DEBOUNCE;
@@ -528,12 +572,44 @@ impl App {
         Some(open)
     }
 
+    // ---- Home ---------------------------------------------------------------
+
+    /// `h`, or a click on `◆ tower`: the pane shows Home and no row is
+    /// selected. Nothing closes (doc/0045). Nothing outside the workspace.
+    pub(super) fn pane_go_home(&mut self) {
+        if self.pane_active() {
+            self.pane.home = true;
+        }
+    }
+
+    /// A row is being chosen by a move of the selection. Returns whether the
+    /// pane was on Home, where that move only lands: on the row chosen before
+    /// it went Home, else on the first row (doc/0045).
+    pub(super) fn pane_leave_home(&mut self) -> bool {
+        let was_home = self.pane_home();
+        self.pane.home = false;
+        if was_home && !self.pane.chosen {
+            let first = self
+                .entries
+                .iter()
+                .position(|e| matches!(e, Entry::Row(_)))
+                .unwrap_or(0);
+            self.select(first);
+        }
+        self.pane.chosen = true;
+        was_home
+    }
+
     // ---- keys, paste and mouse -------------------------------------------------
 
     /// `Enter` on the selected row: the terminal gets the keys. A running row
     /// attaches now if it has not yet; a stopped row (or one whose account is
     /// unknown) goes through the checked attach of doc/0005, and wakes here.
     pub(super) fn pane_enter(&mut self) -> Vec<Effect> {
+        if self.pane_home() {
+            self.set_message("choose a session first: ↓ or a click", Severity::Info);
+            return Vec::new();
+        }
         let now = Instant::now();
         let Some(m) = self.selected_session() else {
             return Vec::new();
@@ -653,7 +729,8 @@ impl App {
     /// it). While the terminal has the keys and the child's mouse mode is on,
     /// events go on in SGR form with the pane's coordinates, clamped to it: a
     /// gesture that started inside goes on outside; a press outside starts
-    /// nothing. A window takes the keys and the mouse does nothing.
+    /// nothing. The wheel over the list moves the selection like the arrows.
+    /// A window takes the keys and the mouse does nothing.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
         let Some(rect) = self.pane.rect.filter(|_| self.pane_active()) else {
             return Vec::new();
@@ -671,8 +748,21 @@ impl App {
                 self.pane_click_list(at);
                 return effects;
             }
-            if self.pane.client.is_some() {
+            // Home hides the client, so the press does not reach it.
+            if self.pane.client.is_some() && !self.pane_home() {
                 effects.extend(self.pane_focus_terminal());
+            }
+        }
+        if !inside && self.pane.bar.is_some_and(|bar| bar.contains(at)) {
+            let delta = match mouse.kind {
+                MouseEventKind::ScrollUp => -1,
+                MouseEventKind::ScrollDown => 1,
+                _ => 0,
+            };
+            if delta != 0 {
+                effects.extend(self.pane_focus_list(Instant::now()));
+                self.move_by(delta);
+                return effects;
             }
         }
         if self.pane.focus != PaneFocus::Terminal {
@@ -709,9 +799,15 @@ impl App {
         effects
     }
 
-    /// A press on the list bar selects the entry under it.
+    /// A press on the list bar: its top row (`◆ tower`) goes Home; any row of
+    /// a card selects it; a group header is selected and folds or unfolds,
+    /// as `Tab` does there.
     fn pane_click_list(&mut self, at: Position) {
-        if !self.pane.bar.is_some_and(|bar| bar.contains(at)) {
+        let Some(bar) = self.pane.bar.filter(|bar| bar.contains(at)) else {
+            return;
+        };
+        if at.y == bar.y {
+            self.pane_go_home();
             return;
         }
         let entry = self
@@ -721,7 +817,12 @@ impl App {
             .find(|(y, _)| *y == at.y)
             .map(|(_, entry)| *entry);
         if let Some(entry) = entry {
+            self.pane.home = false;
+            self.pane.chosen = true;
             self.select(entry);
+            if matches!(self.entries.get(entry), Some(Entry::Header { .. })) {
+                self.toggle_group();
+            }
         }
     }
 }

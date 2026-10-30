@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -13,8 +13,11 @@ style. `claude attach <id>` runs correctly in a pseudo-terminal, and `vt100`, al
 dependency, rendered its real stream identically to `alacritty_terminal`
 ([reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)).
 
-This step is meant to be tried on Warp, Windows Terminal and over SSH. Cards in the list,
-clicks on buttons, a zoom key and lifecycle polish come later, each with its own decision.
+This step is meant to be tried on Warp, Windows Terminal and over SSH. Clicks on buttons, a
+zoom key and lifecycle polish come later, each with its own decision. *Added 2026-10-31,
+after the owner's trial on WSL:* the owner did not want the orchestrator to open at every
+start, so nothing attaches until a row is chosen (**Home**), and the planned cards replaced
+the list's rows (**Cards**). What the trial did not question stands.
 
 ## Decision
 
@@ -31,10 +34,64 @@ of the details panel. Its frame's title has the session's name, state and accoun
 says who has the keys, with the `git` summary ([0037](0037-git-summary-and-shell.md)) on
 the right. One footer row has a `LIST` or `TERMINAL` chip, today's status line and the key
 hints that still fit. The filter's input line takes the footer's row while it is edited, so
-the pane keeps its size. Below 100 × 24 tower draws the dashboard (which draws minimal
+the pane keeps its size. *Amended 2026-10-31:* the bar is no panel any more: its top row
+has `◆ tower`, the grouping and the count, with a `▌` while the list has the keys, and each
+session is a card (below). The columns above belong to the first step. Below 100 × 24 tower draws the dashboard (which draws minimal
 below its own size), says so once, closes the client and turns the capture off; it comes
 back when the terminal grows. If a client cannot start, tower draws the dashboard until it
 restarts.
+
+**Home** (*added 2026-10-31*). At the start the pane shows a Home panel and no row is
+selected, so tower attaches nothing and starts nothing until the user chooses a row. It has
+the tower's name and version; the counts per group in the state colours (`2 need you · 1 ready
+· 3 working`); the sessions that need attention by name, state and account, from the same
+listing and rule as `●` ([0007](0007-visual-only-attention.md)), hidden rows too; each
+account's plan usage while `[usage] show` is on ([0043](0043-plan-usage-display.md)), since this
+style has no header; and a short key list. A long attention list ends in `… N more` so the
+rest still fits. Home only reads what tower already has: no model request, no attach, no
+`git status`.
+
+- The first move of the selection chooses: an arrow, `j` / `k`, a page key or a notch of
+  the wheel lands on the first row, not on a header, and it attaches after the usual rest.
+  `Home` / `g` and `End` / `G` go where they say, and a click selects what is under it. Row
+  keys (`Enter`, `Tab`, `s`, `d`, `a`, `e`, `t`, `m`, `!`) have no row and do nothing;
+  `Enter` says to choose a session first. `n`, `o`, `R`, `c`, `/`, `p`, `i`, `r`, `?` and `q`
+  work as in the list.
+- `h`, or a click on the bar's top row (`◆ tower`), goes back to Home. **Going Home closes
+  nothing:** a client stays attached, hidden, and the 10-minute release applies to it as to any
+  client without the keys, so there is one rule, and coming back shows the terminal at once. The
+  next move returns to the row chosen before, not the first; another row replaces the client
+  as usual. A press on the Home panel reaches nothing, so a hidden client never gets the keys.
+- Whenever the style comes on (the start, or a switch to it in Settings) it starts on Home,
+  whatever the selection was in another style. The dashboard fallback has a normal selection:
+  a row chosen there is attached when the terminal grows, and if none was, Home shows.
+
+**Cards** (*added 2026-10-31*). The list's groups, order, folding, filter and keys are the
+same; a session is a card of `[ui] card_size` (also in Settings; default `medium`).
+
+```text
+large (4 rows)            medium (3 rows)           small (2 rows)
+╭─ ● ▪ name ──── +2 ─╮    ╭─ ● ▪ name ──── +2 ─╮    ▌ ● ▪ name       +2 8m
+│ state           8m │    │ state       …/last │    ▌ state  …/last   main
+│ ~/workspace/folder │    ╰─ main ─────── 8m ─╯
+╰─ main ─────────────╯
+```
+
+- The outline has the state's theme colour; `small` has a coloured `▌` edge instead. The
+  selected card's outline is heavy (`┏━┓`; in `small` the edge is `█`, or `▶` without colour,
+  since a full block would vanish in reverse video), and its title (both rows in `small`) sits on
+  the selection bar while the list has the keys. So the selection reads without colour, and
+  stays visible when the terminal has the keys.
+- Interactive rows are dim with a dashed outline (`┆` edge in `small`). Attention stays a red
+  `●` and a bold name ([0007](0007-visual-only-attention.md)).
+- Cards show the account, not git; git stays in the pane's title. Subagents are the `+N` badge
+  on the title: the child lines of [0029](0029-tracking-subagents.md) are not drawn on cards.
+- The selected card does not grow, so the list does not shift under the mouse. The viewport
+  moves by whole entries and keeps the selected card whole; a card that does not fit at the
+  bottom is not drawn. `PgUp` / `PgDn` move by the entries that show.
+- Fitting on one row: a folder first becomes `…/last`, then the state its short form
+  (`permission`, `reply`), then the folder and then the state are cut with `…`. A name is cut
+  with `…`. On a row too narrow for both the folder goes.
 
 **The client ([`embed`](../src/embed.rs)).** One `<owner's command> attach <id>` at a time
 ([0003](0003-accounts-and-session-ownership.md)), in the session's folder (without one
@@ -60,7 +117,8 @@ works over SSH. A clipboard read is never passed on or answered.
 
 **Selection and focus.**
 
-- Selecting a row with a live process attaches after 150 ms of rest, replacing the previous
+- Selecting a row with a live process (*amended 2026-10-31:* once a row is chosen, see Home)
+  attaches after 150 ms of rest, replacing the previous
   client. The arrows can run over rows, and nothing starts or wakes. The pane keeps showing
   the previous client until then.
 - A stopped row shows a panel with its details and `Enter wakes it here`. Only `Enter`
@@ -98,6 +156,9 @@ inside goes on outside; a press outside starts nothing there. A gesture ends whe
 or the selection move, without a synthetic release, which could make a copy-on-release
 child write the clipboard. A press on the pane gives it the keys and goes on to the child;
 a press on the list gives them back and selects the row under it. Motion is coalesced.
+*Amended 2026-10-31:* a press on any row of a card selects it; a press on a group header
+selects it and folds or unfolds it, as `Tab` does there; the wheel over the list moves the
+selection like the arrows, and gives the list the keys.
 Bracketed paste is on in this style; windows take a paste as typed, as without it, and the
 list ignores it, so no pasted letter runs a key.
 
@@ -115,8 +176,8 @@ attention and everything else still come from the CLI's JSON
   [0025](0025-session-terminal-size-for-logs.md) follow it.
 - One more thread and a small emulator (32 bytes a cell) per client, and only one client.
 - The terminal's own text selection usually needs `Shift` while the capture is on.
-- The plan usage display of [0043](0043-plan-usage-display.md) shows only in the pane's
-  details (no header in this style) in this step.
+- The plan usage display of [0043](0043-plan-usage-display.md) shows in the pane's details and,
+  *since 2026-10-31,* per account on Home (no header in this style).
 - Tests use a fake `claude`, the real binary in a PTY; the real client is checked by hand
   with the keyboard only ([0015](0015-testing-strategy.md)). Never send mouse events into a
   real `claude attach` from a test: its copy-on-release runs PowerShell `Set-Clipboard` on
@@ -154,5 +215,8 @@ attention and everything else still come from the CLI's JSON
 ## Open items
 
 - The owner's results on Warp, Windows Terminal and over SSH.
-- Cards, clicks on the stopped panel, mouse wheel on the list, a zoom key, `o` and
-  start-and-attach opening in the pane, plan usage in the bar.
+- Done 2026-10-31: cards, the wheel on the list, clicks on group headers, Home (which has the
+  plan usage, so the bar has none).
+- Still to come: clicks on the stopped panel, a zoom key, `o` and start-and-attach opening in the
+  pane, and lifecycle polish. The mockup's `a → alt` hand-off hint on the selected card is not
+  built.

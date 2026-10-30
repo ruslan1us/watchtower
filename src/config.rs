@@ -158,6 +158,55 @@ impl UiTheme {
     }
 }
 
+/// How tall the workspace style's cards are, `[ui] card_size` (doc/0045).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardSize {
+    /// 4 rows: name on the top edge, state and age, folder, the account on
+    /// the bottom edge.
+    Large,
+    /// 3 rows: name on the top edge, state and folder, the account and age
+    /// on the bottom edge. The default.
+    #[default]
+    Medium,
+    /// 2 rows without an outline, with a coloured left edge.
+    Small,
+}
+
+impl CardSize {
+    /// Every value, in the order the Settings window offers them.
+    pub const ALL: [CardSize; 3] = [CardSize::Large, CardSize::Medium, CardSize::Small];
+
+    /// The config value: `large`, `medium` or `small`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CardSize::Large => "large",
+            CardSize::Medium => "medium",
+            CardSize::Small => "small",
+        }
+    }
+
+    /// The rows a card takes.
+    pub fn rows(self) -> usize {
+        match self {
+            CardSize::Large => 4,
+            CardSize::Medium => 3,
+            CardSize::Small => 2,
+        }
+    }
+
+    /// Parses a config value; anything else is an error naming the choices.
+    pub fn parse(value: &str) -> Result<CardSize, ConfigError> {
+        CardSize::ALL
+            .into_iter()
+            .find(|c| c.as_str() == value)
+            .ok_or_else(|| {
+                ConfigError::Invalid(format!(
+                    "[ui] card_size `{value}` is not known; use \"large\", \"medium\" or                      \"small\""
+                ))
+            })
+    }
+}
+
 /// How many colours the terminal shows, `[ui] color_depth` (doc/0038).
 /// `auto`, the default, reads `COLORTERM` and `TERM` ([`ColorDepth::detect`]);
 /// tower never queries the terminal.
@@ -392,6 +441,8 @@ pub struct Config {
     /// `[ui] list_width`: the workspace style's list in columns; unset or 0,
     /// 18 % of the terminal's width, kept between 28 and 40 (doc/0045).
     pub ui_list_width: Option<u16>,
+    /// `[ui] card_size`: the workspace style's cards (doc/0045).
+    pub ui_card_size: CardSize,
     /// `[sessions] track_subagents` (default `true`): pass the observe-only
     /// subagent hooks with `--settings` to the sessions tower starts and
     /// read the files they write (doc/0029). When `false`, no `--settings`
@@ -508,6 +559,7 @@ struct RawUi {
     color_depth: Option<String>,
     mouse: Option<bool>,
     list_width: Option<u16>,
+    card_size: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,6 +700,10 @@ impl Config {
             Some(depth) => ColorDepth::parse(&depth)?,
             None => ColorDepth::default(),
         };
+        let ui_card_size = match ui.card_size {
+            Some(size) => CardSize::parse(&size)?,
+            None => CardSize::default(),
+        };
         // 0, like leaving it out, is the automatic width.
         let ui_list_width = ui.list_width.filter(|width| *width != 0);
         if let Some(width) = ui_list_width
@@ -681,6 +737,7 @@ impl Config {
             ui_color_depth,
             ui_mouse: ui.mouse.unwrap_or(true),
             ui_list_width,
+            ui_card_size,
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
             usage_show: usage.show.unwrap_or(false),
             usage_refresh_secs,
@@ -783,12 +840,14 @@ mod tests {
             color_depth,
             mouse,
             list_width,
+            card_size,
         } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());
         assert!(color_depth.is_some());
         assert!(mouse.is_some());
         assert!(list_width.is_some());
+        assert!(card_size.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(logs_follow_secs.is_some());

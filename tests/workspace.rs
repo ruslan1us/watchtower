@@ -407,10 +407,73 @@ fn name_of(id: &str) -> String {
 
 /// A tower with the selected row attached: its id and client pid.
 fn attached(options: Options) -> (Tower, String, i32) {
-    let tower = Tower::start(options);
+    let mut tower = Tower::start(options);
+    // Nothing attaches until a row is chosen (Home, doc/0045).
+    tower.wait_screen("alpha-task");
+    tower.send(b"j");
     let (id, pid) = tower.wait_attaches(1);
     tower.wait_screen(&format!("ATTACHED {id}"));
     (tower, id, pid)
+}
+
+#[test]
+fn the_start_attaches_nothing_until_a_row_is_chosen() {
+    let mut tower = Tower::start(Options::default());
+    tower.wait_screen("Home");
+    tower.wait_screen("alpha-task");
+    thread::sleep(PAUSE);
+    assert!(tower.attaches().is_empty(), "{}", tower.screen_text());
+    tower.wait_for("capture on", |t| t.wrote(b"\x1b[?1000h"));
+
+    // A click on a card chooses it.
+    let row = {
+        let text = tower.screen_text();
+        text.lines().position(|l| l.contains("alpha-task")).unwrap() as u16 + 1
+    };
+    tower.send(&mouse(0, 5, row + 1, 'M'));
+    tower.send(&mouse(0, 5, row + 1, 'm'));
+    let (id, pid) = tower.wait_attaches(1);
+    assert_eq!(id, ALPHA);
+    tower.wait_screen(&format!("ATTACHED {ALPHA}"));
+    assert!(
+        tower.keys_of(ALPHA).is_empty(),
+        "a list click stays with tower"
+    );
+
+    // A click on `◆ tower` goes Home and leaves the client attached.
+    tower.send(&mouse(0, 4, 1, 'M'));
+    tower.send(&mouse(0, 4, 1, 'm'));
+    tower.wait_screen("Home");
+    thread::sleep(PAUSE);
+    assert!(alive(pid), "Home closes nothing");
+    assert_eq!(tower.attaches().len(), 1);
+    assert!(!tower.screen_text().contains("ATTACHED"));
+
+    // The wheel comes back to it, with the same client.
+    tower.send(&mouse(65, 5, 10, 'M'));
+    tower.wait_screen(&format!("ATTACHED {ALPHA}"));
+    thread::sleep(PAUSE);
+    assert_eq!(tower.attaches().len(), 1);
+    assert!(alive(pid));
+}
+
+#[test]
+fn a_click_on_a_group_folds_it() {
+    let mut tower = Tower::start(Options::default());
+    tower.wait_screen("alpha-task");
+    // The terminal's rows count from 1.
+    let row = {
+        let text = tower.screen_text();
+        text.lines().position(|l| l.contains("Ready for")).unwrap() as u16 + 1
+    };
+    tower.send(&mouse(0, 5, row, 'M'));
+    tower.send(&mouse(0, 5, row, 'm'));
+    tower.wait_for("folded", |t| !t.screen_text().contains("alpha-task"));
+    tower.send(&mouse(0, 5, row, 'M'));
+    tower.send(&mouse(0, 5, row, 'm'));
+    tower.wait_screen("alpha-task");
+    thread::sleep(PAUSE);
+    assert!(tower.attaches().is_empty(), "a header attaches nothing");
 }
 
 #[test]
@@ -708,9 +771,11 @@ fn a_narrow_terminal_gets_the_dashboard_and_nothing_attaches() {
     thread::sleep(PAUSE);
     assert!(tower.attaches().is_empty());
     assert!(!tower.wrote(b"\x1b[?1000h"));
-    // It grows: the workspace comes, and attaches.
+    // It grows: the workspace comes, on Home, and a row chosen attaches.
     set_size(tower.master.as_raw_fd(), 40, 160);
     tower.screen.lock().unwrap().screen_mut().set_size(40, 160);
+    tower.wait_screen("Home");
+    tower.send(b"j");
     let (_, pid) = tower.wait_attaches(1);
     assert!(alive(pid));
     tower.wait_for("capture on", |t| t.wrote(b"\x1b[?1000h"));
@@ -726,11 +791,13 @@ fn a_narrow_terminal_gets_the_dashboard_and_nothing_attaches() {
 
 #[test]
 fn a_client_that_fails_leaves_its_message_and_the_keys_on_the_list() {
-    let tower = Tower::start(Options {
+    let mut tower = Tower::start(Options {
         on_attach: b"\x1b[?25h".to_vec(),
         ..Options::default()
     });
     std::fs::write(tower.fake.dir.path().join("fail"), "").unwrap();
+    tower.wait_screen("alpha-task");
+    tower.send(b"j");
     let (_, pid) = tower.wait_attaches(1);
     tower.wait_screen("no such job");
     tower.wait_for("exit reported", |t| {

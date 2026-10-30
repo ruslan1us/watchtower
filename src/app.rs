@@ -1116,6 +1116,8 @@ pub enum Action {
     FocusLogs,
     /// `!`: a shell in the selected session's folder (doc/0037).
     Shell,
+    /// `h`: the workspace's Home panel (doc/0045); nothing in other styles.
+    PaneHome,
 }
 
 /// Keys of the logs panel while it has the focus (doc/0028), looked up
@@ -1189,20 +1191,17 @@ pub const LOGS_KEY_TABLE: &[(&str, &str)] = &[
 /// shows them instead of the dialog keys there.
 pub const PANE_KEY_TABLE: &[(&str, &str)] = &[
     (
-        "selecting a row",
-        "shows it here; a stopped row stays stopped",
+        "↑↓, wheel, click",
+        "select: shows it here; a stopped row stays stopped",
     ),
+    ("click", "a group folds; the terminal gets the keys"),
     ("Enter", "gives its terminal the keys; wakes a stopped row"),
     (
         "Ctrl+Z, F12",
-        "back to the list; the terminal stays attached",
+        "back to the list; other keys go to Claude Code",
     ),
-    ("click", "on the terminal: keys go there; on a row: select"),
+    ("h, click ◆ tower", "Home; the terminal stays attached"),
     ("Shift+drag", "your terminal's own text selection, usually"),
-    (
-        "other keys",
-        "go to Claude Code while the terminal has them",
-    ),
 ];
 
 /// Keys of the new-session dialog, for the help (doc/0011).
@@ -1264,6 +1263,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('t') => Action::Reply,
         KeyCode::Right | KeyCode::Char('l') => Action::FocusLogs,
         KeyCode::Char('!') => Action::Shell,
+        KeyCode::Char('h') => Action::PaneHome,
         _ => return None,
     };
     Some(action)
@@ -1970,7 +1970,8 @@ impl App {
     /// Index into [`App::entries`] of the selected line (a row or a group
     /// header), if any.
     pub fn selected_entry(&self) -> Option<usize> {
-        (self.selected < self.entries.len()).then_some(self.selected)
+        // Nothing is selected on the workspace's Home panel (doc/0045).
+        (!self.pane_home() && self.selected < self.entries.len()).then_some(self.selected)
     }
 
     /// The group header that is selected, if the selection is on one.
@@ -3461,8 +3462,15 @@ impl App {
             Action::Down => self.move_by(1),
             Action::PageUp => self.move_by(-(self.page_size.max(1) as isize)),
             Action::PageDown => self.move_by(self.page_size.max(1) as isize),
-            Action::First => self.select(0),
-            Action::Last => self.select(self.entries.len().saturating_sub(1)),
+            Action::First => {
+                self.pane_leave_home();
+                self.select(0);
+            }
+            Action::Last => {
+                self.pane_leave_home();
+                self.select(self.entries.len().saturating_sub(1));
+            }
+            Action::PaneHome => self.pane_go_home(),
             Action::Attach if self.selected_header().is_some() => self.toggle_group(),
             Action::Attach if self.pane_active() => effects = self.pane_enter(),
             Action::Attach => effects = self.request_action(Purpose::Attach),
@@ -6520,7 +6528,7 @@ impl App {
     }
 
     fn move_by(&mut self, delta: isize) {
-        if self.entries.is_empty() {
+        if self.entries.is_empty() || self.pane_leave_home() {
             return;
         }
         let last = self.entries.len() - 1;

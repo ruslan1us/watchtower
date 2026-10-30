@@ -132,6 +132,11 @@ mouse = true
 # Default: 0
 list_width = 0
 
+# Workspace style only (doc/0045): the cards in the session list. "large" is 4
+# rows, "medium" 3 and "small" 2, without an outline.
+# Default: "medium"
+card_size = "medium"
+
 # Sessions tower starts (doc/0029).
 [sessions]
 # Show the subagents (Agent tool) each session runs. Tower passes the

@@ -200,7 +200,7 @@ fn short_title(g: Group) -> &'static str {
 }
 
 /// Number of sessions per state group, over every listed session.
-fn group_counts(app: &App) -> Vec<(Group, usize)> {
+pub(super) fn group_counts(app: &App) -> Vec<(Group, usize)> {
     Group::ALL
         .into_iter()
         .map(|g| {
@@ -370,7 +370,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, tall: bool, now_ms: i64
 
 /// How much the row columns are shortened to fit the list's width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
+pub(super) enum Level {
     Full,
     ShortProject,
     ShortState,
@@ -401,15 +401,15 @@ fn short_state(detail: &str) -> String {
 
 /// The texts of one row's columns: name (with its subagent badge,
 /// doc/0029), project, state, account.
-struct RowText {
-    name: String,
-    badge: Option<String>,
-    project: String,
-    state: String,
-    account: String,
+pub(super) struct RowText {
+    pub name: String,
+    pub badge: Option<String>,
+    pub project: String,
+    pub state: String,
+    pub account: String,
 }
 
-fn row_text(app: &App, i: usize, level: Level) -> RowText {
+pub(super) fn row_text(app: &App, i: usize, level: Level) -> RowText {
     let m = &app.sessions()[i];
     let [name, project, state, account] = row_columns(m, app.home());
     RowText {
@@ -499,7 +499,12 @@ fn scroll(offset: usize, selected: Option<usize>, h: usize, len: usize) -> usize
 /// lines when they fit, else its first line; `heights` are the entries'
 /// heights. The list never scrolls past the point where its end fills
 /// the panel.
-fn scroll_lines(offset: usize, selected: Option<usize>, h: usize, heights: &[usize]) -> usize {
+pub(super) fn scroll_lines(
+    offset: usize,
+    selected: Option<usize>,
+    h: usize,
+    heights: &[usize],
+) -> usize {
     // The first offset from which every remaining entry fits.
     let mut last = heights.len();
     let mut below = 0;
@@ -670,230 +675,6 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
     }
 }
 
-/// The workspace's list bar (doc/0045): the same lines, order, selection and
-/// keys as the list, one row per entry, with the columns a bar has room for.
-/// Subagents show as the name's badge. Tells the app which row shows which
-/// entry, for clicks.
-pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Theme) {
-    let shown = app
-        .entries()
-        .iter()
-        .filter(|e| matches!(e, Entry::Row(_)))
-        .count();
-    let total = app.sessions().len();
-    let count = if shown < total {
-        format!(" {shown} of {total} ")
-    } else {
-        format!(" {total} ")
-    };
-    let block = panel(th, th.p.line)
-        .title(Line::styled(" ◆ tower ", th.bold(th.p.logo)))
-        .title_top(Line::styled(count, th.muted()).right_aligned());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-    let h = usize::from(inner.height);
-    app.page_size = h;
-    if app.entries().is_empty() {
-        app.set_pane_bar(area, Vec::new());
-        let text = if app.has_polled() {
-            app.empty_list_text()
-        } else {
-            "Loading sessions…".to_owned()
-        };
-        put(
-            frame,
-            row(inner, 0),
-            Line::styled(
-                fit(&format!(" {text}"), usize::from(inner.width)),
-                th.muted(),
-            ),
-        );
-        return;
-    }
-    let iw = usize::from(inner.width);
-    let selected = app.selected_entry();
-    let heights = vec![1; app.entries().len()];
-    let offset = scroll_lines(app.list_state.offset(), selected, h, &heights);
-    *app.list_state.offset_mut() = offset;
-    app.list_state.select(selected);
-    let last = (offset + h).min(app.entries().len());
-    let rows: Vec<(u16, usize)> = (offset..last)
-        .enumerate()
-        .map(|(y, k)| (inner.y + y as u16, k))
-        .collect();
-    app.set_pane_bar(area, rows);
-
-    let app = &*app;
-    let cols = BarColumns::new(app, iw);
-    let spin = spinner(now_ms);
-    for (y, (k, entry)) in app
-        .entries()
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(h)
-        .enumerate()
-    {
-        let r = row(inner, y as u16);
-        let is_sel = selected == Some(k);
-        match entry {
-            Entry::Header {
-                group,
-                count,
-                highlighted,
-                collapsed,
-            } => {
-                let connect = y > 0;
-                let lead = match (is_sel, th.color) {
-                    (true, true) => ("▌", th.fg(th.p.mark)),
-                    (true, false) => ("▶", Style::new()),
-                    (false, _) if connect => ("─", th.line()),
-                    (false, _) => (" ", th.line()),
-                };
-                put(
-                    frame,
-                    r,
-                    separator(group, *count, *highlighted, *collapsed, lead, iw, th),
-                );
-                if connect {
-                    let buf = frame.buffer_mut();
-                    buf[(area.x, r.y)].set_symbol("├");
-                    buf[(area.x + area.width - 1, r.y)].set_symbol("┤");
-                }
-            }
-            Entry::Row(i) => put(frame, r, bar_row(app, *i, &cols, is_sel, spin, now_ms, th)),
-        }
-        if is_sel {
-            frame.buffer_mut().set_style(r, th.selected());
-            if th.color && th.p.sel_fg.is_some() {
-                let buf = frame.buffer_mut();
-                buf[(r.x, r.y)].set_fg(th.p.mark);
-                if let Entry::Row(i) = entry
-                    && app.is_highlighted(&app.sessions()[*i])
-                    && r.width > 1
-                {
-                    buf[(r.x + 1, r.y)].set_fg(th.p.red);
-                }
-            }
-        }
-    }
-}
-
-/// A bar row's columns: the lead (selection, marker, glyph) and the age are
-/// fixed, the name takes what the others leave. The state shows only when
-/// the group header does not say it, and the account only with several
-/// accounts and room left for the name.
-struct BarColumns {
-    name: usize,
-    state: usize,
-    account: usize,
-}
-
-/// A bar row's cells before the name: selection, marker and glyph.
-const BAR_LEAD: usize = 5;
-
-/// A name keeps at least this many cells before the account column goes.
-const BAR_NAME_MIN: usize = 14;
-
-impl BarColumns {
-    fn new(app: &App, iw: usize) -> BarColumns {
-        let state = if app.grouping() == Grouping::Project {
-            10
-        } else {
-            0
-        };
-        let account = if app.config().accounts.len() > 1 {
-            app.config()
-                .accounts
-                .iter()
-                .map(|a| a.name.width())
-                .max()
-                .unwrap_or(0)
-                .min(6)
-        } else {
-            0
-        };
-        let gap = |w: usize| if w > 0 { w + 1 } else { 0 };
-        let room = iw.saturating_sub(BAR_LEAD + 1 + 4 + gap(state));
-        let (name, account) = if room >= BAR_NAME_MIN + gap(account) {
-            (room - gap(account), account)
-        } else {
-            (room, 0)
-        };
-        BarColumns {
-            name,
-            state,
-            account,
-        }
-    }
-}
-
-/// One session in the bar: the row's marks and colours, in fewer columns.
-fn bar_row(
-    app: &App,
-    i: usize,
-    cols: &BarColumns,
-    selected: bool,
-    spin: &str,
-    now_ms: i64,
-    th: Theme,
-) -> Line<'static> {
-    let m = &app.sessions()[i];
-    let t = row_text(app, i, Level::ShortState);
-    let lit = app.is_highlighted(m);
-    let dim = m.session.is_interactive();
-    let gc = th.group_color(groups::classify(&m.session));
-    let busy = !dim && groups::spins(&m.session);
-    let text = if dim { th.faint() } else { th.text() };
-    let mut l = Lb::new();
-    match (selected, th.color) {
-        (true, true) => l.push("▌", th.fg(th.p.mark)),
-        (true, false) => l.push("▶", Style::new()),
-        (false, _) => l.push(" ", text),
-    };
-    l.push(
-        if lit {
-            format!("{MARKER} ")
-        } else {
-            "  ".into()
-        },
-        th.attention(),
-    );
-    if busy {
-        l.push(format!("{spin} "), th.bold(th.group_color(Group::Working)));
-    } else {
-        l.push("▪ ", if dim { th.faint() } else { th.fg(gc) });
-    }
-    let name_st = if lit {
-        text.add_modifier(Modifier::BOLD)
-    } else {
-        text
-    };
-    l.push(
-        subtree::name_cell(&t.name, t.badge.as_deref(), cols.name),
-        name_st,
-    );
-    l.push(" ", text);
-    if cols.state > 0 {
-        let st = if dim { th.faint() } else { th.hue(gc) };
-        l.push(format!("{} ", fit(&t.state, cols.state)), st);
-    }
-    let age = age_column(app, m, now_ms);
-    l.push(rfit(&age, 4), if dim { th.faint() } else { th.muted() });
-    if cols.account > 0 {
-        let st = match app.config().account(&t.account) {
-            _ if dim => th.faint(),
-            Some(a) => th.bold(th.account_color(account_group_index(app, &a.group))),
-            None => th.muted(),
-        };
-        l.push(format!(" {}", fit(&t.account, cols.account)), st);
-    }
-    l.line()
-}
-
 /// The lines under each entry of the list: a row's subagents (doc/0029)
 /// when `fit`, else none.
 fn entry_children(app: &App, fit: bool) -> Vec<Vec<subtree::Child<'_>>> {
@@ -944,7 +725,7 @@ fn child_row(
 
 /// A group's section separator: `─▾ Needs me 2  ● 2 ────`, joined to the
 /// panel border by the caller; `lead` is its first cell.
-fn separator(
+pub(super) fn separator(
     group: &GroupKey,
     count: usize,
     lit: usize,

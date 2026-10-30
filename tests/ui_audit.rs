@@ -54,7 +54,7 @@ use watchtower::app::{
     App, DIALOG_KEY_TABLE, Effect, KEY_TABLE, LOGS_KEY_TABLE, Overlay, Severity,
 };
 use watchtower::commands::{CommandList, Kind as CommandKind, Origin, SlashCommand};
-use watchtower::config::{ColorDepth, Config, UiStyle, UiTheme};
+use watchtower::config::{CardSize, ColorDepth, Config, UiStyle, UiTheme};
 use watchtower::config_edit::SettingKey;
 use watchtower::dispatch::{DispatchError, MODEL_CHOICES};
 use watchtower::gitinfo::{GitJob, GitState, GitSummary, Head, Upstream};
@@ -576,6 +576,10 @@ fn with_pane(app: &mut App) {
     let style = app.style;
     app.style = UiStyle::Workspace;
     draw(app, 160, 45);
+    // The start shows Home: the first arrow chooses the first row.
+    if app.pane_home() {
+        press(app, key(KeyCode::Down));
+    }
     let now = Instant::now();
     app.pane_tick(now);
     let effects = app.pane_tick(now + watchtower::app::ATTACH_DEBOUNCE);
@@ -997,6 +1001,33 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
         press(&mut app, key(KeyCode::Enter));
         just(app)
     });
+    // Home (doc/0045): nothing chosen, so the workspace look shows it; the
+    // other looks draw the list as always.
+    s!("list-workspace-home", || just(base()));
+    s!("list-workspace-home-usage", || {
+        let mut app = usage_app();
+        usage_in(&mut app, "main", Ok(plan(vec![], false)), 0);
+        usage_in(&mut app, "alt", Ok(plain_plan()), 0);
+        just(app)
+    });
+    // The cards at the sizes the other scenarios do not use, with a long name
+    // selected.
+    for (name, size) in [
+        ("list-workspace-cards-large", CardSize::Large),
+        ("list-workspace-cards-small", CardSize::Small),
+    ] {
+        out.push((
+            name,
+            Box::new(move || {
+                let mut app = base();
+                let mut config = app.config().clone();
+                config.ui_card_size = size;
+                app.apply_config(config);
+                select(&mut app, LONG_NAME);
+                just(app)
+            }),
+        ));
+    }
     s!("help-workspace", || {
         let mut app = base();
         with_pane(&mut app);
@@ -1836,10 +1867,10 @@ const TL: &[char] = &['╭', '┌', '┏'];
 const TR: &[char] = &['╮', '┐', '┓'];
 const BL: &[char] = &['╰', '└', '┗'];
 const BR: &[char] = &['╯', '┘', '┛'];
-const VL: &[char] = &['│', '┃', '├', '┣'];
-const VR: &[char] = &['│', '┃', '┤', '┫'];
+const VL: &[char] = &['│', '┃', '├', '┣', '┆'];
+const VR: &[char] = &['│', '┃', '┤', '┫', '┆'];
 const BORDER: &[char] = &[
-    '│', '┃', '╮', '┐', '┓', '╯', '┘', '┛', '┤', '┫', '╭', '┌', '┏', '╰', '└', '┗', '├', '┣',
+    '│', '┃', '┆', '╮', '┐', '┓', '╯', '┘', '┛', '┤', '┫', '╭', '┌', '┏', '╰', '└', '┗', '├', '┣',
 ];
 
 /// The boxes of a frame, and the top-left corners whose box is broken.
@@ -2715,6 +2746,41 @@ fn the_workspace_draws_its_pane_and_gives_way_below_its_size() {
         "the dashboard: {}",
         f.text()
     );
+}
+
+#[test]
+fn the_workspace_starts_on_home_and_its_cards_keep_their_shape() {
+    let text = frame("list-workspace-home", "workspace", 160, 45).text();
+    assert!(text.contains(" Home "), "{text}");
+    assert!(text.contains("◆ tower "), "{text}");
+    assert!(!text.contains('┏'), "nothing selected: {text}");
+    let text = frame("list-workspace-home-usage", "workspace", 160, 45).text();
+    assert!(text.contains("Plan usage"), "{text}");
+    let dash = frame("list-workspace-home", "dash-neutral", 160, 45).text();
+    assert!(!dash.contains(" Home "), "{dash}");
+
+    for (w, h) in [(100, 30), (160, 45), (250, 60)] {
+        let f = frame("list-workspace-cards-large", "workspace", w, h);
+        let selected = f.text();
+        assert!(
+            selected.contains('┏') && selected.contains('┗'),
+            "{selected}"
+        );
+        let selected_rows = rows_of(f);
+        let top = selected_rows
+            .iter()
+            .position(|r| r.starts_with('┏'))
+            .unwrap();
+        assert!(selected_rows[top + 3].starts_with('┗'), "{selected}");
+        let f = frame("list-workspace-cards-small", "workspace", w, h);
+        let rows = rows_of(f);
+        let top = rows
+            .iter()
+            .position(|r| r.starts_with('█'))
+            .expect("marker");
+        assert!(rows[top + 1].starts_with('█'), "{}", f.text());
+        assert!(!rows[top + 2].starts_with('█'), "{}", f.text());
+    }
 }
 
 #[test]

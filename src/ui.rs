@@ -23,6 +23,7 @@
 //! below it, taking half the space either way. Its lines are never wrapped:
 //! a narrow panel clips the right-hand side (doc/0009).
 
+mod cards;
 mod commands;
 mod dashboard;
 mod detail;
@@ -136,6 +137,7 @@ pub const FOOTER_KEYS_PANE: &[&str] = &[
     "d remove",
     "o orchestrator",
     "Tab fold",
+    "h home",
     "t reply",
     "e rename",
     "! shell",
@@ -151,9 +153,24 @@ pub const FOOTER_KEYS_PANE_STOPPED: &[&str] = &[
     "a hand-off",
     "d remove",
     "Tab fold",
+    "h home",
     "t reply",
     "e rename",
     "! shell",
+    "c settings",
+    "q quit",
+];
+
+/// Footer key hints of the workspace's Home panel, with nothing selected
+/// (doc/0045).
+pub const FOOTER_KEYS_PANE_HOME: &[&str] = &[
+    "↑↓/click select",
+    "n new",
+    "/ filter",
+    "o orchestrator",
+    "p by project",
+    "i interactive",
+    "R resume",
     "c settings",
     "q quit",
 ];

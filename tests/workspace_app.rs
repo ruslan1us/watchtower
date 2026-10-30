@@ -260,6 +260,7 @@ fn enter_moves_the_keys_and_the_highlight_clears_there_not_on_selection() {
     let text = format!("[{}]", row("aaaa1111", "alpha", live, "blocked"));
     let mut app = app_from(&text);
     draw(&mut app, 160, 40);
+    app.handle_key(key(KeyCode::Down));
     let t0 = Instant::now();
     app.pane_tick(t0);
     let effects = app.pane_tick(t0 + ATTACH_DEBOUNCE);
@@ -689,7 +690,7 @@ fn the_layout_has_the_bar_the_pane_and_one_footer_row() {
     assert_eq!(lines.len(), 50);
     // 18 % of 200 is 36 columns; the pane's frame starts right after it.
     let chars: Vec<char> = lines[0].chars().collect();
-    assert_eq!(chars[35], '╮', "{}", lines[0]);
+    assert_eq!(chars[0], '▌', "the list has the keys: {}", lines[0]);
     assert_eq!(chars[36], '╭', "{}", lines[0]);
     assert!(lines[0].contains("alpha"), "{}", lines[0]);
     assert!(lines[0].contains("view only"), "{}", lines[0]);

@@ -8,18 +8,24 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::BorderType;
+use unicode_width::UnicodeWidthStr;
 
+use super::cards::draw_bar;
 use super::dashboard::{
-    account_chip, draw_bar, footer_hints_of, hint_spans, panel, put, put_lr, row, status_spans,
+    account_chip, footer_hints_of, group_counts, hint_spans, panel, put, put_lr, row, status_spans,
 };
 use super::theme::{Lb, Look, Theme};
-use super::{FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_STOPPED, detail, shorten, wrap};
+use super::usage::{HeaderUsage, header_piece};
+use super::{
+    FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_HOME, FOOTER_KEYS_PANE_STOPPED, MARKER, detail, shorten,
+    wrap,
+};
 use crate::app::{App, PaneFocus, interactive_hint};
 use crate::embed::PaneScreen;
-use crate::groups;
+use crate::groups::{self, Group};
 use crate::logview;
 use crate::merge::MergedSession;
 
@@ -32,6 +38,19 @@ pub const MIN_SIZE: (u16, u16) = (100, 24);
 const BAR_PERCENT: u32 = 18;
 const BAR_MIN: u16 = 28;
 const BAR_MAX: u16 = 40;
+
+/// The Home panel's key list (doc/0045): key, what it does.
+const HOME_KEYS: &[(&str, &str)] = &[
+    ("↑↓ or click", "select a session"),
+    ("Enter", "type in its terminal"),
+    ("Ctrl+Z, F12", "back to the list"),
+    ("n", "new session"),
+    ("c", "settings"),
+    ("?", "help"),
+];
+
+/// Width of [`HOME_KEYS`]'s key column.
+const HOME_KEY_W: usize = 13;
 
 /// Whether the workspace fits in `area` and no client failed to start.
 pub fn fits(app: &App, area: Rect) -> bool {
@@ -60,10 +79,17 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
         Constraint::Min(1),
     ])
     .areas(body);
+    // Set first: the bar asks whether the pane shows Home.
+    app.set_pane_rect(Some(panel(th, th.p.line).inner(pane)));
     draw_bar(frame, app, bar, now_ms, th);
-    // The title bar shows the `git` line (doc/0037).
-    app.set_git_shown(true);
-    draw_pane(frame, app, pane, now_ms, th);
+    // The title bar shows the `git` line (doc/0037); Home has no row.
+    let home = app.pane_home();
+    app.set_git_shown(!home);
+    if home {
+        draw_home(frame, app, pane, now_ms, th);
+    } else {
+        draw_pane(frame, app, pane, now_ms, th);
+    }
     // The filter's input line (doc/0006) takes the footer's row while it is
     // edited, so the pane keeps its size.
     if app.filter_editing() {
@@ -128,7 +154,6 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
         panel(th, th.p.line)
     };
     let inner = block.inner(area);
-    app.set_pane_rect(Some(inner));
     let app = &*app;
     let row_shown = title_row(app);
     let room = usize::from(area.width).saturating_sub(4);
@@ -183,6 +208,203 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
     {
         put(frame, row(inner, y as u16), line.line());
     }
+}
+
+/// The Home panel (doc/0045), where the pane is until a row is chosen. It only
+/// reads what tower already has: it attaches, wakes and asks nothing.
+fn draw_home(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Theme) {
+    let block = panel(th, th.p.line).title(Line::styled(" Home ", th.bold(th.p.title)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = home_lines(
+        app,
+        usize::from(inner.width),
+        usize::from(inner.height),
+        now_ms,
+        th,
+    );
+    for (y, line) in lines
+        .into_iter()
+        .take(usize::from(inner.height))
+        .enumerate()
+    {
+        put(frame, row(inner, y as u16), line.line());
+    }
+}
+
+/// `2 need you`, `1 ready`: a group's count as Home says it.
+fn count_label(group: Group, n: usize) -> String {
+    match group {
+        Group::Orchestrator if n > 1 => format!("{n} orchestrators"),
+        Group::Orchestrator => "1 orchestrator".to_owned(),
+        Group::NeedsMe if n > 1 => format!("{n} need you"),
+        Group::NeedsMe => "1 needs you".to_owned(),
+        Group::Failed => format!("{n} failed"),
+        Group::ReadyForReview => format!("{n} ready"),
+        Group::Working => format!("{n} working"),
+        Group::Other => format!("{n} other"),
+        Group::Stopped => format!("{n} stopped"),
+        Group::Interactive => format!("{n} interactive"),
+    }
+}
+
+/// The counts per group in the theme's state colours, on as many rows as they
+/// need, or what stands for them with no sessions.
+fn home_counts(app: &App, width: usize, th: Theme) -> Vec<Lb> {
+    let counts = group_counts(app);
+    if counts.is_empty() {
+        let text = if app.has_polled() {
+            "No sessions yet: n starts one."
+        } else {
+            "Loading sessions…"
+        };
+        let mut l = Lb::new();
+        l.push(format!(" {text}"), th.muted());
+        return vec![l];
+    }
+    let mut out = Vec::new();
+    let mut l = Lb::new();
+    l.push(" ", th.text());
+    for (k, (group, n)) in counts.into_iter().enumerate() {
+        let label = count_label(group, n);
+        if k > 0 && l.w + 3 + label.width() > width {
+            out.push(std::mem::replace(&mut l, Lb::new()));
+            l.push(" ", th.text());
+        } else if k > 0 {
+            l.push(" · ", th.faint());
+        }
+        l.push(label, th.hue(th.group_color(group)));
+    }
+    out.push(l);
+    out
+}
+
+/// The sessions that need attention, at most `room` rows: `● name  state
+/// account`, as the list has them (doc/0007), hidden rows too.
+fn home_attention(app: &App, width: usize, room: usize, th: Theme) -> Vec<Lb> {
+    let lit: Vec<_> = app
+        .sessions()
+        .iter()
+        .filter(|m| app.is_highlighted(m))
+        .collect();
+    if lit.is_empty() {
+        let mut l = Lb::new();
+        l.push(" Nothing needs you.", th.muted());
+        return vec![l];
+    }
+    let mut head = Lb::new();
+    head.push(" Needs you", th.bold(th.p.title));
+    let mut out = vec![head];
+    let room = room.saturating_sub(1).max(1);
+    let listed = if lit.len() > room {
+        room.saturating_sub(1)
+    } else {
+        lit.len()
+    };
+    let name_w = lit
+        .iter()
+        .take(listed)
+        .map(|m| m.session.display_name().width())
+        .max()
+        .unwrap_or(0)
+        .min(width / 2);
+    for m in lit.iter().take(listed) {
+        let mut l = Lb::new();
+        l.push(format!(" {MARKER} "), th.attention());
+        let name = shorten(&m.session.display_name(), name_w);
+        let pad = name_w.saturating_sub(name.width());
+        l.push(name, th.text().add_modifier(Modifier::BOLD));
+        l.push(" ".repeat(pad + 2), th.text());
+        let (chip, chip_style) = match m.owner.account() {
+            Some(account) => account_chip(app, account, th),
+            None => (format!(" {} ", m.owner.label()), th.muted()),
+        };
+        let state_room = width.saturating_sub(l.w + chip.width() + 2);
+        let group = groups::classify(&m.session);
+        l.push(
+            shorten(&groups::detail(&m.session), state_room.max(1)),
+            th.hue(th.group_color(group)),
+        );
+        l.push("  ", th.text());
+        l.push(chip, chip_style);
+        out.push(l);
+    }
+    if listed < lit.len() {
+        let mut l = Lb::new();
+        l.push(format!("   … {} more", lit.len() - listed), th.muted());
+        out.push(l);
+    }
+    out
+}
+
+/// Each account's plan usage while `[usage] show` is on (doc/0043): this style
+/// has no header to show it in.
+fn home_usage(app: &App, now_ms: i64, th: Theme) -> Vec<Lb> {
+    if !app.config().usage_show {
+        return Vec::new();
+    }
+    let accounts = &app.config().accounts;
+    let name_w = accounts.iter().map(|a| a.name.width()).max().unwrap_or(0);
+    let mut head = Lb::new();
+    head.push(" Plan usage", th.bold(th.p.title));
+    let mut out = vec![head];
+    for account in accounts {
+        let mut l = Lb::new();
+        l.push(" ", th.text());
+        let (chip, style) = account_chip(app, &account.name, th);
+        l.push(chip, style);
+        l.push(
+            " ".repeat(name_w.saturating_sub(account.name.width())),
+            th.text(),
+        );
+        if let Some(piece) = header_piece(app, &account.name, now_ms, HeaderUsage::Both, th) {
+            l.append(piece);
+        }
+        out.push(l);
+    }
+    out
+}
+
+/// The Home panel's rows in `width` × `height`: what tower is, the counts, the
+/// attention list, the usage and the keys. A long attention list gives way
+/// to the rest.
+fn home_lines(app: &App, width: usize, height: usize, now_ms: i64, th: Theme) -> Vec<Lb> {
+    let mut title = Lb::new();
+    title.push(
+        format!(" ◆ tower {}", env!("CARGO_PKG_VERSION")),
+        th.bold(th.p.logo),
+    );
+    let counts = home_counts(app, width, th);
+    let usage = home_usage(app, now_ms, th);
+    let keys: Vec<Lb> = HOME_KEYS
+        .iter()
+        .map(|(key, what)| {
+            let mut l = Lb::new();
+            l.push(
+                format!(" {}", super::fit(key, HOME_KEY_W)),
+                th.bold(th.p.key),
+            );
+            l.push(*what, th.muted());
+            l
+        })
+        .collect();
+    // The title, the counts, the usage and the keys, each with a blank row
+    // after it but the last.
+    let gaps = if usage.is_empty() { 3 } else { 4 };
+    let taken = 1 + counts.len() + usage.len() + keys.len() + gaps;
+    let attention = home_attention(app, width, height.saturating_sub(taken), th);
+
+    let mut out = vec![title, Lb::new()];
+    out.extend(counts);
+    out.push(Lb::new());
+    out.extend(attention);
+    out.push(Lb::new());
+    if !usage.is_empty() {
+        out.extend(usage);
+        out.push(Lb::new());
+    }
+    out.extend(keys);
+    out
 }
 
 /// What the pane says instead of a terminal.
@@ -290,7 +512,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
         let live = app
             .selected_session()
             .is_none_or(|m| m.session.has_live_process());
-        let keys = if live {
+        let keys = if app.pane_home() {
+            FOOTER_KEYS_PANE_HOME
+        } else if live {
             FOOTER_KEYS_PANE
         } else {
             FOOTER_KEYS_PANE_STOPPED
