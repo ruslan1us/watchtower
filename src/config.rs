@@ -28,6 +28,11 @@ pub const LOGS_FOLLOW_STEPS: [u64; 6] = [0, 5, 10, 15, 20, 30];
 /// `[ui] list_width`: the columns the workspace style's list may be set to
 /// (doc/0045).
 pub const LIST_WIDTH_RANGE: std::ops::RangeInclusive<u16> = 20..=60;
+/// `[ui] card_gap`: the blank rows the workspace style's list may have between
+/// its cards (doc/0045).
+pub const CARD_GAP_RANGE: std::ops::RangeInclusive<u16> = 0..=1;
+/// Default `[ui] card_gap` (doc/0045).
+pub const DEFAULT_CARD_GAP: u16 = 1;
 /// Default account config dir when `config_dir` is unset (doc/0003).
 pub const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude";
 
@@ -443,6 +448,9 @@ pub struct Config {
     pub ui_list_width: Option<u16>,
     /// `[ui] card_size`: the workspace style's cards (doc/0045).
     pub ui_card_size: CardSize,
+    /// `[ui] card_gap`: the blank rows between cards and before each group
+    /// header in the workspace style's list (doc/0045).
+    pub ui_card_gap: u16,
     /// `[sessions] track_subagents` (default `true`): pass the observe-only
     /// subagent hooks with `--settings` to the sessions tower starts and
     /// read the files they write (doc/0029). When `false`, no `--settings`
@@ -560,6 +568,7 @@ struct RawUi {
     mouse: Option<bool>,
     list_width: Option<u16>,
     card_size: Option<String>,
+    card_gap: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -704,6 +713,14 @@ impl Config {
             Some(size) => CardSize::parse(&size)?,
             None => CardSize::default(),
         };
+        let ui_card_gap = ui.card_gap.unwrap_or(DEFAULT_CARD_GAP);
+        if !CARD_GAP_RANGE.contains(&ui_card_gap) {
+            return Err(ConfigError::Invalid(format!(
+                "[ui] card_gap must be {} or {} rows, not {ui_card_gap}",
+                CARD_GAP_RANGE.start(),
+                CARD_GAP_RANGE.end()
+            )));
+        }
         // 0, like leaving it out, is the automatic width.
         let ui_list_width = ui.list_width.filter(|width| *width != 0);
         if let Some(width) = ui_list_width
@@ -738,6 +755,7 @@ impl Config {
             ui_mouse: ui.mouse.unwrap_or(true),
             ui_list_width,
             ui_card_size,
+            ui_card_gap,
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
             usage_show: usage.show.unwrap_or(false),
             usage_refresh_secs,
@@ -841,6 +859,7 @@ mod tests {
             mouse,
             list_width,
             card_size,
+            card_gap,
         } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());
@@ -848,6 +867,7 @@ mod tests {
         assert!(mouse.is_some());
         assert!(list_width.is_some());
         assert!(card_size.is_some());
+        assert!(card_gap.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(logs_follow_secs.is_some());

@@ -1016,6 +1016,8 @@ fn choice_note(key: SettingKey, value: &str) -> &'static str {
         (SettingKey::UiCardSize, "large") => "4 rows: state and folder on their own rows",
         (SettingKey::UiCardSize, "medium") => "3 rows: the outline and every fact",
         (SettingKey::UiCardSize, "small") => "2 rows: a coloured edge, no outline",
+        (SettingKey::UiCardGap, "none") => "more cards on the screen",
+        (SettingKey::UiCardGap, "1 row") => "a blank row keeps cards apart",
         (SettingKey::DefaultModel, OTHER) => "type a full model name",
         (SettingKey::LogsFollowSecs, "off") => "no background fetches",
         _ => "",

@@ -337,6 +337,8 @@ pub fn shown_value(key: SettingKey, value: &SettingValue) -> String {
         (_, SettingValue::Bool(true)) => "on".to_owned(),
         (_, SettingValue::Bool(false)) => "off".to_owned(),
         (SettingKey::LogsFollowSecs, SettingValue::Int(0)) => "off".to_owned(),
+        (SettingKey::UiCardGap, SettingValue::Int(0)) => "none".to_owned(),
+        (SettingKey::UiCardGap, SettingValue::Int(_)) => "1 row".to_owned(),
         (SettingKey::UsageRefreshSecs, SettingValue::Int(n)) if *n > 0 && n % 60 == 0 => {
             format!("{} min", n / 60)
         }

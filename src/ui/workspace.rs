@@ -20,8 +20,8 @@ use super::dashboard::{
 use super::theme::{Lb, Look, Theme};
 use super::usage::{HeaderUsage, header_piece};
 use super::{
-    FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_HOME, FOOTER_KEYS_PANE_STOPPED, MARKER, detail, shorten,
-    wrap,
+    FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_HEADER, FOOTER_KEYS_PANE_HOME, FOOTER_KEYS_PANE_STOPPED,
+    MARKER, detail, shorten, wrap,
 };
 use crate::app::{App, PaneFocus, interactive_hint};
 use crate::embed::PaneScreen;
@@ -109,10 +109,10 @@ fn title_row(app: &App) -> Option<&MergedSession> {
 
 /// The pane's title: name, state, account, and who has the keys.
 fn title(app: &App, m: Option<&MergedSession>, room: usize, th: Theme) -> Lb {
-    let name = app
-        .pane_client_name()
-        .map(str::to_owned)
-        .or_else(|| m.map(|m| m.session.display_name()))
+    // The listed name first: a rename in the pane shows at once.
+    let name = m
+        .map(|m| m.session.display_name())
+        .or_else(|| app.pane_client_name().map(str::to_owned))
         .or_else(|| app.selected_header().map(|group| group.title().to_owned()))
         .unwrap_or_else(|| "details".to_owned());
     let focus = match (app.pane_screen().is_some(), app.pane_focus()) {
@@ -514,6 +514,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
             .is_none_or(|m| m.session.has_live_process());
         let keys = if app.pane_home() {
             FOOTER_KEYS_PANE_HOME
+        } else if app.selected_header().is_some() {
+            FOOTER_KEYS_PANE_HEADER
         } else if live {
             FOOTER_KEYS_PANE
         } else {

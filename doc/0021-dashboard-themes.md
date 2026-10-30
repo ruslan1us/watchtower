@@ -1,6 +1,6 @@
 # 0021. Dashboard colour themes
 
-- Status: Accepted · 2026-10-19 · light themes, `ansi16` and the colour depth added by [0038](0038-light-and-16-colour-themes.md)
+- Status: Accepted · 2026-10-19 · light themes, `ansi16` and the colour depth added by [0038](0038-light-and-16-colour-themes.md) · the workspace's selected card is painted whole, an exception recorded in [0045](0045-workspace-style.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md)
 - Supersedes: the "Colour" section of [0020](0020-visual-styles.md)
 

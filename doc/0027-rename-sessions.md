@@ -1,6 +1,6 @@
 # 0027. Rename a session
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · in the workspace style a running session is renamed in the pane, by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0021](0021-dashboard-themes.md), [CLI reference](reference/claude-code-cli.md#renaming-a-session)
 
 ## Context

@@ -1,6 +1,6 @@
 # 0022. Tower writes its own config
 
-- Status: Accepted · 2026-10-19 · `[sessions] track_subagents` added by [0029](0029-tracking-subagents.md) · `logs_follow_secs` added by [0031](0031-logs-follow-interval.md) · `[ui] color_depth` added by [0038](0038-light-and-16-colour-themes.md) · `[usage] show` and `refresh_secs` added by [0043](0043-plan-usage-display.md) · `[ui] card_size` added by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-19 · `[sessions] track_subagents` added by [0029](0029-tracking-subagents.md) · `logs_follow_secs` added by [0031](0031-logs-follow-interval.md) · `[ui] color_depth` added by [0038](0038-light-and-16-colour-themes.md) · `[usage] show` and `refresh_secs` added by [0043](0043-plan-usage-display.md) · `[ui] card_size` and `card_gap` added by [0045](0045-workspace-style.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 - Supersedes: in [0002](0002-tech-stack-and-files.md), "Tower only reads it" and the rejected alternative "Tower writing its own config"
 
@@ -33,7 +33,7 @@ poll interval's), applied live like the poll interval.
 color_depth` (`auto`, `truecolor`, `256` or `16`), applied live like the
 theme. *Amended by [0043](0043-plan-usage-display.md):* also `[usage] show` and `[usage]
 refresh_secs` (60 to 3600, a parser rule), applied live.
-*Amended by [0045](0045-workspace-style.md):* also `[ui] card_size` (`large`, `medium` or `small`),
+*Amended by [0045](0045-workspace-style.md):* also `[ui] card_size` (`large`, `medium` or `small`) and `[ui] card_gap` (0 or 1, a parser rule),
 applied live.
 
 **Values offered.** The window offers, per setting, the values the code

@@ -9,14 +9,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use common::{HOME, NoEnviron, ch, key, status_text};
+use common::{HOME, NoEnviron, ch, ctrl, key, status_text};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::{Color, Modifier};
-use watchtower::app::{ATTACH_DEBOUNCE, App, Effect, Overlay, PaneFocus, RELEASE_AFTER};
+use watchtower::app::{
+    ATTACH_CHECK_TIMEOUT, ATTACH_DEBOUNCE, App, Effect, Overlay, PaneFocus, PaneOpen,
+    RELEASE_AFTER, WANTED_PATIENCE,
+};
 use watchtower::config::{CardSize, Config, ConfigError, UiStyle, UiTheme};
+use watchtower::dispatch::Dispatched;
 use watchtower::embed::PaneScreen;
 use watchtower::listing::parse_listing;
 use watchtower::poller::PollUpdate;
@@ -166,7 +170,13 @@ fn at_home() -> App {
 
 /// [`at_home`] with `name` chosen and its client open, reported to the app.
 fn attached_to(name: &str) -> (App, Instant) {
-    let mut app = at_home();
+    attached_with("", name)
+}
+
+/// [`attached_to`] with `ui` added to `[ui]`.
+fn attached_with(ui: &str, name: &str) -> (App, Instant) {
+    let mut app = app_with(&listing(), ui, "");
+    draw(&mut app, 160, 40);
     common::select_name(&mut app, name);
     let t = Instant::now();
     app.pane_tick(t);
@@ -181,6 +191,23 @@ fn attached_to(name: &str) -> (App, Instant) {
         .expect("attached after the debounce");
     app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
     (app, t)
+}
+
+fn the_open(effects: &[Effect]) -> PaneOpen {
+    effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::PaneOpen(open) => Some(open.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no client in {effects:?}"))
+}
+
+fn no_foreground_attach(effects: &[Effect]) {
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::Attach(_))),
+        "{effects:?}"
+    );
 }
 
 // ---- Home -------------------------------------------------------------------
@@ -628,8 +655,10 @@ fn a_click_on_any_row_of_a_card_selects_it_at_every_size() {
         app.handle_mouse(mouse(DOWN, 5, top - 1));
         let lines = bar(&mut app, 40);
         assert_eq!(y_of(&lines, "builds") as u16, top);
+        // The gap below it is nobody's.
+        app.handle_key(ch('h'));
         app.handle_mouse(mouse(DOWN, 5, top + rows));
-        assert_ne!(selected(&app).as_deref(), Some("builds"), "{size:?}");
+        assert!(app.pane_home(), "{size:?}");
     }
 }
 
@@ -733,9 +762,9 @@ fn every_size_is_drawn_in_dark_light_and_without_colour() {
             // The selected card shows without colour: heavy, or a marker.
             let sel = card_rows(&buf, "reviews", rows);
             let first = sel[0].1.chars().next().unwrap();
-            let want = match (size, color) {
-                ("small", true) => '█',
-                ("small", false) => '▶',
+            let want = match (size, look) {
+                ("small", "ansi16" | "no-color") => '▶',
+                ("small", _) => '█',
                 _ => '┏',
             };
             assert_eq!(first, want, "{at}: {}", sel[0].1);
@@ -782,56 +811,175 @@ fn the_outline_has_the_states_colour_in_the_theme() {
     assert_eq!(buf[(0, y)].fg, LIGHT_AMBER);
 }
 
-#[test]
-fn the_selection_bar_is_on_the_title_only_while_the_list_has_the_keys() {
-    let (mut app, _t) = attached_to("builds");
-    let on_bar = |buf: &Buffer, y: u16, x: u16| buf[(x, y)].bg == NEUTRAL_BAR;
-    let buf = render(&mut app, 160, 40);
-    let rows = card_rows(&buf, "builds", 3);
-    let y = rows[0].0;
-    assert!(rows[0].1.starts_with("┏━"), "{}", rows[0].1);
-    assert!(on_bar(&buf, y, 5), "the name is on the bar");
-    assert!(on_bar(&buf, y, 20), "the run after it too");
-    assert!(!on_bar(&buf, y + 1, 5), "only the title");
-    assert_eq!(buf[(1, y)].fg, NEUTRAL_BLUE, "the run keeps its colour");
+/// What the selection looks like on a card, per look.
+#[derive(Clone, Copy)]
+enum Shade {
+    Painted(Color),
+    Reversed,
+}
 
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
-    let buf = render(&mut app, 160, 40);
-    let rows = card_rows(&buf, "builds", 3);
-    assert!(rows[0].1.starts_with("┏━"), "still heavy: {}", rows[0].1);
-    assert!(!on_bar(&buf, y, 5), "the terminal has the keys");
-    assert!(
-        text_of(&buf).starts_with(" ◆ tower"),
-        "no ▌ on the title row"
-    );
+const SELECTION_LOOKS: [(&str, UiTheme, bool, Shade); 6] = [
+    (
+        "neutral",
+        UiTheme::Neutral,
+        true,
+        Shade::Painted(NEUTRAL_BAR),
+    ),
+    (
+        "neutral-light",
+        UiTheme::NeutralLight,
+        true,
+        Shade::Painted(Color::Rgb(214, 214, 214)),
+    ),
+    (
+        "tokyo-night",
+        UiTheme::TokyoNight,
+        true,
+        Shade::Painted(Color::Rgb(45, 63, 118)),
+    ),
+    ("terminal", UiTheme::Terminal, true, Shade::Reversed),
+    ("ansi16", UiTheme::Ansi16, true, Shade::Reversed),
+    ("no-color", UiTheme::Neutral, false, Shade::Reversed),
+];
 
-    // Without colour it is reverse video.
-    let (mut app, _t) = attached_to("builds");
-    app.color = false;
-    let buf = render(&mut app, 160, 40);
-    assert!(buf[(5, y)].modifier.contains(Modifier::REVERSED));
-    assert!(!buf[(5, y + 1)].modifier.contains(Modifier::REVERSED));
+fn shaded(cell: &ratatui::buffer::Cell, shade: Shade) -> bool {
+    match shade {
+        Shade::Painted(bar) => cell.bg == bar,
+        Shade::Reversed => cell.modifier.contains(Modifier::REVERSED),
+    }
 }
 
 #[test]
-fn the_small_cards_bar_covers_both_rows_and_its_edge_stays_visible() {
-    let mut app = app_with(&listing(), "card_size = \"small\"", "");
-    common::select_name(&mut app, "builds");
-    let buf = render(&mut app, 160, 40);
-    let rows = card_rows(&buf, "builds", 2);
-    for (y, text) in &rows {
-        assert!(text.starts_with('█'), "{text}");
-        assert_eq!(buf[(5, *y)].bg, NEUTRAL_BAR, "{text}");
-        assert_ne!(buf[(0, *y)].bg, NEUTRAL_BAR, "{text}");
+fn every_row_of_the_selected_card_has_the_selection_in_each_size_look_and_focus() {
+    for (size, rows) in [("large", 4), ("medium", 3), ("small", 2)] {
+        for (look, theme, color, shade) in SELECTION_LOOKS {
+            for terminal in [false, true] {
+                let (mut app, _t) = attached_with(&format!("card_size = \"{size}\""), "builds");
+                app.set_theme(theme);
+                app.color = color;
+                if terminal {
+                    app.handle_key(key(KeyCode::Enter));
+                    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+                }
+                let at = format!("{size} {look} terminal={terminal}");
+                let buf = render(&mut app, 160, 40);
+                let card = card_rows(&buf, "builds", rows);
+                for (y, row) in &card {
+                    for x in 0..28 {
+                        let cell = &buf[(x, *y)];
+                        // A painted account chip keeps its own background.
+                        let chip = cell.bg != Color::Reset
+                            && row.contains("main")
+                            && matches!(shade, Shade::Painted(_));
+                        assert!(shaded(cell, shade) || chip, "{at}: {x} of {row}");
+                    }
+                }
+                // Other cards and the rows between have none.
+                for name in ["asks", "reviews"] {
+                    for (y, row) in card_rows(&buf, name, rows) {
+                        assert!(!shaded(&buf[(14, y)], shade), "{at}: {row}");
+                    }
+                }
+                let below = card[rows - 1].0 + 1;
+                assert!(!shaded(&buf[(14, below)], shade), "{at}: the gap");
+                assert!(
+                    !shaded(&buf[(14, card[0].0 - 1)], shade),
+                    "{at}: the header"
+                );
+                // Focus still shows on the title row and the footer.
+                let text = text_of(&buf);
+                let first = text.lines().next().unwrap();
+                assert_eq!(first.starts_with('▌'), !terminal, "{at}: {first}");
+                let footer = text.lines().last().unwrap();
+                let chip = if terminal { " TERMINAL " } else { " LIST " };
+                assert!(footer.contains(chip), "{at}: {footer}");
+            }
+        }
     }
-    app.color = false;
+}
+
+#[test]
+fn the_selected_card_keeps_a_coloured_heavy_outline_and_readable_text() {
+    let (mut app, _t) = attached_with("", "builds");
+    let buf = render(&mut app, 160, 40);
+    let card = card_rows(&buf, "builds", 3);
+    let top = card[0].0;
+    assert!(card[0].1.starts_with("┏━"), "{}", card[0].1);
+    assert!(card[1].1.starts_with('┃'), "{}", card[1].1);
+    assert!(card[2].1.starts_with('┗'), "{}", card[2].1);
+    for (x, y) in [
+        (0, top),
+        (1, top),
+        (27, top),
+        (0, top + 1),
+        (27, top + 1),
+        (0, top + 2),
+    ] {
+        assert_eq!(buf[(x, y)].fg, NEUTRAL_BLUE, "{x},{y}");
+    }
+    // The bar's own text colour, on every text of the card.
+    const BAR_TEXT: Color = Color::Rgb(255, 255, 255);
+    let middle = card[1].1.clone();
+    let state = middle.chars().position(|c| c == 'w').unwrap() as u16;
+    let folder = middle.chars().position(|c| c == '…').unwrap() as u16;
+    assert_eq!(buf[(state, top + 1)].fg, BAR_TEXT);
+    assert_eq!(buf[(folder, top + 1)].fg, BAR_TEXT);
+    let name = card[0].1.chars().position(|c| c == 'b').unwrap() as u16;
+    assert_eq!(buf[(name, top)].fg, BAR_TEXT);
+    assert!(buf[(name, top)].modifier.contains(Modifier::BOLD));
+    // The small card's edge is on the same fill, and shows.
+    let (mut app, _t) = attached_with("card_size = \"small\"", "builds");
     let buf = render(&mut app, 160, 40);
     for (y, text) in card_rows(&buf, "builds", 2) {
-        assert!(text.starts_with('▶'), "{text}");
-        assert!(buf[(5, y)].modifier.contains(Modifier::REVERSED), "{text}");
-        assert!(!buf[(0, y)].modifier.contains(Modifier::REVERSED), "{text}");
+        assert!(text.starts_with('█'), "{text}");
+        assert_eq!(buf[(0, y)].fg, NEUTRAL_BLUE, "{text}");
+        assert_eq!(buf[(5, y)].bg, NEUTRAL_BAR, "{text}");
     }
+}
+
+#[test]
+fn a_cards_text_has_contrast_the_name_leads_the_state_is_coloured_the_folder_dim() {
+    for (size, state_row) in [("large", 1), ("medium", 1), ("small", 1)] {
+        let mut app = app_with(&listing(), &format!("card_size = \"{size}\""), "");
+        let buf = render(&mut app, 160, 40);
+        let rows = CardSize::parse(size).unwrap().rows();
+        let card = card_rows(&buf, "builds", rows);
+        let (top, title) = (&card[0].0, &card[0].1);
+        let name = title
+            .find("builds")
+            .map(|b| title[..b].chars().count())
+            .unwrap() as u16;
+        assert!(
+            buf[(name, *top)].modifier.contains(Modifier::BOLD),
+            "{size}"
+        );
+        assert_eq!(buf[(name, *top)].fg, Color::Rgb(235, 235, 235), "{size}");
+        let row = &card[state_row].1;
+        let y = card[state_row].0;
+        let state = row
+            .find("working")
+            .map(|b| row[..b].chars().count())
+            .unwrap() as u16;
+        assert_eq!(buf[(state, y)].fg, NEUTRAL_BLUE, "{size}: {row}");
+        let (folder_y, folder_row) = if size == "large" {
+            (card[2].0, &card[2].1)
+        } else {
+            (y, row)
+        };
+        let folder = folder_row.chars().position(|c| c == '/').unwrap() as u16;
+        assert_eq!(
+            buf[(folder, folder_y)].fg,
+            Color::Rgb(138, 138, 138),
+            "{size}"
+        );
+    }
+    // An interactive row stays dim, its name too.
+    let mut app = app_with(&listing(), "", "");
+    let buf = render(&mut app, 160, 40);
+    let card = card_rows(&buf, "other-shell", 3);
+    let name = card[0].1.chars().position(|c| c == 'o').unwrap() as u16;
+    assert!(!buf[(name, card[0].0)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buf[(name, card[0].0)].fg, Color::Rgb(138, 138, 138));
 }
 
 #[test]
@@ -1103,6 +1251,637 @@ fn a_saved_size_redraws_the_cards() {
     app.apply_config(config);
     let lines = bar(&mut app, 40);
     assert!(!lines.iter().any(|l| l.starts_with('╭')), "{lines:?}");
+}
+
+#[test]
+fn the_settings_window_saves_the_card_gap() {
+    use settings_common::{app_for, env, file, open, press, select};
+    use watchtower::config_edit::{SettingKey, SettingValue};
+
+    let env = env(Some(
+        "[ui]\nstyle = \"workspace\"\n\n[[accounts]]\nname = \"main\"\ncommand = \"claude\"\n",
+    ));
+    let mut app = app_for(&env);
+    open(&mut app);
+    select(&mut app, "gap between cards");
+    let value = |app: &App| app.settings().unwrap().session.value(SettingKey::UiCardGap);
+    assert_eq!(value(&app), SettingValue::Int(1), "the default");
+    press(&mut app, settings_common::key(KeyCode::Left));
+    assert_eq!(value(&app), SettingValue::Int(0));
+    let effects = app.handle_key(settings_common::ctrl('s'));
+    let [Effect::SaveConfig(job)] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    let result = job.run();
+    app.config_saved(result);
+    assert!(file(&env).contains("card_gap = 0"), "{}", file(&env));
+    assert_eq!(app.config().ui_card_gap, 0, "applied at once");
+}
+
+#[test]
+fn card_gap_parses_defaults_to_one_and_refuses_the_rest() {
+    let parse = |text: &str| Config::parse(text, Path::new(HOME));
+    assert_eq!(parse("").unwrap().ui_card_gap, 1);
+    assert_eq!(parse("[ui]\ncard_gap = 0\n").unwrap().ui_card_gap, 0);
+    assert_eq!(parse("[ui]\ncard_gap = 1\n").unwrap().ui_card_gap, 1);
+    let err = parse("[ui]\ncard_gap = 2\n").unwrap_err();
+    assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
+    assert!(err.to_string().contains("[ui] card_gap"), "{err}");
+}
+
+// ---- the gap -----------------------------------------------------------------------
+
+#[test]
+fn the_gap_keeps_cards_and_groups_apart_and_can_be_traded_back() {
+    let two = [
+        row("cccc3333", "reviews", "web", IDLE, "done"),
+        row("ffff6666", "another", "web", IDLE, "done"),
+        row("bbbb2222", "builds", "billing-ui", BUSY, "working"),
+    ];
+    let text = format!("[{}]", two.join(","));
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+        // With it: a header stays with its first card, then a blank row
+        // between cards and before the next header.
+        let ui = format!("card_size = \"{size}\"");
+        let mut app = app_with(&text, &ui, "");
+        let lines = bar(&mut app, 40);
+        let first = y_of(&lines, "Ready for");
+        assert_eq!(first, 1, "no gap at the top of the list: {size}");
+        let (a, b) = {
+            let a = lines
+                .iter()
+                .position(|l| l.contains("reviews") || l.contains("another"));
+            let a = a.unwrap();
+            (a, a + rows + 1)
+        };
+        assert_eq!(a, first + 1, "{size}: {lines:#?}");
+        assert!(lines[a + rows].trim().is_empty(), "{size}: {lines:#?}");
+        assert!(
+            lines[b].contains("reviews") || lines[b].contains("another"),
+            "{size}: {lines:#?}"
+        );
+        assert!(lines[b + rows].trim().is_empty(), "{size}: {lines:#?}");
+        assert!(
+            lines[b + rows + 1].contains("Working"),
+            "{size}: {lines:#?}"
+        );
+        // Without it: none.
+        let ui = format!("card_size = \"{size}\"\ncard_gap = 0");
+        let mut app = app_with(&text, &ui, "");
+        let lines = bar(&mut app, 40);
+        let a = y_of(&lines, "Ready for") + 1;
+        assert!(
+            lines[a + rows].contains("reviews") || lines[a + rows].contains("another"),
+            "{size}: {lines:#?}"
+        );
+        assert!(
+            lines[a + 2 * rows].contains("Working"),
+            "{size}: {lines:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_click_on_a_gap_selects_nothing_and_clicks_around_it_do() {
+    let mut app = at_home();
+    let lines = bar(&mut app, 40);
+    let top = y_of(&lines, "builds");
+    let below = top + 3;
+    assert!(lines[below].trim().is_empty(), "{lines:#?}");
+    let before = app.handle_mouse(mouse(DOWN, 3, below as u16));
+    assert!(before.is_empty());
+    assert!(app.pane_home(), "still nothing chosen");
+    app.handle_mouse(mouse(DOWN, 3, top as u16 + 2));
+    assert_eq!(selected(&app).as_deref(), Some("builds"));
+    let chosen = app.selected_entry();
+    app.handle_mouse(mouse(DOWN, 3, below as u16));
+    assert_eq!(app.selected_entry(), chosen, "a gap moves nothing");
+    // The wheel over a gap still moves, as over the rest of the list.
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 3, below as u16));
+    assert_ne!(app.selected_entry(), chosen);
+}
+
+#[test]
+fn the_viewport_and_the_page_keys_match_the_gap() {
+    for gap in [0, 1] {
+        for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+            let ui = format!("card_size = \"{size}\"\ncard_gap = {gap}");
+            let mut app = app_with(&many(40), &ui, "");
+            draw(&mut app, 160, 30);
+            app.handle_key(key(KeyCode::Down));
+            for _ in 0..39 {
+                let lines = bar(&mut app, 30);
+                let name = selected(&app).unwrap();
+                let top = y_of(&lines, &name);
+                assert!(top + rows <= 29, "{size} gap {gap}: {name} at {top}");
+                app.handle_key(key(KeyCode::Down));
+            }
+            // A page down moves by the entries that show: the next page's
+            // first card was not on the screen, and no card is skipped by more.
+            let mut app = app_with(&many(40), &ui, "");
+            let lines = bar(&mut app, 30);
+            let shown = lines.iter().filter(|l| l.contains("row-")).count();
+            app.handle_key(key(KeyCode::Down));
+            let lines = bar(&mut app, 30);
+            assert_eq!(lines.iter().filter(|l| l.contains("row-")).count(), shown);
+            app.handle_key(key(KeyCode::PageDown));
+            let name = selected(&app).unwrap();
+            let n: usize = name.trim_start_matches("row-").parse().unwrap();
+            // The header counts as a line; the selection stays near a page.
+            assert!(
+                (shown - 1..=shown + 1).contains(&n),
+                "{size} gap {gap}: {n} of {shown}"
+            );
+            let lines = bar(&mut app, 30);
+            let top = y_of(&lines, &name);
+            assert!(top + rows <= 29, "{size} gap {gap}: {name} at {top}");
+            app.handle_key(key(KeyCode::PageUp));
+            assert!(selected(&app).is_some() || app.selected_header().is_some());
+        }
+    }
+}
+
+#[test]
+fn a_selected_card_at_the_bottom_does_not_move_the_list_when_only_its_gap_is_cut() {
+    // 40 rows less the footer and the title row; a header and medium cards
+    // with their gaps: the last whole card ends on the last row when the list
+    // is `1 + 4 n` rows high and needs no scrolling to be selected.
+    let mut app = app_with(&many(40), "", "");
+    let h = 1 + 4 * 6 - 1 + 2;
+    let lines = bar(&mut app, h);
+    let name = "row-05";
+    let top = y_of(&lines, name);
+    assert_eq!(top + 3, usize::from(h) - 1, "{lines:#?}");
+    app.handle_mouse(mouse(DOWN, 3, top as u16));
+    assert_eq!(selected(&app).as_deref(), Some(name));
+    let after = bar(&mut app, h);
+    assert_eq!(y_of(&after, name), top, "the list stays under the mouse");
+}
+
+/// The cards drawn on a `w` × `h` terminal in a list with six groups, by
+/// project, where the rest of the cards are in the last: what doc/0045 counts.
+fn cards_that_fit(size: &str, gap: u16, w: u16, h: u16) -> usize {
+    let rows: Vec<String> = (0..60)
+        .map(|k| {
+            let folder = format!("p{}", k.min(5));
+            row(
+                &format!("b{k:07}"),
+                &format!("card-{k:02}"),
+                &folder,
+                BUSY,
+                "working",
+            )
+        })
+        .collect();
+    let ui = format!("card_size = \"{size}\"\ncard_gap = {gap}");
+    let mut app = app_with(&format!("[{}]", rows.join(",")), &ui, "");
+    app.handle_key(ch('p'));
+    draw(&mut app, w, h)
+        .lines()
+        .filter(|l| l.contains("card-"))
+        .count()
+}
+
+#[test]
+fn the_fit_counts_of_the_decision_hold() {
+    for (size, gap, wide, narrow) in [
+        ("large", 1, 8, 5),
+        ("medium", 1, 10, 7),
+        ("small", 1, 14, 9),
+        ("large", 0, 10, 7),
+        ("medium", 0, 14, 9),
+        ("small", 0, 21, 14),
+    ] {
+        assert_eq!(
+            cards_that_fit(size, gap, 200, 50),
+            wide,
+            "{size} gap {gap} at 200x50"
+        );
+        assert_eq!(
+            cards_that_fit(size, gap, 120, 36),
+            narrow,
+            "{size} gap {gap} at 120x36"
+        );
+    }
+}
+
+// ---- the footer ---------------------------------------------------------------------
+
+#[test]
+fn the_footer_on_a_group_header_says_what_enter_does_there() {
+    let mut app = at_home();
+    let lines = bar(&mut app, 40);
+    let y = y_of(&lines, "Stopped") as u16;
+    app.handle_mouse(mouse(DOWN, 3, y));
+    assert!(app.selected_header().is_some());
+    let text = draw(&mut app, 160, 40);
+    let footer = text.lines().last().unwrap();
+    assert!(footer.contains("Enter fold"), "{footer}");
+    assert!(!footer.contains("Enter type here"), "{footer}");
+    // And it does.
+    let before = app.entries().len();
+    app.handle_key(key(KeyCode::Enter));
+    assert_ne!(app.entries().len(), before);
+    // On a row the hint is the row's again.
+    common::select_name(&mut app, "builds");
+    let text = draw(&mut app, 160, 40);
+    assert!(text.lines().last().unwrap().contains("Enter type here"));
+    common::select_name(&mut app, "sleeps");
+    let text = draw(&mut app, 160, 40);
+    assert!(text.lines().last().unwrap().contains("Enter wake here"));
+}
+
+// ---- attaches open in the pane ------------------------------------------------------
+
+const ORCHESTRATOR_DIR: &str = "orchestrator";
+
+fn with_orchestrator() -> String {
+    let rows = [
+        row(
+            "oooo0000",
+            "orchestrator",
+            ORCHESTRATOR_DIR,
+            IDLE,
+            "blocked",
+        ),
+        row("bbbb2222", "builds", "billing-ui", BUSY, "working"),
+    ];
+    format!("[{}]", rows.join(","))
+}
+
+/// Runs a checked attach to its end, as the clock would.
+fn after_the_check(app: &mut App) -> Vec<Effect> {
+    app.tick(Instant::now() + ATTACH_CHECK_TIMEOUT + Duration::from_secs(1))
+}
+
+#[test]
+fn o_selects_the_orchestrators_row_and_opens_it_in_the_pane_with_the_keys() {
+    let mut app = app_with(&with_orchestrator(), "", "");
+    draw(&mut app, 160, 40);
+    assert!(app.pane_home());
+    let effects = app.handle_key(ch('o'));
+    assert!(effects.contains(&Effect::PollForAttach), "{effects:?}");
+    assert!(app.pane_home(), "not before the check");
+    let effects = after_the_check(&mut app);
+    no_foreground_attach(&effects);
+    let open = the_open(&effects);
+    assert_eq!(open.id, "oooo0000");
+    assert_eq!(selected(&app).as_deref(), Some("orchestrator"));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(!app.pane_home());
+    // The next turn of the loop leaves it so, and attaches nothing more.
+    let t = Instant::now();
+    let later = app.pane_tick(t);
+    assert!(!opened(&later), "{later:?}");
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    let later = app.pane_tick(t + ATTACH_DEBOUNCE);
+    assert!(!opened(&later), "{later:?}");
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+    assert!(app.pane_has_keys());
+    // Keys go to the child, and the way back is the usual one.
+    let effects = app.handle_key(ch('x'));
+    assert_eq!(effects, [Effect::PaneWrite(b"x".to_vec())]);
+    app.handle_key(ctrl('z'));
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(!opened(&app.pane_tick(t)));
+    assert!(app.pane_client_key().is_some(), "the client stays");
+    app.handle_key(ch('o'));
+    let effects = after_the_check(&mut app);
+    assert!(!opened(&effects), "the same client: {effects:?}");
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    app.handle_key(key(KeyCode::F(12)));
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+}
+
+#[test]
+fn o_replaces_another_rows_client_and_finds_a_row_in_a_folded_group_or_filtered_away() {
+    let mut app = app_with(&with_orchestrator(), "", "");
+    draw(&mut app, 160, 40);
+    common::select_name(&mut app, "builds");
+    let t = Instant::now();
+    app.pane_tick(t);
+    let open = the_open(&app.pane_tick(t + ATTACH_DEBOUNCE));
+    assert_eq!(open.id, "bbbb2222");
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+
+    common::select_name(&mut app, "orchestrator");
+    app.handle_key(key(KeyCode::Tab));
+    assert!(selected(&app).is_none(), "folded");
+    app.handle_key(ch('o'));
+    let open = the_open(&after_the_check(&mut app));
+    assert_eq!(open.id, "oooo0000");
+    assert_eq!(selected(&app).as_deref(), Some("orchestrator"), "unfolded");
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+
+    let mut app = app_with(&with_orchestrator(), "", "");
+    draw(&mut app, 160, 40);
+    app.handle_key(ch('/'));
+    app.handle_key(ch('b'));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(ch('o'));
+    let open = the_open(&after_the_check(&mut app));
+    assert_eq!(open.id, "oooo0000");
+    assert_eq!(
+        selected(&app).as_deref(),
+        Some("orchestrator"),
+        "filter cleared"
+    );
+}
+
+fn start_of(effects: &[Effect]) -> watchtower::app::OrchestratorJob {
+    match effects {
+        [Effect::StartOrchestrator(job)] => job.clone(),
+        other => panic!("expected one orchestrator start, got {other:?}"),
+    }
+}
+
+#[test]
+fn o_without_an_orchestrator_starts_it_and_opens_it_when_it_appears() {
+    let builds = row("bbbb2222", "builds", "billing-ui", BUSY, "working");
+    let mut app = app_with(&format!("[{builds}]"), "", "");
+    draw(&mut app, 160, 40);
+    let job = start_of(&app.handle_key(ch('o')));
+    let effects = app.orchestrator_finished(
+        job,
+        Ok(Dispatched {
+            id: "oooo0000".into(),
+            name: Some("orchestrator".into()),
+        }),
+    );
+    no_foreground_attach(&effects);
+    assert!(effects.contains(&Effect::PollNow), "{effects:?}");
+    assert!(app.pane_home(), "not listed yet");
+    let t = Instant::now();
+    assert!(!opened(&app.pane_tick(t)), "still not listed");
+    // It appears.
+    app.apply_poll(poll("main", &with_orchestrator()));
+    let effects = app.pane_tick(t);
+    no_foreground_attach(&effects);
+    assert_eq!(the_open(&effects).id, "oooo0000");
+    assert_eq!(selected(&app).as_deref(), Some("orchestrator"));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(!opened(&app.pane_tick(t + ATTACH_DEBOUNCE)));
+}
+
+#[test]
+fn a_start_that_fails_or_never_appears_keeps_working_as_before() {
+    use watchtower::dispatch::DispatchError;
+    use watchtower::orchestrator::StartError;
+    let builds = row("bbbb2222", "builds", "billing-ui", BUSY, "working");
+    let text = format!("[{builds}]");
+    // Not trusted: its window, no client.
+    let mut app = app_with(&text, "", "");
+    draw(&mut app, 160, 40);
+    let job = start_of(&app.handle_key(ch('o')));
+    let effects = app.orchestrator_finished(
+        job,
+        Err(StartError::Dispatch(DispatchError::Untrusted {
+            dir: "/home/user/x".into(),
+            message: "Workspace not trusted".into(),
+        })),
+    );
+    assert!(effects.is_empty(), "{effects:?}");
+    assert!(draw(&mut app, 160, 40).contains("Ctrl+T"));
+    assert!(!opened(&app.pane_tick(Instant::now())));
+
+    // Never listed: it stops waiting and says so.
+    let mut app = app_with(&text, "", "");
+    draw(&mut app, 160, 40);
+    let job = start_of(&app.handle_key(ch('o')));
+    let started = Dispatched {
+        id: "oooo0000".into(),
+        name: None,
+    };
+    app.orchestrator_finished(job, Ok(started));
+    let t = Instant::now();
+    assert!(!opened(
+        &app.pane_tick(t + WANTED_PATIENCE + Duration::from_secs(1))
+    ));
+    assert!(
+        status_text(&app).contains("not listed yet"),
+        "{}",
+        status_text(&app)
+    );
+    app.apply_poll(poll("main", &with_orchestrator()));
+    assert!(!opened(&app.pane_tick(t)), "too late to take the keys");
+    assert!(app.pane_home());
+
+    // The user moved on: the keys are not taken from them.
+    let mut app = app_with(&text, "", "");
+    draw(&mut app, 160, 40);
+    let job = start_of(&app.handle_key(ch('o')));
+    let started = Dispatched {
+        id: "oooo0000".into(),
+        name: None,
+    };
+    app.orchestrator_finished(job, Ok(started));
+    app.handle_key(key(KeyCode::Down));
+    let t = Instant::now();
+    app.apply_poll(poll("main", &with_orchestrator()));
+    app.pane_tick(t);
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(
+        status_text(&app).contains("selection moved"),
+        "{}",
+        status_text(&app)
+    );
+}
+
+/// The new-session dialog started with `Alt+Enter`: its job.
+fn dialog_job(app: &mut App, root: &Path) -> watchtower::app::DispatchJob {
+    app.open_dialog(common::project_list(root, &["demo"]));
+    app.handle_key(key(KeyCode::Tab));
+    for c in "do it".chars() {
+        app.handle_key(ch(c));
+    }
+    let effects = app.handle_key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::ALT,
+    ));
+    let job = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Dispatch(job) => Some(job.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{effects:?}"));
+    assert!(job.attach);
+    job
+}
+
+#[test]
+fn start_and_attach_opens_the_new_session_in_the_pane_with_the_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = at_home();
+    let job = dialog_job(&mut app, root.path());
+    let effects = app.dispatch_finished(
+        job,
+        Ok(Dispatched {
+            id: "nnnn5555".into(),
+            name: Some("new-one".into()),
+        }),
+    );
+    no_foreground_attach(&effects);
+    assert!(effects.contains(&Effect::PollNow), "{effects:?}");
+    assert!(app.dialog().is_none());
+    let t = Instant::now();
+    assert!(!opened(&app.pane_tick(t)));
+    let rows = listing().trim_end_matches(']').to_owned()
+        + ","
+        + &row("nnnn5555", "new-one", "demo", BUSY, "working")
+        + "]";
+    app.apply_poll(poll("main", &rows));
+    let effects = app.pane_tick(t);
+    no_foreground_attach(&effects);
+    let open = the_open(&effects);
+    assert_eq!(open.id, "nnnn5555");
+    assert!(open.cwd.ends_with("workspace/demo"), "{:?}", open.cwd);
+    assert_eq!(selected(&app).as_deref(), Some("new-one"));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    // A plain start stays where it was.
+    let mut app = at_home();
+    app.open_dialog(common::project_list(root.path(), &["demo"]));
+    app.handle_key(key(KeyCode::Tab));
+    for c in "do it".chars() {
+        app.handle_key(ch(c));
+    }
+    let effects = app.handle_key(ctrl('s'));
+    let job = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Dispatch(job) => Some(job.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let started = Dispatched {
+        id: "nnnn5555".into(),
+        name: None,
+    };
+    app.dispatch_finished(job, Ok(started));
+    app.apply_poll(poll("main", &rows));
+    assert!(!opened(&app.pane_tick(Instant::now())));
+    assert!(app.pane_home());
+}
+
+#[test]
+fn a_window_holds_the_opening_until_it_closes() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = at_home();
+    let job = dialog_job(&mut app, root.path());
+    let started = Dispatched {
+        id: "nnnn5555".into(),
+        name: None,
+    };
+    app.dispatch_finished(job, Ok(started));
+    app.handle_key(ch('?'));
+    let rows = listing().trim_end_matches(']').to_owned()
+        + ","
+        + &row("nnnn5555", "new-one", "demo", BUSY, "working")
+        + "]";
+    app.apply_poll(poll("main", &rows));
+    let t = Instant::now();
+    assert!(!opened(&app.pane_tick(t)));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(opened(&app.pane_tick(t)));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+}
+
+#[test]
+fn below_the_width_the_foreground_attach_stays() {
+    let mut app = app_with(&with_orchestrator(), "", "");
+    draw(&mut app, 90, 30);
+    assert!(!app.pane_active());
+    app.handle_key(ch('o'));
+    let effects = after_the_check(&mut app);
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Attach(_))),
+        "{effects:?}"
+    );
+    assert!(!opened(&effects));
+}
+
+/// `e` on `builds`, with `new` typed and `Enter`: its client opens in the pane.
+fn renamed_in_the_pane(new: &str) -> (App, Instant, PaneOpen) {
+    let mut app = at_home();
+    common::select_name(&mut app, "builds");
+    app.handle_key(ch('e'));
+    app.handle_key(ctrl('u'));
+    for c in new.chars() {
+        app.handle_key(ch(c));
+    }
+    let effects = app.handle_key(key(KeyCode::Enter));
+    assert!(effects.contains(&Effect::PollForAttach), "{effects:?}");
+    let effects = after_the_check(&mut app);
+    no_foreground_attach(&effects);
+    let open = the_open(&effects);
+    assert_eq!(open.id, "bbbb2222");
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(
+        status_text(&app).contains(&format!("/rename {new}")),
+        "{}",
+        status_text(&app)
+    );
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+    (app, Instant::now(), open)
+}
+
+fn listing_with_builds_named(name: &str) -> String {
+    listing().replace("\"builds\"", &format!("\"{name}\""))
+}
+
+#[test]
+fn renaming_a_running_session_opens_it_in_the_pane_and_checks_when_the_keys_return() {
+    let (mut app, t, _open) = renamed_in_the_pane("fresh-name");
+    // Nothing is checked while the terminal has the keys.
+    assert!(!app.pane_tick(t).contains(&Effect::PollForRename));
+    let effects = app.handle_key(ctrl('z'));
+    assert!(effects.contains(&Effect::PollForRename), "{effects:?}");
+    app.rename_poll_started(5_000);
+    let mut update = poll("main", &listing_with_builds_named("fresh-name"));
+    update.cycle = 5_000;
+    app.apply_poll(update);
+    assert!(
+        status_text(&app).contains("renamed builds → fresh-name"),
+        "{}",
+        status_text(&app)
+    );
+    // Once.
+    let effects = app.handle_key(ch('h'));
+    assert!(!effects.contains(&Effect::PollForRename));
+}
+
+#[test]
+fn a_rename_that_did_not_happen_gets_the_note_and_a_failed_client_drops_it() {
+    let (mut app, ..) = renamed_in_the_pane("fresh-name");
+    app.handle_key(key(KeyCode::F(12)));
+    app.rename_poll_started(5_000);
+    let mut update = poll("main", &listing());
+    update.cycle = 5_000;
+    app.apply_poll(update);
+    assert!(
+        status_text(&app).contains("name unchanged"),
+        "{}",
+        status_text(&app)
+    );
+
+    // A clean end of the client checks too.
+    let (mut app, _t, open) = renamed_in_the_pane("fresh-name");
+    let effects = app.pane_exited(open.generation, Some(0));
+    assert!(effects.contains(&Effect::PollForRename), "{effects:?}");
+
+    // A failed one does not.
+    let (mut app, _t, open) = renamed_in_the_pane("fresh-name");
+    let effects = app.pane_exited(open.generation, Some(1));
+    assert_eq!(effects, [Effect::PollNow]);
+    app.rename_poll_started(5_000);
+    let mut update = poll("main", &listing());
+    update.cycle = 5_000;
+    app.apply_poll(update);
+    assert!(
+        !status_text(&app).contains("name unchanged"),
+        "{}",
+        status_text(&app)
+    );
 }
 
 // ---- the other styles ---------------------------------------------------------------------

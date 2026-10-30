@@ -2819,8 +2819,13 @@ fn the_dialog_model_field_shows_a_long_model_name() {
 
 #[test]
 fn settings_values_use_the_width_of_their_row() {
-    for (w, h) in [(80, 24), (140, 40), (250, 60)] {
-        let rows = rows_of(frame("settings-style", "dash-neutral", w, h));
+    // At 24 rows the prompt's row is in view from further down the list.
+    for (scenario, w, h) in [
+        ("settings-follow", 80, 24),
+        ("settings-style", 140, 40),
+        ("settings-style", 250, 60),
+    ] {
+        let rows = rows_of(frame(scenario, "dash-neutral", w, h));
         let row = rows
             .iter()
             .find(|r| r.contains("hand-off prompt  "))

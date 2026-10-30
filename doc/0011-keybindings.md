@@ -201,7 +201,9 @@ row selected and closes nothing; it does nothing in the other styles, and `р` m
 any list letter. On Home the first arrow, `j` / `k`, page key or notch of the wheel selects the first row (or
 the row chosen before going Home), and keys that need a row do nothing. A click on a group
 header acts like `Tab` on it, a click on `◆ tower` like `h`, and the wheel over the list like
-`↑` / `↓`.
+`↑` / `↓`. `o`, start-and-attach in the dialog and `Enter` in the rename window of a running session
+open it in the pane with the keys, not in the whole terminal. With a group header selected the
+footer's first hint is `Enter fold`.
 
 **Rules**
 

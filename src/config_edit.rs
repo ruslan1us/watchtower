@@ -37,9 +37,9 @@ use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
 use crate::attach::{self, Foreground, Handover, Spawner, Termination};
 use crate::cli::CommandLine;
 use crate::config::{
-    Account, CardSize, ColorDepth, Config, ConfigError, DEFAULT_LOGS_FOLLOW_SECS,
-    DEFAULT_POLL_INTERVAL_SECS, LOGS_FOLLOW_RANGE, LOGS_FOLLOW_STEPS, POLL_INTERVAL_RANGE, UiStyle,
-    UiTheme,
+    Account, CARD_GAP_RANGE, CardSize, ColorDepth, Config, ConfigError, DEFAULT_CARD_GAP,
+    DEFAULT_LOGS_FOLLOW_SECS, DEFAULT_POLL_INTERVAL_SECS, LOGS_FOLLOW_RANGE, LOGS_FOLLOW_STEPS,
+    POLL_INTERVAL_RANGE, UiStyle, UiTheme,
 };
 use crate::dispatch::{
     BYPASS_PERMISSIONS, DEFAULT_CHOICE, DEFAULT_PERMISSION_MODE, EFFORT_CHOICES, MODEL_CHOICES,
@@ -109,6 +109,7 @@ pub enum SettingKey {
     UiTheme,
     UiColorDepth,
     UiCardSize,
+    UiCardGap,
     DefaultAccount,
     DefaultModel,
     DefaultEffort,
@@ -126,11 +127,12 @@ pub enum SettingKey {
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 17] = [
+    pub const ALL: [SettingKey; 18] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
         SettingKey::UiColorDepth,
         SettingKey::UiCardSize,
+        SettingKey::UiCardGap,
         SettingKey::DefaultAccount,
         SettingKey::DefaultModel,
         SettingKey::DefaultEffort,
@@ -153,6 +155,7 @@ impl SettingKey {
             SettingKey::UiTheme => &["ui", "theme"],
             SettingKey::UiColorDepth => &["ui", "color_depth"],
             SettingKey::UiCardSize => &["ui", "card_size"],
+            SettingKey::UiCardGap => &["ui", "card_gap"],
             SettingKey::DefaultAccount => &["default_account"],
             SettingKey::DefaultModel => &["default_model"],
             SettingKey::DefaultEffort => &["default_effort"],
@@ -183,7 +186,8 @@ impl SettingKey {
             SettingKey::UiStyle
             | SettingKey::UiTheme
             | SettingKey::UiColorDepth
-            | SettingKey::UiCardSize => Section::Appearance,
+            | SettingKey::UiCardSize
+            | SettingKey::UiCardGap => Section::Appearance,
             SettingKey::DefaultAccount
             | SettingKey::DefaultModel
             | SettingKey::DefaultEffort
@@ -205,6 +209,7 @@ impl SettingKey {
             SettingKey::UiTheme => "theme",
             SettingKey::UiColorDepth => "colour depth",
             SettingKey::UiCardSize => "card size",
+            SettingKey::UiCardGap => "gap between cards",
             SettingKey::DefaultAccount => "default account",
             SettingKey::DefaultModel => "default model",
             SettingKey::DefaultEffort => "default effort",
@@ -239,6 +244,10 @@ impl SettingKey {
             SettingKey::UiCardSize => {
                 "The workspace style's cards: large (4 rows), medium (3 rows, name, state and \
                  folder, account and age) or small (2 rows without an outline)."
+            }
+            SettingKey::UiCardGap => {
+                "The workspace style's blank rows between cards and before each group: 1 keeps \
+                 them apart, 0 fits more cards."
             }
             SettingKey::DefaultAccount => {
                 "The account new sessions and the orchestrator start under."
@@ -296,7 +305,8 @@ impl SettingKey {
             SettingKey::UiStyle
             | SettingKey::UiTheme
             | SettingKey::UiColorDepth
-            | SettingKey::UiCardSize => "at once",
+            | SettingKey::UiCardSize
+            | SettingKey::UiCardGap => "at once",
             SettingKey::DefaultAccount => {
                 "the next new session; the orchestrator on its next start"
             }
@@ -335,7 +345,8 @@ impl SettingKey {
             | SettingKey::UsageShow => Shape::Bool,
             SettingKey::PollIntervalSecs
             | SettingKey::LogsFollowSecs
-            | SettingKey::UsageRefreshSecs => Shape::Int,
+            | SettingKey::UsageRefreshSecs
+            | SettingKey::UiCardGap => Shape::Int,
             _ => Shape::Text,
         }
     }
@@ -704,6 +715,14 @@ impl EditSession {
                 min: *LOGS_FOLLOW_RANGE.start() as i64,
                 max: *LOGS_FOLLOW_RANGE.end() as i64,
             },
+            SettingKey::UiCardGap => SettingKind::Steps {
+                values: vec![
+                    i64::from(*CARD_GAP_RANGE.start()),
+                    i64::from(*CARD_GAP_RANGE.end()),
+                ],
+                min: i64::from(*CARD_GAP_RANGE.start()),
+                max: i64::from(*CARD_GAP_RANGE.end()),
+            },
             SettingKey::UsageRefreshSecs => SettingKind::Steps {
                 values: usage::REFRESH_STEPS.iter().map(|s| *s as i64).collect(),
                 min: *usage::REFRESH_RANGE.start() as i64,
@@ -734,6 +753,7 @@ impl EditSession {
             SettingKey::UiTheme => text(UiTheme::default().as_str()),
             SettingKey::UiColorDepth => text(ColorDepth::default().as_str()),
             SettingKey::UiCardSize => text(CardSize::default().as_str()),
+            SettingKey::UiCardGap => SettingValue::Int(i64::from(DEFAULT_CARD_GAP)),
             SettingKey::DefaultAccount => text(&self.config.accounts[0].name),
             SettingKey::DefaultModel | SettingKey::DefaultEffort => text(DEFAULT_CHOICE),
             SettingKey::DefaultPermissionMode => text(DEFAULT_PERMISSION_MODE),

@@ -73,7 +73,9 @@ use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob
 
 mod workspace;
 
-pub use workspace::{ATTACH_DEBOUNCE, PaneFocus, PaneOpen, RELEASE_AFTER, coalesces};
+pub use workspace::{
+    ATTACH_DEBOUNCE, PaneFocus, PaneOpen, RELEASE_AFTER, WANTED_PATIENCE, coalesces,
+};
 
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
@@ -2643,13 +2645,13 @@ impl App {
 
     /// [`Effect::Attach`] for `request`, remembering its session so a
     /// successful attach acknowledges the highlight (doc/0007).
-    fn attach_effect(&mut self, request: AttachRequest) -> Effect {
-        // `Enter` in the workspace opens it in the pane (doc/0045).
-        if let Some(open) = self.pane_take_attach(&request) {
-            return open;
+    fn attach_effect(&mut self, request: AttachRequest) -> Vec<Effect> {
+        // The workspace opens it in the pane, with the keys (doc/0045).
+        if let Some(effects) = self.pane_take_attach(&request) {
+            return effects;
         }
         self.attached_id = Some(request.id.clone());
-        Effect::Attach(request)
+        vec![Effect::Attach(request)]
     }
 
     /// Reports how an attach ended and asks for an immediate poll. A
@@ -2786,7 +2788,7 @@ impl App {
                 }));
                 if job.attach {
                     // attach_finished polls once tower is back.
-                    effects.push(self.attach_effect(AttachRequest {
+                    effects.extend(self.attach_effect(AttachRequest {
                         account,
                         id: started.id,
                         name,
@@ -4673,11 +4675,12 @@ impl App {
                 self.set_message(text, Severity::Info);
                 return Vec::new();
             }
-            return vec![self.attach_effect(AttachRequest {
+            let request = AttachRequest {
                 account: started.account.clone(),
                 id: started.id.clone(),
                 name: orchestrator::NAME.to_owned(),
-            })];
+            };
+            return self.attach_effect(request);
         }
         let mut request = orchestrator::request(&self.config, self.orchestrator_dir.clone());
         request.settings = self.claude_settings();
@@ -4729,7 +4732,7 @@ impl App {
                 } else {
                     self.set_message(what, Severity::Info);
                     // attach_finished polls once tower is back.
-                    effects.push(self.attach_effect(AttachRequest {
+                    effects.extend(self.attach_effect(AttachRequest {
                         account,
                         id: started.id,
                         name: orchestrator::NAME.to_owned(),
@@ -4911,6 +4914,7 @@ impl App {
         // (doc/0027); the account picker carries it on.
         if !effects.iter().any(|e| matches!(e, Effect::Attach(_)))
             && !matches!(self.overlay, Overlay::Picker(_))
+            && !self.pane_renames()
         {
             self.rename_attach = None;
         }
@@ -5029,7 +5033,7 @@ impl App {
             }
         }
         self.attach_note = (!notes.is_empty()).then(|| notes.join("; "));
-        effects.push(self.attach_effect(AttachRequest {
+        effects.extend(self.attach_effect(AttachRequest {
             account: chosen,
             id: p.request.id,
             name,

@@ -9,10 +9,13 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use super::{App, AttachRequest, Effect, Entry, Overlay, Purpose, Severity};
+use super::{
+    App, AttachRequest, Effect, Entry, Filter, Keep, Overlay, Purpose, Selected, Severity,
+};
 use crate::config::{Account, UiStyle};
 use crate::embed::{self, PaneScreen};
 use crate::merge::MergedSession;
+use crate::rename;
 
 /// How long the selection rests on a row before the pane attaches to it, so
 /// the arrows can run over rows without starting anything.
@@ -21,6 +24,10 @@ pub const ATTACH_DEBOUNCE: Duration = Duration::from_millis(150);
 /// A client that has not had the keys for this long is released: `claude
 /// attach` keeps a session from its idle stop, and tower must not.
 pub const RELEASE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How long a session just started may take to be listed before the pane stops
+/// waiting to open it.
+pub const WANTED_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Why a row is not attached.
 const HELD_ENDED: &str = "its terminal client ended";
@@ -57,6 +64,8 @@ struct PaneClient {
     key: String,
     id: String,
     name: String,
+    /// The account whose command attached.
+    account: String,
     generation: u64,
     screen: Option<PaneScreen>,
     size: (u16, u16),
@@ -77,6 +86,15 @@ struct Ended {
 struct Held {
     key: String,
     why: &'static str,
+}
+
+/// A session tower has just started, to open in the pane once it is listed.
+struct Wanted {
+    request: AttachRequest,
+    deadline: Instant,
+    /// Whether Home showed, and the selection, when it was asked: if the user
+    /// moves on, it is not taken from them.
+    from: (bool, Option<Selected>),
 }
 
 /// What a client needs of its row.
@@ -112,9 +130,10 @@ pub(super) struct PaneState {
     bar_rows: Vec<(u16, usize)>,
     /// Why no client can start; tower then draws the dashboard.
     failed: Option<String>,
-    /// The short id whose checked attach (`Enter` on a stopped row, or on an
-    /// unknown owner) opens here instead of taking the terminal.
+    /// The short id whose checked attach `Enter` asked for (a stopped row, or
+    /// an unknown owner): it needs the selection to stay on that row.
     wake: Option<String>,
+    wanted: Option<Wanted>,
     /// A press went to the child and its release has not come.
     gesture: bool,
     generations: u64,
@@ -137,6 +156,7 @@ impl Default for PaneState {
             bar_rows: Vec::new(),
             failed: None,
             wake: None,
+            wanted: None,
             gesture: false,
             generations: 0,
             narrow_noted: false,
@@ -310,6 +330,7 @@ impl App {
             key: row.key,
             id: row.id.clone(),
             name: row.name,
+            account: row.account.name.clone(),
             generation,
             screen: None,
             size: (rows, cols),
@@ -348,6 +369,7 @@ impl App {
             pane.ended = None;
             pane.held = None;
             pane.wake = None;
+            pane.wanted = None;
             return match pane.client.take() {
                 Some(_) => vec![Effect::PaneClose],
                 None => Vec::new(),
@@ -355,7 +377,7 @@ impl App {
         }
         // The pane has the logs panel's place, and more (doc/0045).
         self.logs = None;
-        let mut effects = Vec::new();
+        let mut effects = self.pane_open_wanted(now);
         let key = self
             .selected_session()
             .and_then(|m| m.session.key())
@@ -462,6 +484,7 @@ impl App {
             .as_ref()
             .is_some_and(|c| c.generation == generation)
         {
+            self.pane_drop_rename();
             self.pane.client = None;
             self.pane.focus = PaneFocus::List;
             self.pane.failed = Some(error.to_owned());
@@ -485,6 +508,16 @@ impl App {
             key: client.key,
             why: HELD_ENDED,
         });
+        // A rename through this client (doc/0027) is checked on a clean end.
+        let rename = code == Some(0) && self.pane_check_rename(&client.id, &client.account);
+        if !rename
+            && self
+                .rename_attach
+                .as_ref()
+                .is_some_and(|i| i.id == client.id)
+        {
+            self.rename_attach = None;
+        }
         let name = client.name;
         match code {
             Some(0) => self.set_message(format!("the terminal of {name} ended"), Severity::Info),
@@ -502,7 +535,11 @@ impl App {
         {
             self.pane.ended = Some(Ended { name, code, screen });
         }
-        vec![Effect::PollNow]
+        vec![if rename {
+            Effect::PollForRename
+        } else {
+            Effect::PollNow
+        }]
     }
 
     /// Called before an effect runs: an action that can stop, wake or remove
@@ -528,6 +565,7 @@ impl App {
             });
         }
         if self.pane.client.as_ref().is_some_and(|c| c.id == id) {
+            self.pane_drop_rename();
             self.pane.client = None;
             self.pane.focus = PaneFocus::List;
             self.pane.gesture = false;
@@ -536,40 +574,182 @@ impl App {
         false
     }
 
-    /// The checked attach of `Enter` opens in the pane instead of taking the
-    /// terminal, when it is the one `Enter` asked for.
-    pub(super) fn pane_take_attach(&mut self, request: &AttachRequest) -> Option<Effect> {
-        if !self.pane_active() || self.pane.wake.as_deref() != Some(request.id.as_str()) {
+    /// While the workspace is drawn every attach opens in the pane, with the
+    /// keys, and selects its row: `Enter` on a stopped row, `o`, start-and-attach
+    /// and the rename of a running session (doc/0045). A session not listed
+    /// yet opens when it is ([`App::pane_open_wanted`]).
+    pub(super) fn pane_take_attach(&mut self, request: &AttachRequest) -> Option<Vec<Effect>> {
+        if !self.pane_active() {
             return None;
         }
-        self.pane.wake = None;
+        let from_enter = self.pane.wake.take_if(|id| *id == request.id).is_some();
         if let Some(note) = self.attach_note.take() {
             self.set_message(note, Severity::Warning);
         }
-        let row = self
-            .selected_session()
-            .filter(|m| m.session.id.as_deref() == Some(request.id.as_str()))
-            .and_then(|m| m.session.key())
-            .map(|key| RowInfo {
-                key: key.to_owned(),
-                id: request.id.clone(),
-                name: request.name.clone(),
-                cwd: self
-                    .selected_session()
-                    .map_or_else(PathBuf::new, |m| PathBuf::from(&m.session.cwd)),
-                account: request.account.clone(),
+        let now = Instant::now();
+        let listed = self.pane_listed(&request.id);
+        let Some(key) = listed else {
+            self.pane.wanted = Some(Wanted {
+                request: request.clone(),
+                deadline: now + WANTED_PATIENCE,
+                from: (self.pane_home(), self.selected_key.clone()),
             });
-        let Some(row) = row else {
+            return Some(vec![Effect::PollNow]);
+        };
+        let moved = self
+            .selected_session()
+            .is_none_or(|m| m.session.id.as_deref() != Some(request.id.as_str()));
+        if from_enter && moved {
             self.set_message(
                 format!("{} was not attached: the selection moved", request.name),
                 Severity::Info,
             );
-            return Some(Effect::PollNow);
+            return Some(vec![Effect::PollNow]);
+        }
+        Some(self.pane_open_row(&key, request, now))
+    }
+
+    /// The session key of the listed session with the short id `id`.
+    fn pane_listed(&self, id: &str) -> Option<String> {
+        self.sessions
+            .iter()
+            .find(|m| m.session.id.as_deref() == Some(id))
+            .and_then(|m| m.session.key())
+            .map(str::to_owned)
+    }
+
+    /// Selects the row, attaches it unless its client is there already, and
+    /// gives its terminal the keys.
+    fn pane_open_row(&mut self, key: &str, request: &AttachRequest, now: Instant) -> Vec<Effect> {
+        self.pane_select_row(key);
+        // The selection moved on purpose: `pane_tick` must not take the keys
+        // back for it.
+        self.pane.selected = Some(key.to_owned());
+        self.pane.since = Some(now);
+        self.pane.wanted = None;
+        self.pane.gesture = false;
+        let mut effects = Vec::new();
+        if self.pane_client_key() != Some(key) {
+            let cwd = self
+                .sessions
+                .iter()
+                .find(|m| m.session.key() == Some(key))
+                .map_or_else(PathBuf::new, |m| PathBuf::from(&m.session.cwd));
+            effects.push(self.pane_start(
+                RowInfo {
+                    key: key.to_owned(),
+                    id: request.id.clone(),
+                    name: request.name.clone(),
+                    cwd,
+                    account: request.account.clone(),
+                },
+                now,
+            ));
+        }
+        self.pane.ended = None;
+        self.pane.held = None;
+        // From the list, so an existing client hears that it has the focus.
+        self.pane.focus = PaneFocus::List;
+        effects.extend(self.pane_focus_terminal());
+        if let Some(intent) = self.rename_attach.as_ref().filter(|i| i.id == request.id) {
+            let text = format!(
+                "type {} here; Ctrl+Z or F12 returns and tower checks the name",
+                rename::rename_prompt(&intent.new)
+            );
+            self.set_message(text, Severity::Info);
+        }
+        effects
+    }
+
+    /// Selects the row with session key `key`, opening its group if it is
+    /// folded and clearing a filter that hides it.
+    fn pane_select_row(&mut self, key: &str) {
+        self.pane.home = false;
+        self.pane.chosen = true;
+        let shown = self
+            .sessions
+            .iter()
+            .any(|m| m.session.key() == Some(key) && self.matches_filter(m));
+        if !shown {
+            self.filter = Filter::default();
+        }
+        self.selected_key = Some(Selected::Row(key.to_owned()));
+        self.rebuild_view(Keep::Same);
+        // A folded group gives its header: open it and select the row itself.
+        if self.selected_header().is_some() {
+            self.toggle_group();
+            self.selected_key = Some(Selected::Row(key.to_owned()));
+            self.rebuild_view(Keep::Same);
+        }
+    }
+
+    /// Opens the session waiting to be listed, once it is and no window or
+    /// filter line has the keys. It lets go when the user moved the selection
+    /// meanwhile, or after [`WANTED_PATIENCE`].
+    fn pane_open_wanted(&mut self, now: Instant) -> Vec<Effect> {
+        let Some(wanted) = &self.pane.wanted else {
+            return Vec::new();
         };
-        let now = Instant::now();
-        let open = self.pane_start(row, now);
-        self.pane.focus = PaneFocus::Terminal;
-        Some(open)
+        let name = wanted.request.name.clone();
+        // From Home only leaving it counts: what is selected is hidden there.
+        let moved = match &wanted.from {
+            (true, _) => !self.pane_home(),
+            (false, None) => false,
+            (false, key) => *key != self.selected_key,
+        };
+        let late = now >= wanted.deadline;
+        if moved || late {
+            self.pane.wanted = None;
+            let why = if moved {
+                "the selection moved"
+            } else {
+                "it is not listed yet"
+            };
+            self.set_message(
+                format!("{name} was not opened here: {why}; select it to open it"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        if self.window_open() || self.filter.editing {
+            return Vec::new();
+        }
+        let Some(key) = self.pane_listed(&wanted.request.id) else {
+            return Vec::new();
+        };
+        let Some(wanted) = self.pane.wanted.take() else {
+            return Vec::new();
+        };
+        self.pane_open_row(&key, &wanted.request, now)
+    }
+
+    // ---- a rename through the pane's client (doc/0027) ------------------------
+
+    /// Whether a rename through an attach goes on in the pane's client.
+    pub(super) fn pane_renames(&self) -> bool {
+        match (&self.rename_attach, &self.pane.client) {
+            (Some(intent), Some(client)) => intent.id == client.id,
+            _ => false,
+        }
+    }
+
+    fn pane_drop_rename(&mut self) {
+        if self.pane_renames() {
+            self.rename_attach = None;
+        }
+    }
+
+    /// The keys left the client of `id`, or it ended: the name is compared once
+    /// a poll started now has listed it. Returns whether a check is due.
+    fn pane_check_rename(&mut self, id: &str, account: &str) -> bool {
+        match self.rename_attach.as_mut() {
+            Some(intent) if intent.id == id && intent.account.is_none() => {
+                intent.account = Some(account.to_owned());
+                intent.cycle = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     // ---- Home ---------------------------------------------------------------
@@ -672,11 +852,15 @@ impl App {
             return Vec::new();
         };
         client.last_keys = now;
+        let mut effects = Vec::new();
         if client.screen.as_ref().is_some_and(PaneScreen::focus_events) {
-            vec![Effect::PaneWrite(b"\x1b[O".to_vec())]
-        } else {
-            Vec::new()
+            effects.push(Effect::PaneWrite(b"\x1b[O".to_vec()));
         }
+        let (id, account) = (client.id.clone(), client.account.clone());
+        if self.pane_check_rename(&id, &account) {
+            effects.push(Effect::PollForRename);
+        }
+        effects
     }
 
     /// A key while the terminal has them: `Ctrl+Z` and `F12` are tower's and

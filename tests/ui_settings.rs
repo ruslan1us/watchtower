@@ -52,7 +52,7 @@ fn overview_at_160x40_matches_the_mock() {
                 "│ Settings   ~/.config/watchtower/config.toml  (found)",
                 "* 1 unsaved change │",
                 "╭ Settings ─",
-                "─ 17 settings · 2 accounts ╮╭ style ─",
+                "─ 18 settings · 2 accounts ╮╭ style ─",
                 "├─ Appearance ─",
                 "│▌   style                        ‹ dashboard ›  default",
                 "Enter pick   ←→ change │",
@@ -100,12 +100,12 @@ fn overview_at_100x30_has_the_help_strip() {
         &[
             "│ Settings   ~/.config/watchtower/config.toml  (found)",
             "* 1 unsaved change │",
-            "─ 17 settings · 2 accounts ╮",
+            "─ 18 settings · 2 accounts ╮",
             "│▌   style                       ‹ dashboard ›  default",
             "│ *  default effort              high",
             // The rest of General and the accounts are below the fold at 30
             // rows.
-            "│    show plan usage             [ ] off  default",
+            "│    track subagents             [x] on  default",
             "│ style  The look of the session list",
         ],
     );
@@ -263,7 +263,7 @@ fn a_missing_file_says_ctrl_s_creates_it() {
         &[
             "│ Settings   ~/.config/watchtower/config.toml  (not found — using defaults)",
             "no unsaved changes │",
-            "─ 17 settings · 1 account ╮",
+            "─ 18 settings · 1 account ╮",
             "│    default account              main  default",
             "│    default effort               default",
             "│    project roots                none  0 folders ▸  default",
@@ -294,7 +294,7 @@ fn the_minimal_style_draws_the_same_window_plainly() {
                 "├─ Appearance ─",
                 "‹ dashboard ›  default",
                 "* 1 unsaved change",
-                "show plan usage",
+                "poll interval",
             ],
         );
         // The minimal look paints no theme colours.
@@ -440,7 +440,8 @@ fn a_long_selected_choice_is_fitted_with_its_arrows() {
 #[test]
 fn unselected_values_use_the_whole_row() {
     let (_env, mut app) = opened_long();
-    select(&mut app, "style");
+    // Far enough down for the rows above to be in view at 24 rows.
+    select(&mut app, "allow cross-group hand-off");
     for (w, h) in [(80, 24), (100, 30), (160, 45)] {
         let s = screen(&mut app, w, h);
         let model = list_row(&s, "default model  ");

@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -78,10 +78,19 @@ large (4 rows)            medium (3 rows)           small (2 rows)
 ```
 
 - The outline has the state's theme colour; `small` has a coloured `▌` edge instead. The
-  selected card's outline is heavy (`┏━┓`; in `small` the edge is `█`, or `▶` without colour,
-  since a full block would vanish in reverse video), and its title (both rows in `small`) sits on
-  the selection bar while the list has the keys. So the selection reads without colour, and
-  stays visible when the terminal has the keys.
+  selected card's outline is heavy (`┏━┓`; in `small` the edge is `█`, or `▶` where the selection
+  is reverse video, since a full block would vanish there).
+- *Amended 2026-10-31, the owner's second trial:* the whole selected card sits on the selection,
+  every row across its whole width and in all sizes, whether the list or the terminal has the keys
+  (`▌`, the `LIST` / `TERMINAL` chip and the pane's frame say that). The theme's selection
+  background is painted, or reverse video where the theme or `NO_COLOR` selects that way. An account chip keeps its own background, and the outline its state colour. Text on the
+  card takes the selection's text colour, the state's and the folder's too, because a state or
+  dim colour may not read on the bar; the outline still says the state. **This is an exception to
+  [0021](0021-dashboard-themes.md)'s rule that only the selected row is painted**, for this style's
+  selected card only.
+- *Amended 2026-10-31:* contrast inside a card: the name is bold in the normal text colour, the
+  state in its state colour, the folder dim. The `+N` badge and the outlined cards' `▪` no longer
+  repeat the outline's colour.
 - Interactive rows are dim with a dashed outline (`┆` edge in `small`). Attention stays a red
   `●` and a bold name ([0007](0007-visual-only-attention.md)).
 - Cards show the account, not git; git stays in the pane's title. Subagents are the `+N` badge
@@ -89,6 +98,18 @@ large (4 rows)            medium (3 rows)           small (2 rows)
 - The selected card does not grow, so the list does not shift under the mouse. The viewport
   moves by whole entries and keeps the selected card whole; a card that does not fit at the
   bottom is not drawn. `PgUp` / `PgDn` move by the entries that show.
+- *Added 2026-10-31:* `[ui] card_gap` (0 or 1, default 1, also in Settings) is the blank rows
+  between cards and before each group header; a header stays with its first card, and the top of
+  the list has none. A click on a gap selects nothing. The viewport and the page keys count it.
+  Cards that fit with 6 group headers (2 rows of chrome: the footer and the bar's title row):
+
+  | Terminal | `large` | `medium` | `small` |
+  |---|---|---|---|
+  | 200 × 50, `card_gap = 1` | 8 | 10 | 14 |
+  | 120 × 36, `card_gap = 1` | 5 | 7 | 9 |
+  | 200 × 50, `card_gap = 0` | 10 | 14 | 21 |
+  | 120 × 36, `card_gap = 0` | 7 | 9 | 14 |
+
 - Fitting on one row: a folder first becomes `…/last`, then the state its short form
   (`permission`, `reply`), then the folder and then the state are cut with `…`. A name is cut
   with `…`. On a row too narrow for both the folder goes.
@@ -137,8 +158,17 @@ works over SSH. A clipboard read is never passed on or answered.
 - A client that exits returns the keys to the list and polls at once. A non-zero exit keeps
   its last screen until the selection moves, so its error can be read.
 - Any tower action that stops, wakes or removes the row (`s`, `d`, `a`, `e`, `t`) closes its
-  client first and then works as today. So do the foreground attaches, which are unchanged:
-  `o`, start-and-attach in the dialog and the rename of a running session.
+  client first and then works as today.
+- *Amended 2026-10-31:* every attach opens in the pane while the workspace is drawn: `o`,
+  start-and-attach in the dialog and the rename of a running session, as `Enter` on a stopped row
+  already did. Each selects its row (opening a folded group, clearing a filter that hides it),
+  attaches after the same checks with the owner's command, and gives the terminal the keys;
+  `Ctrl+Z` and `F12` return as usual, and a client already there is kept. A session tower has just
+  started opens when the listing shows it, unless the user has moved the selection meanwhile, or
+  after 30 s; a window or the filter line holds it until it closes. Failures and the trust windows work as
+  before, and below the size limit the foreground attach of [0005](0005-attach-and-detach.md) stays.
+  For a rename ([0027](0027-rename-sessions.md)) the status line says what to type, and the name
+  is checked when the keys return to the list or the client ends cleanly; a failed client drops it.
 - After an action, a client's exit or a release, the row is **held**: the listing may still
   show it live, and attaching again could wake what was just stopped. It attaches when
   `Enter` asks, or when the selection comes back to it. The panel says why.
@@ -217,6 +247,7 @@ attention and everything else still come from the CLI's JSON
 - The owner's results on Warp, Windows Terminal and over SSH.
 - Done 2026-10-31: cards, the wheel on the list, clicks on group headers, Home (which has the
   plan usage, so the bar has none).
-- Still to come: clicks on the stopped panel, a zoom key, `o` and start-and-attach opening in the
-  pane, and lifecycle polish. The mockup's `a → alt` hand-off hint on the selected card is not
+- Done in the second trial, 2026-10-31: `o`, start-and-attach and the rename opening in the pane,
+  the whole selected card highlighted, `[ui] card_gap`.
+- Still to come: clicks on the stopped panel, a zoom key and lifecycle polish. The mockup's `a → alt` hand-off hint on the selected card is not
   built.

@@ -1,13 +1,16 @@
 //! The workspace's list bar (doc/0045): the list's groups, order, folding and
 //! selection, with each session as a card, `[ui] card_size` tall. The outline
-//! has the state's colour; the selected card's is heavy, and its title sits on
-//! the selection bar while the list has the keys. Cards show the account, not
-//! git; a card's subagents are the `+N` badge on its title.
+//! has the state's colour; the selected card's is heavy, and the whole card
+//! sits on the selection's background. Cards show the account, not git; a
+//! card's subagents are the `+N` badge on its title. `[ui] card_gap` keeps
+//! cards and groups apart.
 //!
-//! Tells the app which entry each screen row shows, for clicks. The viewport
-//! moves by whole entries, and a card that does not fit is not drawn.
+//! Tells the app which entry each screen row shows, for clicks; a gap shows
+//! none. The viewport moves by whole entries, and a card that does not fit is
+//! not drawn.
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -69,17 +72,6 @@ const CUT_MIN: usize = 5;
 /// A name keeps at least this many cells before the `+N` badge goes.
 const NAME_MIN: usize = 6;
 
-/// `style` on the selection bar: the bar's background or reverse video, under
-/// the text's own colour.
-fn on_bar(style: Style, th: Theme) -> Style {
-    let bar = th.selected();
-    let style = match bar.bg {
-        Some(bg) => style.bg(bg),
-        None => style,
-    };
-    style.add_modifier(bar.add_modifier)
-}
-
 /// The state and the folder on one row of `w` cells, with [`GAP`] between:
 /// the folder first becomes `…/last`, then the state its short form, then the
 /// folder and the state are cut with `…`. On a card too narrow for both, the
@@ -107,17 +99,37 @@ fn fit_state_and_folder(app: &App, i: usize, w: usize) -> (String, String) {
     (shorten(&t.state, state), shorten(&t.project, folder))
 }
 
+/// Puts the selected card on the selection's background across its whole
+/// width and height, in every look (doc/0045: an exception to doc/0021's
+/// selected row). Reverse video where the theme selects that way. What already
+/// has a background, an account chip, keeps it; every foreground stays, so the
+/// outline keeps the state's colour.
+fn fill_selected(buf: &mut Buffer, area: Rect, th: Theme) {
+    let bar = th.selected();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = &mut buf[(x, y)];
+            if let Some(bg) = bar.bg
+                && cell.bg == Color::Reset
+            {
+                cell.set_bg(bg);
+            }
+            cell.modifier.insert(bar.add_modifier);
+        }
+    }
+}
+
 /// One card, with what its rows share.
 struct Card<'a> {
     app: &'a App,
     i: usize,
     width: usize,
     selected: bool,
-    /// The selection bar is on it: selected, and the list has the keys.
-    bar: bool,
     lit: bool,
     dim: bool,
     busy: bool,
+    /// Medium and large; small has an edge instead.
+    outlined: bool,
     color: Color,
     spin: &'static str,
     age: String,
@@ -144,16 +156,37 @@ impl Card<'_> {
         }
     }
 
+    /// Text on the selected card: its bar's own text colour, whatever the
+    /// text is elsewhere, as a state or dim colour may not read on the bar.
+    /// The outline still has the state's colour.
+    fn on_card(&self) -> Style {
+        self.th.text().patch(self.th.selected())
+    }
+
     fn text(&self) -> Style {
-        if self.dim {
+        if self.selected {
+            self.on_card()
+        } else if self.dim {
             self.th.faint()
         } else {
             self.th.text()
         }
     }
 
+    /// The folder: dim, so the name and the state stand out.
     fn soft(&self) -> Style {
-        if self.dim {
+        if self.selected {
+            self.on_card()
+        } else {
+            self.th.faint()
+        }
+    }
+
+    /// The badge and other small facts.
+    fn fact(&self) -> Style {
+        if self.selected {
+            self.on_card()
+        } else if self.dim {
             self.th.faint()
         } else {
             self.th.muted()
@@ -162,7 +195,14 @@ impl Card<'_> {
 
     fn state_style(&self) -> Style {
         let th = self.th;
-        if self.dim {
+        if self.selected {
+            let style = self.on_card();
+            if self.lit {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            }
+        } else if self.dim {
             th.faint()
         } else if self.lit {
             th.attention().patch(th.hue(self.color))
@@ -172,53 +212,40 @@ impl Card<'_> {
     }
 
     fn age_style(&self) -> Style {
-        if self.dim {
-            self.th.faint()
-        } else if self.age == "now" {
+        if !self.selected && !self.dim && self.age == "now" {
             self.th.text()
         } else {
-            self.th.muted()
-        }
-    }
-
-    /// `style`, on the selection bar when the card has it.
-    fn on_title(&self, style: Style) -> Style {
-        if self.bar {
-            on_bar(style, self.th)
-        } else {
-            style
+            self.fact()
         }
     }
 
     /// What starts the title: the attention marker (doc/0007), then the
-    /// spinner or the state's glyph, each with a space after it.
+    /// spinner or a glyph, each with a space after it. An outline already
+    /// has the state's colour, so only `small`'s glyph repeats it.
     fn lead(&self) -> Lb {
         let th = self.th;
         let mut l = Lb::new();
         if self.lit {
-            l.push(format!("{MARKER} "), self.on_title(th.attention()));
+            l.push(format!("{MARKER} "), th.attention());
         }
         let (glyph, style) = if self.busy {
             (self.spin, th.bold(th.group_color(Group::Working)))
+        } else if self.outlined && !self.selected {
+            ("▪", th.faint())
         } else {
             ("▪", self.edge())
         };
-        l.push(format!("{glyph} "), self.on_title(style));
+        l.push(format!("{glyph} "), style);
         l
     }
 
-    /// The name's style on the title: bold with attention, on the bar with
-    /// the bar's own text colour.
+    /// The name: bold in the normal text colour, so it leads the card;
+    /// plain and dim on an interactive row.
     fn name_style(&self) -> Style {
-        let style = if self.lit {
-            self.text().add_modifier(Modifier::BOLD)
-        } else {
+        if self.dim && !self.selected {
             self.text()
-        };
-        if self.bar {
-            style.patch(self.th.selected())
         } else {
-            style
+            self.text().add_modifier(Modifier::BOLD)
         }
     }
 
@@ -238,18 +265,18 @@ impl Card<'_> {
         };
         let mut l = Lb::new();
         l.push(o.top_left, edge);
-        l.push(o.across, self.on_title(edge));
-        l.push(" ", self.on_title(self.text()));
+        l.push(o.across, edge);
+        l.push(" ", self.text());
         l.append(lead);
         l.push(shorten(&t.name, room.max(1)), self.name_style());
-        l.push(" ", self.on_title(self.text()));
+        l.push(" ", self.text());
         let mut right = Lb::new();
         if let Some(badge) = badge {
-            right.push(format!(" {badge} "), self.on_title(self.th.hue(self.color)));
-            right.push(o.across, self.on_title(edge));
+            right.push(format!(" {badge} "), self.fact());
+            right.push(o.across, edge);
         }
         let run = self.width.saturating_sub(l.w + right.w + 1);
-        l.push(o.across.repeat(run), self.on_title(edge));
+        l.push(o.across.repeat(run), edge);
         l.append(right);
         l.push(o.top_right, edge);
         l.line()
@@ -347,12 +374,13 @@ impl Card<'_> {
         vec![self.top(), self.middle(left, right), self.bottom(true)]
     }
 
-    /// `small`'s left edge. Without colour the selected card's is `▶`, as a
-    /// selected row's, since a full block under reverse video would not show.
+    /// `small`'s left edge. Where the selection is reverse video the selected
+    /// card's is `▶`, as a selected row's, since a full block would not show.
     fn small_edge(&self) -> (&'static str, Style) {
-        let glyph = match (self.selected, self.th.color, self.dim) {
-            (true, true, _) => "█",
-            (true, false, _) => "▶",
+        let reversed = !self.th.color || self.th.p.reverse;
+        let glyph = match (self.selected, reversed, self.dim) {
+            (true, false, _) => "█",
+            (true, true, _) => "▶",
             (false, _, true) => "┆",
             (false, _, false) => "▌",
         };
@@ -369,7 +397,7 @@ impl Card<'_> {
         let lead = self.lead();
         let mut top = Lb::new();
         top.push(glyph, edge);
-        top.push(" ", self.on_title(self.text()));
+        top.push(" ", self.text());
         let name_room = room.saturating_sub(lead.w + 1 + rfit(&self.age, 3).width());
         top.append(lead);
         let badge_w = t.badge.as_ref().map_or(0, |b| b.width() + 1);
@@ -380,11 +408,11 @@ impl Card<'_> {
         top.push(shorten(&t.name, name_room.max(1)), self.name_style());
         let mut right = Lb::new();
         if let Some(badge) = badge {
-            right.push(format!("{badge} "), self.on_title(self.th.hue(self.color)));
+            right.push(format!("{badge} "), self.fact());
         }
-        right.push(rfit(&self.age, 3), self.on_title(self.age_style()));
+        right.push(rfit(&self.age, 3), self.age_style());
         let pad = self.width.saturating_sub(top.w + right.w);
-        top.push(" ".repeat(pad), self.on_title(self.text()));
+        top.push(" ".repeat(pad), self.text());
         top.append(right);
 
         let account_w = t.account.width().min(room / 3);
@@ -393,20 +421,20 @@ impl Card<'_> {
         let account = shorten(&t.account, account_w);
         let mut below = Lb::new();
         below.push(glyph, edge);
-        below.push(" ", self.on_title(self.text()));
-        below.push(state, self.on_title(self.state_style()));
+        below.push(" ", self.text());
+        below.push(state, self.state_style());
         if !folder.is_empty() {
-            below.push(" ".repeat(GAP), self.on_title(self.text()));
-            below.push(folder, self.on_title(self.soft()));
+            below.push(" ".repeat(GAP), self.text());
+            below.push(folder, self.soft());
         }
         let pad = self.width.saturating_sub(below.w + account.width());
-        below.push(" ".repeat(pad), self.on_title(self.text()));
+        below.push(" ".repeat(pad), self.text());
         let account_style = match self.app.config().account(&t.account) {
             _ if self.dim => self.th.faint(),
             Some(_) => account_chip(self.app, &t.account, self.th).1,
             None => self.th.muted(),
         };
-        below.push(account, self.on_title(account_style));
+        below.push(account, account_style);
         vec![top.line(), below.line()]
     }
 
@@ -498,49 +526,64 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
         return;
     }
     let size = app.config().ui_card_size;
+    let gap = usize::from(app.config().ui_card_gap);
     let selected = app.selected_entry();
-    let heights: Vec<usize> = app
-        .entries()
-        .iter()
-        .map(|e| match e {
-            Entry::Header { .. } => 1,
-            Entry::Row(_) => size.rows(),
-        })
+    let entries = app.entries();
+    let rows_of = |k: usize| match entries[k] {
+        Entry::Header { .. } => 1,
+        Entry::Row(_) => size.rows(),
+    };
+    // A blank row between cards and before each group header; a header stays
+    // with its first card, and the list's top needs none.
+    let gap_after = |k: usize| match entries.get(k + 1) {
+        Some(Entry::Header { .. }) => gap,
+        Some(Entry::Row(_)) if matches!(entries[k], Entry::Row(_)) => gap,
+        _ => 0,
+    };
+    let heights: Vec<usize> = (0..entries.len())
+        .map(|k| rows_of(k) + gap_after(k))
         .collect();
-    let offset = scroll_lines(app.list_state.offset(), selected, h, &heights);
-    *app.list_state.offset_mut() = offset;
-    app.list_state.select(selected);
+    let drawn: Vec<usize> = (0..entries.len()).map(rows_of).collect();
+    // The selected entry's own gap may fall outside the view.
+    let mut offset = scroll_lines(app.list_state.offset(), selected, h + gap, &heights);
+    if let Some(sel) = selected {
+        let height = |from: usize| heights[from..sel].iter().sum::<usize>() + drawn[sel];
+        while offset < sel && height(offset) > h {
+            offset += 1;
+        }
+    }
 
-    // The entries that fit whole, and which screen row shows which.
+    // The entries that fit whole, the row each starts on, and which screen
+    // row shows which entry.
+    let mut tops: Vec<(usize, usize)> = Vec::new();
     let mut rows: Vec<(u16, usize)> = Vec::new();
-    let mut used = 0;
-    let mut last = offset;
-    for (k, &height) in heights.iter().enumerate().skip(offset) {
-        if used + height > h {
+    let mut y = 0;
+    for k in offset..entries.len() {
+        if y + drawn[k] > h {
             break;
         }
-        rows.extend((used..used + height).map(|y| (list.y + y as u16, k)));
-        used += height;
-        last = k + 1;
+        tops.push((k, y));
+        rows.extend((y..y + drawn[k]).map(|at| (list.y + at as u16, k)));
+        y += heights[k];
     }
+    *app.list_state.offset_mut() = offset;
+    app.list_state.select(selected);
     // A page is what shows, so `PgDn` moves as far as the eye does.
-    app.page_size = (last - offset).max(1);
+    app.page_size = tops.len().max(1);
     app.set_pane_bar(area, rows);
 
     let app = &*app;
-    let list_keys = app.pane_focus() == PaneFocus::List;
     let spin = spinner(now_ms);
-    let mut y = 0;
-    for (k, entry) in app.entries().iter().enumerate().take(last).skip(offset) {
+    for (k, y) in tops {
         let is_sel = selected == Some(k);
-        match entry {
+        match &app.entries()[k] {
             Entry::Header {
                 group,
                 count,
                 highlighted,
                 collapsed,
             } => {
-                let r = row(list, y);
+                let r = row(list, y as u16);
                 let lead = match (is_sel, th.color) {
                     (true, true) => ("▌", th.fg(th.p.mark)),
                     (true, false) => ("▶", Style::new()),
@@ -557,7 +600,6 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
                         frame.buffer_mut()[(r.x, r.y)].set_fg(th.p.mark);
                     }
                 }
-                y += 1;
             }
             Entry::Row(i) => {
                 let m = &app.sessions()[*i];
@@ -567,18 +609,27 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
                     i: *i,
                     width: iw,
                     selected: is_sel,
-                    bar: is_sel && list_keys,
                     lit: app.is_highlighted(m),
                     dim,
                     busy: !dim && groups::spins(&m.session),
+                    outlined: size != CardSize::Small,
                     color: th.group_color(groups::classify(&m.session)),
                     spin,
                     age: age_column(app, m, now_ms),
                     th,
                 };
-                for line in card.lines(size) {
-                    put(frame, row(list, y), line);
-                    y += 1;
+                let lines = card.lines(size);
+                let height = lines.len() as u16;
+                for (dy, line) in lines.into_iter().enumerate() {
+                    put(frame, row(list, y as u16 + dy as u16), line);
+                }
+                if is_sel {
+                    let at = Rect {
+                        y: list.y + y as u16,
+                        height,
+                        ..list
+                    };
+                    fill_selected(frame.buffer_mut(), at, th);
                 }
             }
         }

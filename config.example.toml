@@ -137,6 +137,11 @@ list_width = 0
 # Default: "medium"
 card_size = "medium"
 
+# Workspace style only (doc/0045): blank rows between cards and before each
+# group, 0 or 1. 0 fits more cards.
+# Default: 1
+card_gap = 1
+
 # Sessions tower starts (doc/0029).
 [sessions]
 # Show the subagents (Agent tool) each session runs. Tower passes the

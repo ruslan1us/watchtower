@@ -406,6 +406,7 @@ fn example_config_is_valid_and_complete() {
     assert_eq!(
         ui_keys,
         [
+            "card_gap",
             "card_size",
             "color_depth",
             "list_width",
@@ -417,6 +418,7 @@ fn example_config_is_valid_and_complete() {
     assert_eq!(c.ui_mouse, defaults.ui_mouse);
     assert_eq!(c.ui_list_width, defaults.ui_list_width);
     assert_eq!(c.ui_card_size, defaults.ui_card_size);
+    assert_eq!(c.ui_card_gap, defaults.ui_card_gap);
     assert_eq!(c.ui_style, defaults.ui_style);
     assert_eq!(c.ui_theme, defaults.ui_theme);
     assert_eq!(c.ui_color_depth, defaults.ui_color_depth);

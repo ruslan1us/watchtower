@@ -30,6 +30,8 @@ const PAUSE: Duration = Duration::from_millis(700);
 const ALPHA: &str = "aaaa1111";
 const BETA: &str = "bbbb2222";
 const STOPPED: &str = "cccc3333";
+const ORCHESTRATOR: &str = "dddd4444";
+const STARTED: &str = "eeee5555";
 
 fn row(id: &str, name: &str, cwd: &Path, live: bool) -> String {
     let process = if live {
@@ -54,6 +56,11 @@ struct Options {
     on_attach: Vec<u8>,
     /// Every row is live.
     live_only: bool,
+    /// A listed row named `orchestrator`, with the id [`ORCHESTRATOR`].
+    orchestrator: bool,
+    /// The name a session the fake starts with `--bg` gets; it has the id
+    /// [`STARTED`] and is listed from then on.
+    starts: Option<&'static str>,
 }
 
 impl Default for Options {
@@ -65,6 +72,8 @@ impl Default for Options {
             mouse: true,
             on_attach: Vec::new(),
             live_only: true,
+            orchestrator: false,
+            starts: None,
         }
     }
 }
@@ -106,8 +115,18 @@ impl Tower {
         if !options.live_only {
             rows.push(row(STOPPED, "gamma-stopped", &project, false));
         }
+        if options.orchestrator {
+            rows.push(row(ORCHESTRATOR, "orchestrator", &project, true));
+        }
         let listing = home.path().join("agents.json");
         std::fs::write(&listing, format!("[{}]", rows.join(","))).unwrap();
+        // What the fake lists once it has started a session.
+        let after = home.path().join("agents-after.json");
+        if let Some(name) = options.starts {
+            std::fs::create_dir_all(project.join(".git")).unwrap();
+            rows.push(row(STARTED, name, &project, true));
+            std::fs::write(&after, format!("[{}]", rows.join(","))).unwrap();
+        }
         let on_attach = home.path().join("on_attach");
         std::fs::write(&on_attach, &options.on_attach).unwrap();
         let body = format!(
@@ -123,9 +142,16 @@ impl Tower {
                fi\n\
                exec cat >> \"$FAKE_DIR/keys.$2\"\n\
                ;;\n\
+             --bg)\n\
+               echo started >> \"$FAKE_DIR/starts\"\n\
+               cp '{after}' '{listing}'\n\
+               printf 'backgrounded · {STARTED} · {started}\\n'\n\
+               ;;\n\
              *) ;;\n\
              esac",
             listing = listing.display(),
+            after = after.display(),
+            started = options.starts.unwrap_or("none"),
             on_attach = on_attach.display(),
         );
         let fake = {
@@ -454,6 +480,101 @@ fn the_start_attaches_nothing_until_a_row_is_chosen() {
     tower.wait_screen(&format!("ATTACHED {ALPHA}"));
     thread::sleep(PAUSE);
     assert_eq!(tower.attaches().len(), 1);
+    assert!(alive(pid));
+}
+
+/// The foreground attach would leave the alternate screen; the pane never does.
+const LEFT_THE_SCREEN: &[u8] = b"\x1b[?1049l";
+
+#[test]
+fn o_opens_the_orchestrator_in_the_pane_with_the_keys() {
+    let mut tower = Tower::start(Options {
+        orchestrator: true,
+        ..Options::default()
+    });
+    // Its row: the footer's hint has the word too.
+    tower.wait_screen("▪ orchestrator");
+    tower.wait_screen("Home");
+    tower.send(b"o");
+    let (id, pid) = tower.wait_attaches(1);
+    assert_eq!(id, ORCHESTRATOR);
+    tower.wait_screen(&format!("ATTACHED {ORCHESTRATOR}"));
+    tower.wait_screen("keyboard here");
+    tower.wait_screen(" TERMINAL ");
+    let text = tower.screen_text();
+    assert!(text.contains('┏'), "its card is selected: {text}");
+    assert!(text.contains("alpha-task"), "the list stays: {text}");
+    assert!(
+        !tower.wrote(LEFT_THE_SCREEN),
+        "the terminal is not handed over"
+    );
+    tower.send(b"typed");
+    tower.wait_keys(ORCHESTRATOR, b"typed");
+    // Ctrl+Z returns to the list and the client stays.
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
+    assert!(alive(pid));
+    // `o` again only gives it the keys.
+    tower.send(b"o");
+    tower.wait_screen(" TERMINAL ");
+    thread::sleep(PAUSE);
+    assert_eq!(tower.attaches().len(), 1);
+    assert!(alive(pid));
+    // Claude Code's Ctrl+C reaches it here; tower does not quit.
+    tower.send(b"\x03");
+    tower.wait_keys(ORCHESTRATOR, b"typed\x03");
+}
+
+#[test]
+fn o_starts_a_missing_orchestrator_and_opens_it_when_it_appears() {
+    let mut tower = Tower::start(Options {
+        starts: Some("orchestrator"),
+        ..Options::default()
+    });
+    tower.wait_screen("alpha-task");
+    tower.send(b"o");
+    let (id, _pid) = tower.wait_attaches(1);
+    assert_eq!(id, STARTED);
+    tower.wait_screen(&format!("ATTACHED {STARTED}"));
+    tower.wait_screen(" TERMINAL ");
+    assert!(tower.screen_text().contains("▪ orchestrator"));
+    assert!(
+        !tower.wrote(LEFT_THE_SCREEN),
+        "the terminal is not handed over"
+    );
+    let starts = std::fs::read_to_string(tower.fake.dir.path().join("starts")).unwrap();
+    assert_eq!(starts.lines().count(), 1, "started once");
+}
+
+#[test]
+fn start_and_attach_opens_the_new_session_in_the_pane_with_the_keys() {
+    let mut tower = Tower::start(Options {
+        starts: Some("started-task"),
+        ..Options::default()
+    });
+    tower.wait_screen("alpha-task");
+    tower.send(b"n");
+    tower.wait_screen("New session");
+    tower.wait_screen("demo");
+    tower.send(b"\t");
+    tower.send(b"do the thing");
+    tower.wait_screen("do the thing");
+    tower.send(b"\x1b\r");
+    let (id, pid) = tower.wait_attaches(1);
+    assert_eq!(id, STARTED);
+    tower.wait_screen(&format!("ATTACHED {STARTED}"));
+    tower.wait_screen(" TERMINAL ");
+    let text = tower.screen_text();
+    assert!(text.contains("started-task"), "{text}");
+    assert!(text.contains('┏'), "its card is selected: {text}");
+    assert!(
+        !tower.wrote(LEFT_THE_SCREEN),
+        "the terminal is not handed over"
+    );
+    tower.send(b"hello");
+    tower.wait_keys(STARTED, b"hello");
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
     assert!(alive(pid));
 }
 

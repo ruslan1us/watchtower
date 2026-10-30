@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size` and the `workspace` style added by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
@@ -95,7 +95,7 @@ in tower's own shell never reaches an account's command (a wrapper such as
 ([0020](0020-visual-styles.md)).
 *Amended by [0045](0045-workspace-style.md):* `[ui] style` also takes `workspace`, with `[ui] mouse` (default `true`)
 and `[ui] list_width` (default 0, automatic; 20 to 60 columns), and `[ui] card_size` (`large`, `medium`, the default, or
-`small`), used by that style only.
+`small`) and `[ui] card_gap` (0 or 1, default 1), used by that style only.
 
 `[ui] theme` picks the dashboard style's colours: `neutral` (default),
 `warm`, `terminal` (named ANSI colours, follows the terminal's theme) or

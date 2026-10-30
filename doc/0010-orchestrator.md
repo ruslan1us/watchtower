@@ -1,6 +1,6 @@
 # 0010. Orchestrator session
 
-- Status: Accepted · 2026-10-18 · `--settings` and the status `subagents` field added by [0029](0029-tracking-subagents.md) · role, rules and the instruction file (an unedited older version is updated) amended by [0044](0044-orchestrator-starts-and-wakes-sessions.md)
+- Status: Accepted · 2026-10-18 · `--settings` and the status `subagents` field added by [0029](0029-tracking-subagents.md) · role, rules and the instruction file (an unedited older version is updated) amended by [0044](0044-orchestrator-starts-and-wakes-sessions.md) · in the workspace style `o` opens it in the pane, by [0045](0045-workspace-style.md)
 - Related: [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
