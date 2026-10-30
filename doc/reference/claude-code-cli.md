@@ -351,6 +351,10 @@ running `/clear`:
 - The `sessionId` changes to a new one while the session is live. After `claude stop` the row
   shows the original `sessionId` again; `--resume <that id> --bg` wakes the same short `id`, and
   the live row then shows the `sessionId` from after `/clear`.
+- A `CLAUDE.md` in the session's folder still applies after `/clear`, without the start prompt
+  (verified on 2.1.314 with a session in the orchestrator folder, started with the orchestrator's
+  start prompt: after `/clear` it answered an overview question in the format its `CLAUDE.md`
+  asks for and, asked to start a session, stated the details and asked for confirmation first).
 - Not verified: whether pending `notify_when_idle` notices survive `/clear`.
 
 ## Supervisor lifecycle

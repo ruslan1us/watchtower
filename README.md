@@ -574,6 +574,8 @@ tower needs and reads the session list fresh each time, so you lose nothing abou
 sessions by resetting it:
 
 - `/clear` inside it starts a new conversation in the same row (same id, name and account).
+  Its rules still apply: they live in `CLAUDE.md` in its folder, which Claude Code loads by
+  itself, so the start prompt isn't needed again.
 - `/compact` shrinks the conversation but keeps a summary.
 - `d` on its row removes it; the next `o` starts a new one.
 
