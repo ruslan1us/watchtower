@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width` and the `workspace` style added by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
@@ -67,7 +67,7 @@ handoff_prompt = "continue"
 allow_cross_group_handoff = false
 
 [ui]
-style = "dashboard"                  # dashboard | minimal (see 0020)
+style = "dashboard"                  # dashboard | minimal | workspace (see 0020, 0045)
 theme = "neutral"                    # neutral | warm | terminal | tokyo-night (see 0021)
 
 [[accounts]]
@@ -93,6 +93,9 @@ in tower's own shell never reaches an account's command (a wrapper such as
 `[ui] style` picks the look of the session list: `dashboard` (default) or
 `minimal`; any other value is a config error naming both
 ([0020](0020-visual-styles.md)).
+*Amended by [0045](0045-workspace-style.md):* `[ui] style` also takes `workspace`, with `[ui] mouse` (default `true`)
+and `[ui] list_width` (default 0, automatic; 20 to 60 columns), used by that style only.
+
 `[ui] theme` picks the dashboard style's colours: `neutral` (default),
 `warm`, `terminal` (named ANSI colours, follows the terminal's theme) or
 `tokyo-night` (the original palette); any other value is a config error

@@ -219,8 +219,8 @@ impl SettingKey {
     pub fn help(self) -> &'static str {
         match self {
             SettingKey::UiStyle => {
-                "The look of the session list: rounded panels (dashboard) or the plain list \
-                 (minimal)."
+                "The look of the session list: rounded panels (dashboard), the plain list \
+                 (minimal), or the list beside Claude's real terminal (workspace, experimental)."
             }
             SettingKey::UiTheme => {
                 "The dashboard's colours; the minimal style keeps its own, and NO_COLOR turns \
@@ -639,7 +639,11 @@ impl EditSession {
         };
         match key {
             SettingKey::UiStyle => choice(
-                &[UiStyle::Dashboard.as_str(), UiStyle::Minimal.as_str()],
+                &[
+                    UiStyle::Dashboard.as_str(),
+                    UiStyle::Minimal.as_str(),
+                    UiStyle::Workspace.as_str(),
+                ],
                 false,
             ),
             SettingKey::UiTheme => {

@@ -570,6 +570,32 @@ fn select(app: &mut App, name: &str) {
     common::select_name(app, name);
 }
 
+/// A static terminal in the workspace's pane: what a client draws, without
+/// the client (doc/0045).
+fn with_pane(app: &mut App) {
+    let style = app.style;
+    app.style = UiStyle::Workspace;
+    draw(app, 160, 45);
+    let now = Instant::now();
+    app.pane_tick(now);
+    let effects = app.pane_tick(now + watchtower::app::ATTACH_DEBOUNCE);
+    let open = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::PaneOpen(open) => Some(open.clone()),
+            _ => None,
+        })
+        .expect("a live row attaches");
+    let screen = watchtower::embed::PaneScreen::new(open.rows, open.cols);
+    screen.feed(
+        "\x1b[1;1H Claude Code\r\n\x1b[31m> \x1b[0mfix the failing test\r\n\
+         ● Bash(cargo test)\r\n  ⎿  12 passed\x1b[?25h"
+            .as_bytes(),
+    );
+    app.pane_opened(open.generation, screen);
+    app.style = style;
+}
+
 /// The new-session dialog over the long projects.
 fn dialog(warnings: &[&str]) -> Built {
     let dir = tempfile::tempdir().unwrap();
@@ -952,6 +978,35 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
                 stderr: POLL_ERROR.into(),
             }),
         );
+        just(app)
+    });
+
+    // The workspace's pane with a terminal in it (doc/0045), and a window
+    // over it.
+    s!("list-workspace-pane", || {
+        let mut app = base();
+        select(&mut app, LONG_NAME);
+        with_pane(&mut app);
+        just(app)
+    });
+    s!("list-workspace-terminal-keys", || {
+        let mut app = base();
+        select(&mut app, CYR_NAME);
+        with_pane(&mut app);
+        app.style = UiStyle::Workspace;
+        press(&mut app, key(KeyCode::Enter));
+        just(app)
+    });
+    s!("help-workspace", || {
+        let mut app = base();
+        with_pane(&mut app);
+        press(&mut app, ch('?'));
+        just(app)
+    });
+    s!("dialog-workspace", || {
+        let mut app = base();
+        with_pane(&mut app);
+        app.open_dialog(ProjectList::default());
         just(app)
     });
 
@@ -1474,7 +1529,7 @@ const SIZES: [(u16, u16); 9] = [
 ];
 
 /// The looks: name, style, theme, colour.
-const LOOKS: [(&str, UiStyle, UiTheme, bool); 4] = [
+const LOOKS: [(&str, UiStyle, UiTheme, bool); 5] = [
     ("dash-neutral", UiStyle::Dashboard, UiTheme::Neutral, true),
     (
         "dash-light",
@@ -1484,6 +1539,9 @@ const LOOKS: [(&str, UiStyle, UiTheme, bool); 4] = [
     ),
     ("dash-nocolor", UiStyle::Dashboard, UiTheme::Neutral, false),
     ("minimal", UiStyle::Minimal, UiTheme::Neutral, true),
+    // The list beside the pane (doc/0045); below 100x24 it draws the
+    // dashboard, as these frames check too.
+    ("workspace", UiStyle::Workspace, UiTheme::Neutral, true),
 ];
 
 /// One drawn frame: a character per cell.
@@ -2323,6 +2381,20 @@ fn check_frame_all(f: &Frame) -> Vec<(Finding, Option<(usize, usize)>)> {
         if !f.scenario.starts_with(prefix) {
             continue;
         }
+        // In the workspace the help lists the pane's keys in the dialog's
+        // place (doc/0045).
+        let dialog_key = must.starts_with("Esc     ");
+        if dialog_key && f.look == "workspace" && f.w >= 100 {
+            continue;
+        }
+        // While the terminal has the keys, `?` is Claude Code's.
+        if f.scenario == "list-workspace-terminal-keys"
+            && *must == "? help"
+            && f.look == "workspace"
+            && f.w >= 100
+        {
+            continue;
+        }
         let m: Vec<char> = must.chars().collect();
         if !f.rows.iter().any(|r| contains(r, &m)) {
             let head: Vec<char> = m.iter().take(10).copied().collect();
@@ -2623,6 +2695,26 @@ fn frame(scenario: &str, look: &str, w: u16, h: u16) -> &'static Frame {
 
 fn rows_of(f: &Frame) -> Vec<String> {
     (0..f.rows.len()).map(|y| f.row_text(y)).collect()
+}
+
+#[test]
+fn the_workspace_draws_its_pane_and_gives_way_below_its_size() {
+    let f = frame("list-workspace-pane", "workspace", 160, 45);
+    let text = f.text();
+    assert!(text.contains("fix the failing test"), "{text}");
+    assert!(text.contains(" LIST "), "{text}");
+    let f = frame("list-workspace-terminal-keys", "workspace", 160, 45);
+    assert!(f.text().contains(" TERMINAL "), "{}", f.text());
+    let f = frame("dialog-workspace", "workspace", 160, 45);
+    assert!(f.text().contains("New session"), "{}", f.text());
+    let f = frame("help-workspace", "workspace", 100, 30);
+    assert!(f.text().contains("Terminal pane"), "{}", f.text());
+    let f = frame("list-workspace-pane", "workspace", 90, 28);
+    assert!(
+        f.text().contains(" Sessions "),
+        "the dashboard: {}",
+        f.text()
+    );
 }
 
 #[test]

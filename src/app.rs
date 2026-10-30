@@ -71,6 +71,10 @@ use crate::subagents::{self, Subagent};
 use crate::templates::{self, TemplateList, TemplateLoad, TemplatePicker};
 use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob};
 
+mod workspace;
+
+pub use workspace::{ATTACH_DEBOUNCE, PaneFocus, PaneOpen, RELEASE_AFTER, coalesces};
+
 /// How long a transient status message stays visible.
 pub const MESSAGE_TTL: Duration = Duration::from_secs(6);
 
@@ -235,6 +239,17 @@ pub enum Effect {
     /// attach ([`crate::shell::run`]), then call [`App::shell_finished`]
     /// (doc/0037).
     Shell(ShellRequest),
+    /// Start the workspace pane's PTY client, closing the one there is
+    /// ([`crate::embed::Embed::open`]), then call [`App::pane_opened`] or
+    /// [`App::pane_start_failed`] (doc/0045).
+    PaneOpen(PaneOpen),
+    /// Close the pane's PTY client (doc/0045).
+    PaneClose,
+    /// Resize the pane's PTY and its emulator (doc/0045).
+    PaneResize { rows: u16, cols: u16 },
+    /// Queue bytes for the pane's PTY: a key, a paste, a mouse report, a
+    /// focus report (doc/0045).
+    PaneWrite(Vec<u8>),
 }
 
 /// The slash commands of one account and folder (doc/0042): the last list
@@ -1170,6 +1185,26 @@ pub const LOGS_KEY_TABLE: &[(&str, &str)] = &[
     ("Space", "close the logs panel"),
 ];
 
+/// Keys of the workspace's terminal pane (doc/0045), for the help, which
+/// shows them instead of the dialog keys there.
+pub const PANE_KEY_TABLE: &[(&str, &str)] = &[
+    (
+        "selecting a row",
+        "shows it here; a stopped row stays stopped",
+    ),
+    ("Enter", "gives its terminal the keys; wakes a stopped row"),
+    (
+        "Ctrl+Z, F12",
+        "back to the list; the terminal stays attached",
+    ),
+    ("click", "on the terminal: keys go there; on a row: select"),
+    ("Shift+drag", "your terminal's own text selection, usually"),
+    (
+        "other keys",
+        "go to Claude Code while the terminal has them",
+    ),
+];
+
 /// Keys of the new-session dialog, for the help (doc/0011).
 pub const DIALOG_KEY_TABLE: &[(&str, &str)] = &[
     ("Tab/Shift+Tab", "next / previous field"),
@@ -1424,6 +1459,8 @@ pub struct App {
     usage_folder: ProbeFolder,
     /// Local time for the usage texts; UTC in tests.
     pub clock: Clock,
+    /// The workspace style's pane (doc/0045).
+    pane: workspace::PaneState,
 }
 
 impl App {
@@ -1527,6 +1564,7 @@ impl App {
                 canonical: None,
             },
             clock: Clock::LOCAL,
+            pane: workspace::PaneState::default(),
         }
     }
 
@@ -2605,6 +2643,10 @@ impl App {
     /// [`Effect::Attach`] for `request`, remembering its session so a
     /// successful attach acknowledges the highlight (doc/0007).
     fn attach_effect(&mut self, request: AttachRequest) -> Effect {
+        // `Enter` in the workspace opens it in the pane (doc/0045).
+        if let Some(open) = self.pane_take_attach(&request) {
+            return open;
+        }
         self.attached_id = Some(request.id.clone());
         Effect::Attach(request)
     }
@@ -2984,6 +3026,10 @@ impl App {
         let key = layout::shortcut_key(key);
         if let Some(prompt) = self.quit_prompt.clone() {
             return self.quit_prompt_key(layout::command_key(key), prompt);
+        }
+        // In the terminal every key is Claude's, `Ctrl+C` too (doc/0045).
+        if self.pane_has_keys() {
+            return self.pane_key(key);
         }
         let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c' | 'C'));
@@ -3418,6 +3464,7 @@ impl App {
             Action::First => self.select(0),
             Action::Last => self.select(self.entries.len().saturating_sub(1)),
             Action::Attach if self.selected_header().is_some() => self.toggle_group(),
+            Action::Attach if self.pane_active() => effects = self.pane_enter(),
             Action::Attach => effects = self.request_action(Purpose::Attach),
             Action::NewSession => return vec![Effect::OpenDialog],
             Action::Stop => effects = self.request_action(Purpose::Stop),
@@ -3430,6 +3477,13 @@ impl App {
             Action::Reply => effects = self.request_reply(),
             Action::Shell => return self.request_shell(),
             Action::MarkSeen => effects = self.mark_seen(),
+            Action::ToggleLogs | Action::FocusLogs if self.pane_active() => {
+                self.set_message(
+                    "the terminal here takes the logs panel's place (Enter types in it)",
+                    Severity::Info,
+                );
+                return Vec::new();
+            }
             Action::ToggleLogs => {
                 if self.logs.take().is_none() {
                     self.logs = Some(LogsPanel::new());

@@ -277,6 +277,32 @@ an ended one opened from the `claude --resume` picker, verified with Claude Code
 
 How Watchtower uses it: [0005](../0005-attach-and-detach.md).
 
+## `claude attach` in a pseudo-terminal
+
+Verified on 2.1.314 in WSL (2026-10-30), with `claude attach <id>` as the child of a PTY:
+
+- It runs correctly with no shell around it, always in fullscreen rendering. It enables
+  `?1049h ?2004h ?2031h ?1004h ?1000h ?1002h ?1003h ?1006h` and toggles `?25l` / `?25h`.
+- It queries XTVERSION (`CSI >0q`), DA1 (`CSI c`) and, with `COLORTERM=truecolor`, `?2026$p`.
+  Nothing breaks if they stay unanswered.
+- `TERM_PROGRAM=ghostty` makes it push kitty keyboard flags, so the variables that name a
+  terminal change what it speaks; `TERM=xterm-256color` and `COLORTERM=truecolor` without them
+  give plain xterm input.
+- `vt100` 0.17 rendered a real stream identically to `alacritty_terminal`.
+- It paints in about 0.19 s; waking a stopped session this way takes about 0.93 s. Attaching
+  keeps a stopped session's short id and wakes it under the command used.
+- `SIGHUP`, `SIGTERM`, `SIGKILL` or closing the PTY ends the client in about 0.05 s, and the
+  session keeps running.
+- `claude stop` while attached: the client exits 0 with a `has exited` message. An unknown id:
+  the error text in the terminal, exit 1. `Ctrl+Z` exits 0.
+- The session's PTY takes the last client's size, and Claude Code repaints on a resize.
+- `Shift+Enter` arrives as `CSI 13;2u`. `Ctrl+B` is Claude Code's. Occasional stale cells come
+  from its stream; `Ctrl+L` clears them.
+- A mouse release after a drag copies the selection. On WSL that runs PowerShell `Set-Clipboard`
+  and overwrites the Windows clipboard, whatever terminal the client has.
+
+How Watchtower uses it: [0045](../0045-workspace-style.md).
+
 ## Renaming a session
 
 Verified with Claude Code 2.1.303 on Linux:

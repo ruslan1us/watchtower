@@ -27,10 +27,16 @@
 //! put back after every foreground child and on exit, so a child that died
 //! in raw mode cannot leave the user's shell in it.
 //! Tower never writes BEL or OSC notifications (doc/0007). It enables no
-//! mouse capture or bracketed paste; where the terminal supports the
+//! mouse capture or bracketed paste, except while the opt-in workspace style
+//! is on the screen (doc/0045); where the terminal supports the
 //! keyboard-enhancement protocol it pushes `DISAMBIGUATE_ESCAPE_CODES`, so
 //! `Ctrl+Enter` is reported distinctly in the new-session dialog (doc/0011),
 //! and pops it again before every hand-over and on exit.
+//!
+//! The workspace's PTY client ([`Embed`]) wakes the loop through a self-pipe
+//! that [`wait_input_or_wake`] polls beside the input. While the workspace is
+//! drawn, draws are at most one per [`FRAME`], and wait for an update the
+//! client is still writing.
 
 use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Stdout, Write};
@@ -45,7 +51,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
-    self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
@@ -54,12 +61,13 @@ use ratatui::crossterm::terminal::{
     supports_keyboard_enhancement,
 };
 
-use crate::app::{App, Effect, LogsTarget, Severity};
+use crate::app::{App, Effect, LogsTarget, Severity, coalesces};
 use crate::attach::{self, Foreground, Handover, InheritSpawner, Termination};
-use crate::cli::{CliError, CliRunner};
+use crate::cli::{self, CliError, CliRunner};
 use crate::config::{Config, ConfigSource};
 use crate::config_edit;
 use crate::dispatch::DispatchError;
+use crate::embed::{ClientEvent, Embed, OpenSpec};
 use crate::jobs::{self, JobResult, Jobs};
 use crate::logfollow::{FollowSettings, Follower};
 use crate::merge::ProcEnviron;
@@ -72,6 +80,13 @@ use crate::{dispatch, editor};
 /// How long the loop waits for input before checking for poll results and
 /// redrawing (the status line shows the age of the last refresh).
 const TICK: Duration = Duration::from_millis(200);
+
+/// The shortest time between two draws of the workspace (doc/0045): about
+/// 30 frames a second, however fast the client paints.
+const FRAME: Duration = Duration::from_millis(33);
+
+/// How long [`Embed::shutdown`] waits for the client when tower exits.
+const CLIENT_EXIT_WAIT: Duration = Duration::from_millis(500);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -100,6 +115,52 @@ fn pop_enhancement() -> bool {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
     was
+}
+
+/// Whether tower asked the terminal for mouse reports and for bracketed
+/// paste, which only the workspace style does (doc/0045), so every way out
+/// (normal exit, panic, hand-over) switches them off.
+static MOUSE_ON: AtomicBool = AtomicBool::new(false);
+static PASTE_ON: AtomicBool = AtomicBool::new(false);
+
+/// Asks the terminal for what the screen needs, when that changed. A failed
+/// write has no use for an answer: the terminal is going.
+fn sync_terminal_modes(mouse: bool, paste: bool) {
+    if MOUSE_ON.swap(mouse, Ordering::SeqCst) != mouse {
+        let _ = if mouse {
+            execute!(io::stdout(), EnableMouseCapture)
+        } else {
+            execute!(io::stdout(), DisableMouseCapture)
+        };
+    }
+    if PASTE_ON.swap(paste, Ordering::SeqCst) != paste {
+        let _ = if paste {
+            execute!(io::stdout(), EnableBracketedPaste)
+        } else {
+            execute!(io::stdout(), DisableBracketedPaste)
+        };
+    }
+}
+
+/// Switches both modes off for a hand-over, remembering them for
+/// [`resume_terminal_modes`].
+fn pause_terminal_modes() {
+    if MOUSE_ON.load(Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
+    if PASTE_ON.load(Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
+    }
+}
+
+/// Switches on again what [`pause_terminal_modes`] switched off.
+fn resume_terminal_modes() {
+    if MOUSE_ON.load(Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
+    if PASTE_ON.load(Ordering::SeqCst) {
+        let _ = execute!(io::stdout(), EnableBracketedPaste);
+    }
 }
 
 /// The file descriptor crossterm reads input from: stdin, which [`run`]
@@ -148,6 +209,42 @@ pub fn wait_input(fd: RawFd, timeout: Duration) -> Input {
     } else if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
         Input::HangUp
     } else if pfd.revents & libc::POLLIN != 0 {
+        Input::Ready
+    } else {
+        Input::Idle
+    }
+}
+
+/// [`wait_input`], also ending the wait when `wake` becomes readable: the
+/// workspace's client has something new (doc/0045). That counts as
+/// [`Input::Idle`], and only the input can hang up.
+pub fn wait_input_or_wake(fd: RawFd, wake: RawFd, timeout: Duration) -> Input {
+    let mut fds = [
+        libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake,
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    let ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: two valid, initialised pollfds that outlive the call.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
+    if rc < 0 {
+        return if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            Input::Idle
+        } else {
+            Input::HangUp
+        };
+    }
+    let input = fds[0].revents;
+    if input & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        Input::HangUp
+    } else if input & libc::POLLIN != 0 {
         Input::Ready
     } else {
         Input::Idle
@@ -312,7 +409,16 @@ fn wake_input_readers(fd: RawFd) {
 /// only with a zero timeout, to read that input and any events it has
 /// already parsed ([`read_ready`]).
 fn next_events(timeout: Duration) -> Result<Vec<Event>, HungUp> {
-    match wait_input(INPUT_FD, timeout) {
+    next_events_or_wake(timeout, None)
+}
+
+/// [`next_events`], also returning when `wake` becomes readable.
+fn next_events_or_wake(timeout: Duration, wake: Option<RawFd>) -> Result<Vec<Event>, HungUp> {
+    let waited = match wake {
+        Some(wake) => wait_input_or_wake(INPUT_FD, wake, timeout),
+        None => wait_input(INPUT_FD, timeout),
+    };
+    match waited {
         Input::HangUp => Err(HungUp),
         Input::Idle => Ok(Vec::new()),
         Input::Ready => {
@@ -598,17 +704,21 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
             ..FollowSettings::default()
         },
     );
+    let mut embed = Embed::default();
     let mut rt = Runtime {
         terminal: &mut terminal,
         poller: &poller,
         jobs: &jobs,
         follower: &follower,
+        embed: &mut embed,
         state_file: &state_file,
         termination: &termination,
         enhanced,
         pending: VecDeque::new(),
     };
     let result = event_loop(&mut rt, &mut app);
+    // The pane's client ends with tower; the session keeps running.
+    rt.embed.shutdown(CLIENT_EXIT_WAIT);
     if let Some(sig) = termination.pending()
         && let Some(progress) = app.handoff_progress()
     {
@@ -651,6 +761,8 @@ struct Runtime<'a> {
     jobs: &'a Jobs,
     /// Fetches `claude logs` into each session's followed stream (doc/0030).
     follower: &'a Follower,
+    /// The workspace style's PTY client (doc/0045).
+    embed: &'a mut Embed,
     state_file: &'a Path,
     termination: &'a Termination,
     /// Whether the terminal supports keyboard enhancement (re-pushed after
@@ -677,25 +789,44 @@ impl Runtime<'_> {
 /// terminal) a SIGHUP is recorded and the loop ends, so tower exits as after
 /// SIGHUP, writing nothing more (doc/0005).
 fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
+    let mut last_draw: Option<Instant> = None;
     loop {
         if rt.termination.pending().is_some() {
             return Ok(());
         }
-        if let Err(err) = rt
-            .terminal
-            .draw(|frame| crate::ui::draw(frame, app, Instant::now()))
-        {
-            if terminal_gone(rt.termination) {
-                rt.termination.request(signal_hook::consts::SIGHUP);
-                return Ok(());
+        // The other styles draw on every turn; the workspace, which any
+        // output of the child wakes, at most once per FRAME, and not in the
+        // middle of an update the child is still writing (doc/0045).
+        let since_draw = last_draw.map_or(FRAME, |at| at.elapsed());
+        let syncing = rt.embed.syncing(Instant::now());
+        let held = app.pane_active() && (since_draw < FRAME || syncing);
+        if !held {
+            if let Err(err) = rt
+                .terminal
+                .draw(|frame| crate::ui::draw(frame, app, Instant::now()))
+            {
+                if terminal_gone(rt.termination) {
+                    rt.termination.request(signal_hook::consts::SIGHUP);
+                    return Ok(());
+                }
+                return Err(err);
             }
-            return Err(err);
+            last_draw = Some(Instant::now());
+            sync_terminal_modes(app.wants_mouse(), app.pane_active());
         }
         let mut effects = Vec::new();
         // One event per turn, as before: effects (e.g. an attach, whose
         // release drops the queue) run before the next key is handled.
         if rt.pending.is_empty() {
-            let Some(events) = take_input(rt.termination, next_events(TICK)) else {
+            let timeout = match (held, syncing) {
+                (false, _) => app.pane_wait(Instant::now()).map_or(TICK, |w| w.min(TICK)),
+                (true, true) => Duration::from_millis(10),
+                (true, false) => FRAME
+                    .saturating_sub(since_draw)
+                    .max(Duration::from_millis(1)),
+            };
+            let waited = next_events_or_wake(timeout, rt.embed.wake_fd());
+            let Some(events) = take_input(rt.termination, waited) else {
                 return Ok(());
             };
             rt.pending.extend(events);
@@ -704,8 +835,32 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
             Some(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                 effects.extend(app.handle_key(key));
             }
+            // Only the workspace asks for these two (doc/0045).
+            Some(Event::Paste(text)) => effects.extend(app.handle_paste(&text)),
+            Some(Event::Mouse(mouse)) => {
+                let later = matches!(
+                    rt.pending.front(),
+                    Some(Event::Mouse(next)) if coalesces(&mouse, next)
+                );
+                if !later {
+                    effects.extend(app.handle_mouse(mouse));
+                }
+            }
             // Resize: the next draw picks up the new size.
             _ => {}
+        }
+        rt.embed.drain_wake();
+        // Before its end, which forgets the client.
+        write_clipboard(rt);
+        while let Some(event) = rt.embed.take_event() {
+            match event {
+                ClientEvent::Failed { generation, error } => {
+                    app.pane_start_failed(generation, &error);
+                }
+                ClientEvent::Exited { generation, code } => {
+                    effects.extend(app.pane_exited(generation, code));
+                }
+            }
         }
         let mut polled = false;
         while let Some(update) = rt.poller.try_recv() {
@@ -747,15 +902,53 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
         if !run_effects(rt, app, effects)? {
             return Ok(());
         }
+        // After the turn's actions, which may have closed the client.
+        let pane = app.pane_tick(Instant::now());
+        if !run_effects(rt, app, pane)? {
+            return Ok(());
+        }
     }
+}
+
+/// Writes the child's clipboard writes to the real terminal: the one thing
+/// that passes the pane raw, as `OSC 52` written by tower itself (doc/0045).
+fn write_clipboard(rt: &Runtime<'_>) {
+    let writes = rt.embed.take_clipboard();
+    if writes.is_empty() || terminal_gone(rt.termination) {
+        return;
+    }
+    let mut out = io::stdout();
+    for seq in writes {
+        let _ = out.write_all(&seq);
+    }
+    let _ = out.flush();
 }
 
 /// Carries out effects in order. Returns `false` when the app should quit.
 fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io::Result<bool> {
     let mut queue: std::collections::VecDeque<Effect> = effects.into();
     while let Some(effect) = queue.pop_front() {
+        // An action on the pane's session closes its client first (doc/0045).
+        if app.pane_before(&effect) {
+            rt.embed.close();
+        }
         match effect {
             Effect::Quit => return Ok(false),
+            Effect::PaneOpen(open) => {
+                let spec = OpenSpec {
+                    generation: open.generation,
+                    line: cli::attach_command(&open.account, &open.id).with_cwd(&open.cwd),
+                    rows: open.rows,
+                    cols: open.cols,
+                };
+                match rt.embed.open(spec) {
+                    Ok(screen) => app.pane_opened(open.generation, screen),
+                    Err(err) => app.pane_start_failed(open.generation, &err.to_string()),
+                }
+            }
+            Effect::PaneClose => rt.embed.close(),
+            Effect::PaneResize { rows, cols } => rt.embed.resize(rows, cols),
+            Effect::PaneWrite(bytes) => rt.embed.write(&bytes),
             Effect::PollNow => {
                 rt.poller.poll_now();
             }
@@ -985,6 +1178,7 @@ fn enter() -> io::Result<(Term, bool)> {
 /// crossterm saved last (doc/0005).
 pub fn restore_terminal() {
     pop_enhancement();
+    sync_terminal_modes(false, false);
     let _ = disable_raw_mode();
     restore_original_termios();
     let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
@@ -1057,6 +1251,7 @@ impl Handover for TermHandover<'_> {
         // enhancement (no mouse capture or bracketed paste is enabled).
         drain_events(self.pending);
         pop_enhancement();
+        pause_terminal_modes();
         execute!(io::stdout(), Show, LeaveAlternateScreen)?;
         disable_raw_mode()?;
         io::stdout().flush()?;
@@ -1098,6 +1293,7 @@ impl Handover for TermHandover<'_> {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen, Hide)?;
         push_enhancement(self.enhanced);
+        resume_terminal_modes();
         self.terminal.clear()?;
         Ok(())
     }

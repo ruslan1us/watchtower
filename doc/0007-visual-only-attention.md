@@ -1,6 +1,6 @@
 # 0007. Attention is visual only
 
-- Status: Accepted · 2026-10-18 · a rename's wake is never highlighted, amended by [0027](0027-rename-sessions.md)
+- Status: Accepted · 2026-10-18 · a rename's wake is never highlighted, amended by [0027](0027-rename-sessions.md) · clipboard writes of the workspace's client pass, `●` clears on focus there, by [0045](0045-workspace-style.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
@@ -84,6 +84,11 @@ it is not highlighted while the rename runs.
 never emits OSC 9, OSC 777 or OSC 99 desktop-notification sequences, and does
 not change the terminal or tab title to signal attention. No option to enable
 these exists in v1.
+
+*Amended by [0045](0045-workspace-style.md):* in the opt-in workspace style the highlight clears when the row's
+terminal gets the keys, and stays clear while it has them. Tower also writes the OSC 52
+clipboard writes of Claude Code in the pane to the terminal; that is no signal to the user,
+and everything else from the child (BEL, OSC 9, 99, 777, titles) stops at the emulator.
 
 **Nothing from the data reaches the terminal raw.** Session names, folders
 and commands come from the CLI's JSON, the config or the environment, and

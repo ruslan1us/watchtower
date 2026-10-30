@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md)
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -191,6 +191,12 @@ setting.
   layouts (Greek, Hebrew, Dvorak, …) are not mapped, and tower does not use
   the kitty protocol's base-layout key reporting.
 
+**Workspace style** (*added by [0045](0045-workspace-style.md)*): `Enter` on a live row gives its terminal the keys,
+on a stopped row wakes it there. In the terminal every key goes to Claude Code, `Ctrl+C`
+included, except `Ctrl+Z` and `F12`, which give the list the keys and leave the client
+attached. Windows take the keys as everywhere. `Space` and `→` only say that the pane takes
+the logs panel's place. Below 100 × 24, the dashboard's keys apply.
+
 **Rules**
 
 - Tower never binds `←` in the session list; it is Claude Code's key and the
@@ -199,7 +205,8 @@ setting.
   which is safe because those keys only reach tower when it is in the foreground.
   *Amended by [0028](0028-scrolling-the-logs-panel.md):* with the logs panel
   focused, `←` returns to the list, the same "back" meaning.
-- `Ctrl+Z` is reserved for detaching from Claude Code. Tower never suspends
+- `Ctrl+Z` is reserved for detaching from Claude Code (*in the workspace's terminal
+  it is the way back to the list, [0045](0045-workspace-style.md)*). Tower never suspends
   itself; in raw mode `Ctrl+Z` arrives as a key and tower treats it as a no-op,
   optionally with a hint that it is the detach key inside sessions.
 - `l` is not used for logs because it means "right" to vim users.

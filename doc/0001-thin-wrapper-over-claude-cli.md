@@ -1,6 +1,6 @@
 # 0001. Thin wrapper over the Claude Code CLI
 
-- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md) · the plan usage probe added by [0043](0043-plan-usage-display.md)
+- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md) · the plan usage probe added by [0043](0043-plan-usage-display.md) · a PTY client for the opt-in workspace style allowed by [0045](0045-workspace-style.md)
 - Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -43,7 +43,8 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   the error in the status line. A poll is skipped while the previous one for
   the same account is still running, so calls never pile up. `attach` is the
   only call that runs in the foreground, because it takes over the terminal
-  ([0005](0005-attach-and-detach.md)). File work that a slow disk or a hung
+  ([0005](0005-attach-and-detach.md); the workspace's client runs on a worker thread,
+  [0045](0045-workspace-style.md)). File work that a slow disk or a hung
   network mount could stall runs on worker threads too: sidecar saves (with
   their fsyncs) and reloads ([0002](0002-tech-stack-and-files.md)) and the
   project scan of the new-session dialog
@@ -115,8 +116,12 @@ background call like the others (worker thread, own process group,
 captured output, a timeout), in tower's own `usage/` folder. It reads only
 that command's output.
 
+*Amended by [0045](0045-workspace-style.md), for the opt-in workspace style only:* tower runs
+`<account command> attach <id>` in a pseudo-terminal it owns and draws its screen in
+a pane. It still supervises no session, and it never parses that screen for status.
+
 Tower has no PTY handling, no process supervision, no tmux, no Agent SDK and no
-direct API calls. It does not read, write or refresh credentials.
+direct API calls, except that client. It does not read, write or refresh credentials.
 
 **Hard rules (non-goals that do not move).** These keep tower an ordinary local
 front end for one person's own accounts

@@ -670,6 +670,230 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, tall: bool, now_ms: i
     }
 }
 
+/// The workspace's list bar (doc/0045): the same lines, order, selection and
+/// keys as the list, one row per entry, with the columns a bar has room for.
+/// Subagents show as the name's badge. Tells the app which row shows which
+/// entry, for clicks.
+pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Theme) {
+    let shown = app
+        .entries()
+        .iter()
+        .filter(|e| matches!(e, Entry::Row(_)))
+        .count();
+    let total = app.sessions().len();
+    let count = if shown < total {
+        format!(" {shown} of {total} ")
+    } else {
+        format!(" {total} ")
+    };
+    let block = panel(th, th.p.line)
+        .title(Line::styled(" ◆ tower ", th.bold(th.p.logo)))
+        .title_top(Line::styled(count, th.muted()).right_aligned());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let h = usize::from(inner.height);
+    app.page_size = h;
+    if app.entries().is_empty() {
+        app.set_pane_bar(area, Vec::new());
+        let text = if app.has_polled() {
+            app.empty_list_text()
+        } else {
+            "Loading sessions…".to_owned()
+        };
+        put(
+            frame,
+            row(inner, 0),
+            Line::styled(
+                fit(&format!(" {text}"), usize::from(inner.width)),
+                th.muted(),
+            ),
+        );
+        return;
+    }
+    let iw = usize::from(inner.width);
+    let selected = app.selected_entry();
+    let heights = vec![1; app.entries().len()];
+    let offset = scroll_lines(app.list_state.offset(), selected, h, &heights);
+    *app.list_state.offset_mut() = offset;
+    app.list_state.select(selected);
+    let last = (offset + h).min(app.entries().len());
+    let rows: Vec<(u16, usize)> = (offset..last)
+        .enumerate()
+        .map(|(y, k)| (inner.y + y as u16, k))
+        .collect();
+    app.set_pane_bar(area, rows);
+
+    let app = &*app;
+    let cols = BarColumns::new(app, iw);
+    let spin = spinner(now_ms);
+    for (y, (k, entry)) in app
+        .entries()
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(h)
+        .enumerate()
+    {
+        let r = row(inner, y as u16);
+        let is_sel = selected == Some(k);
+        match entry {
+            Entry::Header {
+                group,
+                count,
+                highlighted,
+                collapsed,
+            } => {
+                let connect = y > 0;
+                let lead = match (is_sel, th.color) {
+                    (true, true) => ("▌", th.fg(th.p.mark)),
+                    (true, false) => ("▶", Style::new()),
+                    (false, _) if connect => ("─", th.line()),
+                    (false, _) => (" ", th.line()),
+                };
+                put(
+                    frame,
+                    r,
+                    separator(group, *count, *highlighted, *collapsed, lead, iw, th),
+                );
+                if connect {
+                    let buf = frame.buffer_mut();
+                    buf[(area.x, r.y)].set_symbol("├");
+                    buf[(area.x + area.width - 1, r.y)].set_symbol("┤");
+                }
+            }
+            Entry::Row(i) => put(frame, r, bar_row(app, *i, &cols, is_sel, spin, now_ms, th)),
+        }
+        if is_sel {
+            frame.buffer_mut().set_style(r, th.selected());
+            if th.color && th.p.sel_fg.is_some() {
+                let buf = frame.buffer_mut();
+                buf[(r.x, r.y)].set_fg(th.p.mark);
+                if let Entry::Row(i) = entry
+                    && app.is_highlighted(&app.sessions()[*i])
+                    && r.width > 1
+                {
+                    buf[(r.x + 1, r.y)].set_fg(th.p.red);
+                }
+            }
+        }
+    }
+}
+
+/// A bar row's columns: the lead (selection, marker, glyph) and the age are
+/// fixed, the name takes what the others leave. The state shows only when
+/// the group header does not say it, and the account only with several
+/// accounts and room left for the name.
+struct BarColumns {
+    name: usize,
+    state: usize,
+    account: usize,
+}
+
+/// A bar row's cells before the name: selection, marker and glyph.
+const BAR_LEAD: usize = 5;
+
+/// A name keeps at least this many cells before the account column goes.
+const BAR_NAME_MIN: usize = 14;
+
+impl BarColumns {
+    fn new(app: &App, iw: usize) -> BarColumns {
+        let state = if app.grouping() == Grouping::Project {
+            10
+        } else {
+            0
+        };
+        let account = if app.config().accounts.len() > 1 {
+            app.config()
+                .accounts
+                .iter()
+                .map(|a| a.name.width())
+                .max()
+                .unwrap_or(0)
+                .min(6)
+        } else {
+            0
+        };
+        let gap = |w: usize| if w > 0 { w + 1 } else { 0 };
+        let room = iw.saturating_sub(BAR_LEAD + 1 + 4 + gap(state));
+        let (name, account) = if room >= BAR_NAME_MIN + gap(account) {
+            (room - gap(account), account)
+        } else {
+            (room, 0)
+        };
+        BarColumns {
+            name,
+            state,
+            account,
+        }
+    }
+}
+
+/// One session in the bar: the row's marks and colours, in fewer columns.
+fn bar_row(
+    app: &App,
+    i: usize,
+    cols: &BarColumns,
+    selected: bool,
+    spin: &str,
+    now_ms: i64,
+    th: Theme,
+) -> Line<'static> {
+    let m = &app.sessions()[i];
+    let t = row_text(app, i, Level::ShortState);
+    let lit = app.is_highlighted(m);
+    let dim = m.session.is_interactive();
+    let gc = th.group_color(groups::classify(&m.session));
+    let busy = !dim && groups::spins(&m.session);
+    let text = if dim { th.faint() } else { th.text() };
+    let mut l = Lb::new();
+    match (selected, th.color) {
+        (true, true) => l.push("▌", th.fg(th.p.mark)),
+        (true, false) => l.push("▶", Style::new()),
+        (false, _) => l.push(" ", text),
+    };
+    l.push(
+        if lit {
+            format!("{MARKER} ")
+        } else {
+            "  ".into()
+        },
+        th.attention(),
+    );
+    if busy {
+        l.push(format!("{spin} "), th.bold(th.group_color(Group::Working)));
+    } else {
+        l.push("▪ ", if dim { th.faint() } else { th.fg(gc) });
+    }
+    let name_st = if lit {
+        text.add_modifier(Modifier::BOLD)
+    } else {
+        text
+    };
+    l.push(
+        subtree::name_cell(&t.name, t.badge.as_deref(), cols.name),
+        name_st,
+    );
+    l.push(" ", text);
+    if cols.state > 0 {
+        let st = if dim { th.faint() } else { th.hue(gc) };
+        l.push(format!("{} ", fit(&t.state, cols.state)), st);
+    }
+    let age = age_column(app, m, now_ms);
+    l.push(rfit(&age, 4), if dim { th.faint() } else { th.muted() });
+    if cols.account > 0 {
+        let st = match app.config().account(&t.account) {
+            _ if dim => th.faint(),
+            Some(a) => th.bold(th.account_color(account_group_index(app, &a.group))),
+            None => th.muted(),
+        };
+        l.push(format!(" {}", fit(&t.account, cols.account)), st);
+    }
+    l.line()
+}
+
 /// The lines under each entry of the list: a row's subagents (doc/0029)
 /// when `fit`, else none.
 fn entry_children(app: &App, fit: bool) -> Vec<Vec<subtree::Child<'_>>> {
@@ -870,6 +1094,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
     let mut l = Lb::new();
     l.push(" ", Style::new());
     let width = usize::from(area.width).saturating_sub(1);
+    status_spans(&mut l, app, now, width, th);
+    put(frame, area, l.line());
+}
+
+/// The status line's pieces in `width` columns, added to `l`.
+pub(super) fn status_spans(l: &mut Lb, app: &App, now: Instant, width: usize, th: Theme) {
     for piece in super::status_pieces(app, now, width) {
         match piece {
             StatusPiece::Counter(text) => l.push(text, th.attention()),
@@ -885,14 +1115,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
             }
         };
     }
-    put(frame, area, l.line());
 }
 
 /// The footer (doc/0011): whole key hints, least used dropped first, then
 /// `? help`, and the detach hint on the right, which is kept longest.
 fn draw_footer(frame: &mut Frame, area: Rect, keys: &'static [&'static str], th: Theme) {
     let w = usize::from(area.width);
-    let key_st = th.bold(th.p.key);
     let label_st = th.muted();
     let mut right = Lb::new();
     let (before, after) = DETACH_HINT
@@ -911,14 +1139,23 @@ fn draw_footer(frame: &mut Frame, area: Rect, keys: &'static [&'static str], th:
     let hints = footer_hints_of(keys, room.saturating_sub(1));
     let mut left = Lb::new();
     left.push(" ", label_st);
+    left.append(hint_spans(&hints, th));
+    put_lr(frame, area, left, right);
+}
+
+/// Key hints with their keys in the key colour.
+pub(super) fn hint_spans(hints: &[&str], th: Theme) -> Lb {
+    let key_st = th.bold(th.p.key);
+    let label_st = th.muted();
+    let mut l = Lb::new();
     for (k, hint) in hints.iter().enumerate() {
         if k > 0 {
-            left.push(HINT_GAP, label_st);
+            l.push(HINT_GAP, label_st);
         }
         let (key, label) = hint.split_once(' ').unwrap_or((hint, ""));
-        left.push(key, key_st).push(format!(" {label}"), label_st);
+        l.push(key, key_st).push(format!(" {label}"), label_st);
     }
-    put_lr(frame, area, left, right);
+    l
 }
 
 /// The footer hints that fit in `w` columns: whole hints in order of

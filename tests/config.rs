@@ -403,7 +403,12 @@ fn example_config_is_valid_and_complete() {
         .map(String::as_str)
         .collect();
     ui_keys.sort_unstable();
-    assert_eq!(ui_keys, ["color_depth", "style", "theme"]);
+    assert_eq!(
+        ui_keys,
+        ["color_depth", "list_width", "mouse", "style", "theme"]
+    );
+    assert_eq!(c.ui_mouse, defaults.ui_mouse);
+    assert_eq!(c.ui_list_width, defaults.ui_list_width);
     assert_eq!(c.ui_style, defaults.ui_style);
     assert_eq!(c.ui_theme, defaults.ui_theme);
     assert_eq!(c.ui_color_depth, defaults.ui_color_depth);
@@ -487,7 +492,10 @@ fn ui_style_defaults_to_dashboard_and_rejects_unknown_values() {
     assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
     let text = err.to_string();
     assert!(text.contains("[ui] style `fancy`"), "{text}");
-    assert!(text.contains("\"dashboard\" or \"minimal\""), "{text}");
+    assert!(
+        text.contains("\"dashboard\", \"minimal\" or \"workspace\""),
+        "{text}"
+    );
     // A value of the wrong type is a parse error, as for other keys.
     assert!(matches!(
         parse("[ui]\nstyle = 1\n"),

@@ -953,7 +953,7 @@ fn convert_row(screen: &vt100::Screen, row: u16, cols: u16) -> Row {
     Row { spans, plain }
 }
 
-fn cell_style(cell: &vt100::Cell) -> Style {
+pub(crate) fn cell_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::new();
     if let Some(c) = color(cell.fgcolor()) {
         style = style.fg(c);

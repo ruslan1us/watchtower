@@ -632,6 +632,22 @@ fn session_lines(
     lines
 }
 
+/// The details of the selected line for the workspace's pane (doc/0045),
+/// `width` columns wide: the side panel's lines, without its keys.
+pub(super) fn pane_lines(app: &App, width: usize, now_ms: i64, th: Theme) -> Vec<Lb> {
+    match subject(app) {
+        Subject::Session(m) => session_lines(app, m, width, MAX_ROWS, None, now_ms, th),
+        Subject::Group {
+            key, count, lit, ..
+        } => group_lines(app, &key, count, lit, width, MAX_VALUE_ROWS, th),
+        Subject::Nothing => {
+            let mut l = Lb::new();
+            l.push(" nothing selected", th.muted());
+            vec![l]
+        }
+    }
+}
+
 /// The panel's title (the name, not yet fitted) and border colour.
 fn frame_of(subject: &Subject, th: Theme) -> (String, ratatui::style::Color) {
     match subject {

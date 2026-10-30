@@ -338,7 +338,7 @@ fn offered_values_and_field_checks() {
     let mut session = EditSession::open(&path, home()).unwrap();
     assert_eq!(
         session.offered(SettingKey::UiStyle),
-        ["dashboard", "minimal"]
+        ["dashboard", "minimal", "workspace"]
     );
     assert_eq!(
         session.offered(SettingKey::UiTheme),

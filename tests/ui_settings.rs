@@ -73,7 +73,7 @@ fn overview_at_160x40_matches_the_mock() {
                 "│    alt     claude-alt   ~/.claude-alt   personal",
                 "a wrong command or config dir can wake sessions",
                 "key       [ui] style",
-                "values    dashboard · minimal",
+                "values    dashboard · minimal · workspace",
                 "default   \"dashboard\"",
                 "in file   \"dashboard\"",
                 "applies   at once",
@@ -609,7 +609,7 @@ fn long_values_in_the_detail_panel_wrap_inside_its_padding() {
     let rows = detail_rows(&s, 160);
     assert!(
         rows.iter()
-            .any(|r| r.trim_end() == " values    dashboard · minimal"),
+            .any(|r| r.trim_end() == " values    dashboard · minimal · workspace"),
         "{rows:?}"
     );
 

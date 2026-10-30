@@ -43,7 +43,8 @@ What it adds on top:
   ([Plan usage](#plan-usage)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
   panel for the selected session; `[ui] style = "minimal"` gives the plain list
-  ([Configuration](#configuration)).
+  ([Configuration](#configuration)), and the experimental `"workspace"` shows Claude's real
+  terminal beside the list ([Workspace style](#workspace-style-experimental)).
 
 ## What it does not do
 
@@ -419,6 +420,30 @@ instead of the reply. `t` is not offered while a turn runs (also `done · bg tas
 while a session waits on a permission prompt or a question dialog: attach to answer those
 (`Enter`). A session woken without a prompt (`working · idle`) is offered. The status line shows `stopping <name>…`, `waking <name> with your text…` and
 `sent to <name>` ([0040](doc/0040-quick-reply.md)).
+
+## Workspace style (experimental)
+
+`[ui] style = "workspace"` (also in Settings, `c`) draws the list in a bar and Claude Code's
+real terminal in a pane beside it, where the details panel was. This is the first step of an
+experiment: it has not been tried on many terminals (Windows Terminal, Warp and SSH are
+untested), and Claude Code's fullscreen view it relies on is a research preview
+([0045](doc/0045-workspace-style.md)).
+
+- Selecting a running session attaches to it in the pane; moving the selection wakes nothing.
+  A stopped session shows `Enter wakes it here`, and only `Enter` does.
+- `Enter` gives the terminal the keys, and `●` clears then. Every key goes to Claude Code,
+  `Ctrl+C` too, except `Ctrl+Z` and `F12`, which return to the list and stay attached. After
+  10 minutes without the keys the terminal is released.
+- `s`, `d`, `a`, `e` and `t` close that session's terminal first and work as usual; `Enter`
+  attaches again. Windows draw over the pane and take the keys meanwhile.
+- The mouse is captured in this style, so Claude Code gets it and a click moves the keys; hold
+  `Shift` for your terminal's own selection, or set `[ui] mouse = false`. Clipboard writes
+  from Claude Code pass to your terminal (Warp may need its OSC 52 setting enabled). Bells and
+  other escape sequences do not.
+- It needs 100x24; a smaller terminal gets the dashboard until it grows. `[ui] list_width` sets
+  the bar's width (20 to 60).
+- `←` on an empty prompt opens Claude Code's agent view inside the pane, where it can show
+  another session than the selected row.
 
 ## Keys
 

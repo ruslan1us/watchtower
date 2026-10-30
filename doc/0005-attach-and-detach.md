@@ -1,6 +1,6 @@
 # 0005. Attaching to and detaching from a session
 
-- Status: Accepted · 2026-10-18 · input still waiting after a read re-arms crossterm's reader, amended 2026-10-28
+- Status: Accepted · 2026-10-18 · input still waiting after a read re-arms crossterm's reader, amended 2026-10-28 · a split view with an own PTY taken up, for the opt-in workspace style only, by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -201,7 +201,7 @@ The same procedure is used by dispatch-and-attach in the new-session dialog
 
 ## Alternatives considered
 
-- **Own PTY and a split view inside tower.** Rejected: process and PTY management are out of scope ([0001](0001-thin-wrapper-over-claude-cli.md)).
+- **Own PTY and a split view inside tower.** Rejected: process and PTY management are out of scope ([0001](0001-thin-wrapper-over-claude-cli.md)). *Taken up by [0045](0045-workspace-style.md) for the opt-in workspace style only;* everywhere else this decision stands, and in that style `o`, start-and-attach and the rename of a running session still use this hand-over.
 - **Running sessions in tmux panes.** Rejected for the same reason; sessions already live in Claude Code's supervisor.
 - **Setting `leftArrowOpensAgents=false` so `←` detaches.** Rejected: global config, changes the user's normal sessions ([0016](0016-do-not-change-claude-code-defaults.md)).
 - **`claude --resume <sessionId>` instead of `attach`.** Rejected: on a running session it starts a copy under a new id.

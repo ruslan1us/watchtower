@@ -83,6 +83,10 @@ allow_cross_group_handoff = false
 #   columns, a strip under the list below that). Needs at least 80x24;
 #   a smaller terminal gets the minimal layout until it grows again.
 # "minimal": the plain single-column list.
+# "workspace": experimental. The list in a bar beside Claude Code's real
+#   terminal in a pane, instead of the details panel (doc/0045). Selecting a
+#   running session attaches to it there, without waking anything. Needs at
+#   least 100x24; a smaller terminal gets the dashboard until it grows again.
 # Colours follow NO_COLOR either way.
 # Default: "dashboard"
 style = "dashboard"
@@ -115,6 +119,18 @@ theme = "neutral"
 #   stay as they are).
 # Default: "auto"
 color_depth = "auto"
+
+# Workspace style only (doc/0045): capture the mouse, so a click moves the
+# keys and Claude Code in the pane gets its mouse events. Your terminal's own
+# text selection then usually needs Shift while dragging. The other styles
+# never capture the mouse.
+# Default: true
+mouse = true
+
+# Workspace style only (doc/0045): the session list's width in columns, 20 to
+# 60. 0: 18% of the terminal's width, kept between 28 and 40.
+# Default: 0
+list_width = 0
 
 # Sessions tower starts (doc/0029).
 [sessions]

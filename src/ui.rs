@@ -11,7 +11,9 @@
 //! Two styles draw the screen under the same windows (doc/0020): the
 //! minimal one here, and the dashboard ([`dashboard`], the default
 //! `[ui] style`), which falls back to the minimal layout on terminals
-//! smaller than [`DASHBOARD_MIN_SIZE`]. [`App::style`] picks one.
+//! smaller than [`DASHBOARD_MIN_SIZE`]. [`App::style`] picks one. The opt-in
+//! workspace ([`workspace`], doc/0045) draws the list beside Claude's real
+//! terminal, and gives way to the dashboard below [`WORKSPACE_MIN_SIZE`].
 //!
 //! Both styles draw the running subagents of a row as a tree under it
 //! ([`subtree`], doc/0029); those lines are drawn, never selected.
@@ -30,11 +32,13 @@ mod subtree;
 mod templates;
 mod theme;
 mod usage;
+mod workspace;
 
 use theme::{Look, Theme};
 
 pub use dashboard::{MIN_SIZE as DASHBOARD_MIN_SIZE, SIDE_MIN_WIDTH as DASHBOARD_SIDE_MIN_WIDTH};
 pub use dialog::{resume_note, wrap};
+pub use workspace::{MIN_SIZE as WORKSPACE_MIN_SIZE, list_width as workspace_list_width};
 
 use std::time::Instant;
 
@@ -50,8 +54,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::activity;
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LOGS_KEY_TABLE, LogsPanel, LogsView, Overlay,
-    Picker, Popup, Purpose, QuitPrompt, Severity, StatusSegment, TargetPicker, UntrustedHandoff,
-    UntrustedOrchestrator, UntrustedRename, UntrustedReply,
+    PANE_KEY_TABLE, Picker, Popup, Purpose, QuitPrompt, Severity, StatusSegment, TargetPicker,
+    UntrustedHandoff, UntrustedOrchestrator, UntrustedRename, UntrustedReply,
 };
 use crate::config::UiStyle;
 use crate::groups;
@@ -120,6 +124,40 @@ pub const FOOTER_LOGS_KEYS: &[&str] = &[
     "q quit",
 ];
 
+/// Footer key hints of the workspace's list with a running row selected
+/// (doc/0045).
+pub const FOOTER_KEYS_PANE: &[&str] = &[
+    "Enter type here",
+    "n new",
+    "m seen",
+    "/ filter",
+    "a hand-off",
+    "s stop",
+    "d remove",
+    "o orchestrator",
+    "Tab fold",
+    "t reply",
+    "e rename",
+    "! shell",
+    "c settings",
+    "q quit",
+];
+
+/// [`FOOTER_KEYS_PANE`] with a row selected that is not running.
+pub const FOOTER_KEYS_PANE_STOPPED: &[&str] = &[
+    "Enter wake here",
+    "n new",
+    "/ filter",
+    "a hand-off",
+    "d remove",
+    "Tab fold",
+    "t reply",
+    "e rename",
+    "! shell",
+    "c settings",
+    "q quit",
+];
+
 /// The last footer hint, kept while anything fits.
 pub const FOOTER_HELP: &str = "? help";
 
@@ -174,8 +212,10 @@ fn draw_screen_and_windows(frame: &mut Frame, app: &mut App, now: Instant, now_m
         draw_windows(frame, app);
         return;
     }
+    // The workspace sets it again when it draws the pane (doc/0045).
+    app.set_pane_rect(None);
     if app.color
-        && app.style == UiStyle::Dashboard
+        && matches!(app.style, UiStyle::Dashboard | UiStyle::Workspace)
         && dashboard::fits(area)
         && app.drawn_theme() != app.theme
     {
@@ -184,10 +224,18 @@ fn draw_screen_and_windows(frame: &mut Frame, app: &mut App, now: Instant, now_m
         app.note_theme_fallback();
     }
     match app.style {
-        UiStyle::Dashboard if dashboard::fits(area) => {
+        UiStyle::Workspace if workspace::fits(app, area) => {
+            workspace::draw_screen(frame, app, now, now_ms);
+        }
+        UiStyle::Dashboard | UiStyle::Workspace if dashboard::fits(area) => {
+            if app.style == UiStyle::Workspace {
+                // Too small, or no terminal could start: the dashboard,
+                // said once (doc/0045).
+                app.note_pane_fallback(workspace::MIN_SIZE);
+            }
             dashboard::draw_screen(frame, app, now, now_ms);
         }
-        UiStyle::Dashboard => {
+        UiStyle::Dashboard | UiStyle::Workspace => {
             // Too small for the panels: the minimal layout, said once
             // (doc/0020).
             app.note_style_fallback(dashboard::MIN_SIZE);
@@ -254,7 +302,7 @@ pub fn footer_hint_list(app: &App) -> &'static [&'static str] {
 /// doc/0021).
 pub(crate) fn look(app: &App, area: Rect) -> Look {
     match app.style {
-        UiStyle::Dashboard if dashboard::fits(area) => {
+        UiStyle::Dashboard | UiStyle::Workspace if dashboard::fits(area) => {
             Look::Themed(Theme::new(app.drawn_theme(), app.color))
         }
         _ => Look::Minimal { color: app.color },
@@ -1108,6 +1156,12 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, look: Look) {
         // (doc/0028).
         lines.push(Line::styled(" Logs panel (after →)", look.heading()));
         for (key, what) in LOGS_KEY_TABLE {
+            lines.push(help_row(key, what, 16, look));
+        }
+    } else if app.pane_active() {
+        // In the workspace its keys take the dialog's place (doc/0045).
+        lines.push(Line::styled(" Terminal pane", look.heading()));
+        for (key, what) in PANE_KEY_TABLE {
             lines.push(help_row(key, what, 16, look));
         }
     } else {

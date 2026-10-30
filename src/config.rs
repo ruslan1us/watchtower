@@ -25,6 +25,9 @@ pub const LOGS_FOLLOW_RANGE: std::ops::RangeInclusive<u64> = 5..=30;
 /// The `logs_follow_secs` values the Settings window steps through; 0 is
 /// off (doc/0031).
 pub const LOGS_FOLLOW_STEPS: [u64; 6] = [0, 5, 10, 15, 20, 30];
+/// `[ui] list_width`: the columns the workspace style's list may be set to
+/// (doc/0045).
+pub const LIST_WIDTH_RANGE: std::ops::RangeInclusive<u16> = 20..=60;
 /// Default account config dir when `config_dir` is unset (doc/0003).
 pub const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude";
 
@@ -37,14 +40,18 @@ pub enum UiStyle {
     Dashboard,
     /// The plain single-column list with a title, status line and footer.
     Minimal,
+    /// The list in a bar beside Claude's real terminal in a pane (doc/0045).
+    /// Opt-in and experimental.
+    Workspace,
 }
 
 impl UiStyle {
-    /// The config value: `dashboard` or `minimal`.
+    /// The config value: `dashboard`, `minimal` or `workspace`.
     pub fn as_str(self) -> &'static str {
         match self {
             UiStyle::Dashboard => "dashboard",
             UiStyle::Minimal => "minimal",
+            UiStyle::Workspace => "workspace",
         }
     }
 
@@ -53,8 +60,10 @@ impl UiStyle {
         match value {
             "dashboard" => Ok(UiStyle::Dashboard),
             "minimal" => Ok(UiStyle::Minimal),
+            "workspace" => Ok(UiStyle::Workspace),
             other => Err(ConfigError::Invalid(format!(
-                "[ui] style `{other}` is not known; use \"dashboard\" or \"minimal\""
+                "[ui] style `{other}` is not known; use \"dashboard\", \"minimal\" or \
+                 \"workspace\""
             ))),
         }
     }
@@ -377,6 +386,12 @@ pub struct Config {
     pub ui_theme: UiTheme,
     /// `[ui] color_depth`: how many colours the terminal shows (doc/0038).
     pub ui_color_depth: ColorDepth,
+    /// `[ui] mouse` (default `true`): the workspace style captures the mouse
+    /// (doc/0045). The other styles never do.
+    pub ui_mouse: bool,
+    /// `[ui] list_width`: the workspace style's list in columns; unset or 0,
+    /// 18 % of the terminal's width, kept between 28 and 40 (doc/0045).
+    pub ui_list_width: Option<u16>,
     /// `[sessions] track_subagents` (default `true`): pass the observe-only
     /// subagent hooks with `--settings` to the sessions tower starts and
     /// read the files they write (doc/0029). When `false`, no `--settings`
@@ -491,6 +506,8 @@ struct RawUi {
     style: Option<String>,
     theme: Option<String>,
     color_depth: Option<String>,
+    mouse: Option<bool>,
+    list_width: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -631,6 +648,17 @@ impl Config {
             Some(depth) => ColorDepth::parse(&depth)?,
             None => ColorDepth::default(),
         };
+        // 0, like leaving it out, is the automatic width.
+        let ui_list_width = ui.list_width.filter(|width| *width != 0);
+        if let Some(width) = ui_list_width
+            && !LIST_WIDTH_RANGE.contains(&width)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "[ui] list_width must be {} to {} columns, not {width}",
+                LIST_WIDTH_RANGE.start(),
+                LIST_WIDTH_RANGE.end()
+            )));
+        }
         let expand = |v: Vec<String>| -> Vec<PathBuf> {
             v.iter()
                 .map(|p| crate::paths::expand_tilde(p, home))
@@ -651,6 +679,8 @@ impl Config {
             ui_style,
             ui_theme,
             ui_color_depth,
+            ui_mouse: ui.mouse.unwrap_or(true),
+            ui_list_width,
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
             usage_show: usage.show.unwrap_or(false),
             usage_refresh_secs,
@@ -751,10 +781,14 @@ mod tests {
             style,
             theme,
             color_depth,
+            mouse,
+            list_width,
         } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());
         assert!(color_depth.is_some());
+        assert!(mouse.is_some());
+        assert!(list_width.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(logs_follow_secs.is_some());

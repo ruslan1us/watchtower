@@ -54,6 +54,8 @@
 //!   sessions in the background on its own thread (doc/0030).
 //! - [`attach`]: hands the terminal to `claude attach` and back (doc/0005);
 //!   also used for the editor and the trust flow.
+//! - [`embed`]: the workspace style's `claude attach` in a pseudo-terminal,
+//!   drawn inside tower (doc/0045).
 //! - [`editor`]: the task in `$VISUAL` / `$EDITOR` (doc/0008).
 //! - [`templates`]: prompt templates from `<config dir>/templates` and the
 //!   reusable picker that inserts one (doc/0036).
@@ -93,6 +95,7 @@ pub mod control;
 pub mod dialog;
 pub mod dispatch;
 pub mod editor;
+pub mod embed;
 pub mod gitinfo;
 pub mod groups;
 pub mod handoff;

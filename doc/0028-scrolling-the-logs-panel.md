@@ -1,6 +1,6 @@
 # 0028. Scrolling the logs panel
 
-- Status: Accepted · 2026-10-19 · paused panel and the scrollback across fetches amended by [0030](0030-continuous-logs-stream.md) · title name shortened before it goes, amended 2026-10-21
+- Status: Accepted · 2026-10-19 · paused panel and the scrollback across fetches amended by [0030](0030-continuous-logs-stream.md) · title name shortened before it goes, amended 2026-10-21 · mouse capture in the opt-in workspace style by [0045](0045-workspace-style.md)
 - Related: [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0025](0025-session-terminal-size-for-logs.md), [reference](reference/claude-code-cli.md#claude-logs-output)
 - Amends: the logs panel of [0009](0009-stop-remove-and-logs.md) and the key table of [0011](0011-keybindings.md)
 
@@ -88,7 +88,8 @@ row with a note) follows from the bottom, and so does returning from an attach.
 panel's first line is clamped to the new last page. Tiny terminals draw what fits.
 
 **No mouse.** Tower does not enable mouse capture: it would take the terminal's own
-text selection away.
+text selection away. *Amended by [0045](0045-workspace-style.md):* except in the opt-in workspace style, where
+Claude Code in the pane needs it; `[ui] mouse = false` turns it off there too.
 
 ## Consequences
 

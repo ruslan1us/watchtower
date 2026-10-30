@@ -1,6 +1,6 @@
 # 0014. Scope of v1 and non-goals
 
-- Status: Accepted · 2026-10-18 · the non-goal "usage and limit display per account" superseded by [0043](0043-plan-usage-display.md)
+- Status: Accepted · 2026-10-18 · the non-goal "usage and limit display per account" superseded by [0043](0043-plan-usage-display.md) · the non-goal "PTY handling" lifted for the opt-in workspace style by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0004](0004-account-hand-off.md), [0007](0007-visual-only-attention.md), [0010](0010-orchestrator.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -44,7 +44,8 @@ conversation with `R` ([0019](0019-resume-past-sessions.md)).
 
 **Non-goals for v1**
 
-- Own supervisor, PTY handling, tmux or process management.
+- Own supervisor, PTY handling, tmux or process management. (*[0045](0045-workspace-style.md), for the opt-in
+  workspace style only:* one PTY client running `claude attach`.)
 - Agent SDK, direct API calls, reading Claude Code's internal files or
   credentials ([0001](0001-thin-wrapper-over-claude-cli.md)).
 - Changing Claude Code's settings, keys or defaults
