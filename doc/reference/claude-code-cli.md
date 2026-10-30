@@ -340,6 +340,19 @@ had finished a turn, `state: done`, `status: idle`):
 
 How Watchtower uses it: [0040](../0040-quick-reply.md).
 
+## `/clear` in a background session
+
+Verified on 2.1.312 in WSL with one account (2026-10-30), attaching to a background session and
+running `/clear`:
+
+- The conversation is gone: asked afterwards about a word it was told to remember, the session
+  had no such instruction.
+- The short `id` and the `name` stay; the row stays `done` / `idle` with its process.
+- The `sessionId` changes to a new one while the session is live. After `claude stop` the row
+  shows the original `sessionId` again; `--resume <that id> --bg` wakes the same short `id`, and
+  the live row then shows the `sessionId` from after `/clear`.
+- Not verified: whether pending `notify_when_idle` notices survive `/clear`.
+
 ## Supervisor lifecycle
 
 Documented ([agent view](https://code.claude.com/docs/en/agent-view)) and verified:

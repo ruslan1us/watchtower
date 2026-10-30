@@ -569,6 +569,14 @@ session's question for you, and never runs `claude --bg` or `--resume` itself. S
 removing, renaming and handing off stay yours, in tower
 ([0044](doc/0044-orchestrator-starts-and-wakes-sessions.md)).
 
+There is one orchestrator, and its conversation grows like any session's. It keeps nothing
+tower needs and reads the session list fresh each time, so you lose nothing about your
+sessions by resetting it:
+
+- `/clear` inside it starts a new conversation in the same row (same id, name and account).
+- `/compact` shrinks the conversation but keeps a summary.
+- `d` on its row removes it; the next `o` starts a new one.
+
 Its instructions are `~/.config/watchtower/orchestrator/CLAUDE.md`, written from the
 template [`assets/orchestrator/CLAUDE.md`](assets/orchestrator/CLAUDE.md) (built into the
 binary) when the file is missing. A file tower wrote and you did not edit is updated to
