@@ -679,6 +679,12 @@ keeps them).
 
 ## Subagents in background sessions
 
+Verified with Claude Code 2.1.316 (2026-10-31): a subagent's foreground shell command still
+running after about 3 minutes moves to the background. The subagent then fires `SubagentStop`,
+and the parent is told `Agent "<description>" is waiting on its own background work`, while the
+command keeps running (the parent's footer says `N shells still running`). So hooks can't tell
+this from a finished subagent, and tower's `+N` drops it even though its command is still going.
+
 Verified with Claude Code 2.1.303:
 
 - A background session has the `Agent` tool and can launch subagents.

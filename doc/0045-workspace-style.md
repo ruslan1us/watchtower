@@ -343,7 +343,8 @@ attention and everything else still come from the CLI's JSON
 
 ## Open items
 
-- The owner's results on Warp, Windows Terminal and over SSH.
+- Windows Terminal is untested. *Owner's result, 2026-10-31:* the style works in Warp, in WSL and
+  over SSH on a server.
 - Done 2026-10-31: cards, the wheel on the list, clicks on group headers, Home.
 - Done in the second trial, 2026-10-31: `o`, start-and-attach and the rename opening in the pane,
   the whole selected card highlighted, `[ui] card_gap`.

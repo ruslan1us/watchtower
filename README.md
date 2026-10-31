@@ -10,7 +10,7 @@ started with `claude --bg`, listed with `claude agents --json --all`, and entere
 inspected, stopped and removed with `claude attach`, `logs`, `stop` and `rm`. Sessions keep
 running when tower exits; tower holds nothing they depend on.
 
-![tower in the dashboard style: sessions grouped by state, a working session with three subagents in a tree under it, and the details panel](assets/screenshot.png)
+![tower in the workspace style: sessions as cards grouped by state on the left, with the selected session's Claude Code terminal on the right](assets/screenshot.png)
 
 What it adds on top:
 
@@ -40,7 +40,9 @@ What it adds on top:
   plugins') with their descriptions and argument hints, as Claude Code's own prompt does
   ([Slash commands](#slash-commands)).
 - **Subagents under their session.** A working session tower started shows its running
-  subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)).
+  subagents as a dimmed tree under its row, with a `+N` badge ([0029](doc/0029-tracking-subagents.md)). A subagent
+  whose command runs longer than about 3 minutes leaves that count: Claude Code moves the command
+  to the background and reports the subagent as stopped.
 - **Plan usage, if you turn it on.** With `[usage] show = true` the header shows the
   numbers Claude Code's own `/usage` reports after each account (`5h 24% · 7d 12%`), and
   the details panel when they reset. Off by default and for your information only
@@ -474,10 +476,14 @@ does not run. A terminal attached to the session elsewhere is disconnected.
 ## Workspace style (experimental)
 
 `[ui] style = "workspace"` (also in Settings, `c`) draws the list in a bar and Claude Code's
-real terminal in a pane beside it, where the details panel was. This is the first step of an
-experiment: it has not been tried on many terminals (Windows Terminal, Warp and SSH are
-untested), and Claude Code's fullscreen view it relies on is a research preview
+real terminal in a pane beside it, where the details panel was. It's still experimental: it
+has been used in Warp, locally and over SSH, but other terminals are untested, and Claude
+Code's fullscreen view it relies on is a research preview
 ([0045](doc/0045-workspace-style.md)).
+
+![the Home panel: session counts, sessions that need you, plan usage and the main keys](assets/screenshot-home.png)
+
+![the new-session dialog drawn over the workspace](assets/screenshot-new-session.png)
 
 - Nothing attaches at the start: the pane shows **Home**, with no row selected: the version, the
   counts per group, the sessions that need you, each account's plan usage when `[usage] show` is
