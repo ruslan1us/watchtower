@@ -28,7 +28,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0008 | [New-session dialog](0008-new-session-dialog.md) | Accepted (`--settings` added by 0029; template key by 0036; slash-command suggestions by 0042; dispatch path shared with `tower dispatch` by 0044) |
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029; role, rules and updating an unedited instruction file amended by 0044; `o` in the pane by 0045) |
-| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040; `!` shell key by 0037; slash-command menu keys by 0042; `r` refreshes usage by 0043; the workspace's terminal keys and `h` by 0045) |
+| 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040; `!` shell key by 0037; slash-command menu keys by 0042; `r` refreshes usage by 0043; the workspace's terminal keys, `h`, `z` and `F2` by 0045) |
 | 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted (usage display non-goal superseded by 0043; PTY handling for the workspace style by 0045) |
@@ -62,7 +62,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted (claude.ai synced skills added 2026-10-28) |
 | 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted (per account on the workspace's Home and in its bar by 0045) |
 | 0044 | [The orchestrator starts and wakes sessions when asked](0044-orchestrator-starts-and-wakes-sessions.md) | Accepted |
-| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints added 2026-10-31) |
+| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints, the pane's selection, the shell's history and zoom added 2026-10-31) |
 | 0046 | [Colour themes from published palettes](0046-more-colour-themes.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI

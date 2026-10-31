@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision · `z`, `F2`, `Shift+PgUp` / `Shift+PgDn` and `Esc` over a selection in the workspace's pane, 2026-10-31, by the same decision
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -206,7 +206,14 @@ open it in the pane with the keys, not in the whole terminal. With a group heade
 footer's first hint is `Enter fold`. `!` opens the shell in the pane with the keys, toggles the pane
 between it and what its row shows, and on another row replaces it; `Ctrl+Z` and `F12` give the list
 the keys there too, so `Ctrl+Z` never reaches the shell's job control. While the shell shows, `Enter`
-gives it the keys.
+gives it the keys. *Added 2026-10-31:* `z` and `F2` make the terminal fill the window and give it the
+keys; `z` is free in the list (`Ctrl+Z` is the detach key, a different key), does nothing in the other
+styles, and `я` maps to it like any list letter. In the terminal `F2` is tower's in both directions and
+never reaches the program; it leaves zoom and keeps the keys there, while `Ctrl+Z` and `F12` leave zoom
+and give the list the keys. While zoomed the list's keys are not active and `z` is the program's. In
+a program that did not ask for the mouse, `Esc` over a selection ends it and the program does not get
+that one, and in the shell, away from the alternate screen, `Shift+PgUp` / `Shift+PgDn` and the wheel over
+the pane move its history; any key the program gets returns to the bottom.
 
 **Rules**
 

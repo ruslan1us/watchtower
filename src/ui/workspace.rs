@@ -33,6 +33,10 @@ use crate::merge::MergedSession;
 /// tower draws the dashboard (doc/0045).
 pub const MIN_SIZE: (u16, u16) = (100, 24);
 
+/// The smallest terminal zoom draws on: it needs no bar, so it goes on below
+/// [`MIN_SIZE`] (doc/0045).
+pub const ZOOM_MIN_SIZE: (u16, u16) = (20, 4);
+
 /// The list bar's share of the width and its limits, without `[ui]
 /// list_width`.
 const BAR_PERCENT: u32 = 18;
@@ -54,7 +58,12 @@ const HOME_KEY_W: usize = 13;
 
 /// Whether the workspace fits in `area` and no client failed to start.
 pub fn fits(app: &App, area: Rect) -> bool {
-    area.width >= MIN_SIZE.0 && area.height >= MIN_SIZE.1 && !app.pane_failed()
+    let min = if app.pane_wants_zoom() {
+        ZOOM_MIN_SIZE
+    } else {
+        MIN_SIZE
+    };
+    area.width >= min.0 && area.height >= min.1 && !app.pane_failed()
 }
 
 /// The list bar's width on a terminal `total` columns wide (doc/0045). The
@@ -74,6 +83,14 @@ pub fn draw_screen(frame: &mut Frame, app: &mut App, now: Instant, now_ms: i64) 
     let area = frame.area();
     let th = Theme::new(app.drawn_theme(), app.color);
     let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    if app.pane_wants_zoom() {
+        // No bar and no frame: the terminal has it all but the footer.
+        app.set_pane_rect(Some(body));
+        app.clear_pane_bar();
+        draw_zoomed(frame, app, body, th);
+        draw_footer(frame, app, footer, now, th);
+        return;
+    }
     let [bar, pane] = Layout::horizontal([
         Constraint::Length(list_width(app, area.width)),
         Constraint::Min(1),
@@ -152,12 +169,25 @@ fn shell_title(app: &App, folder: &str, room: usize, th: Theme) -> Lb {
         PaneFocus::Terminal => " · keyboard here ",
         PaneFocus::List => " · view only ",
     };
+    let marker = scrolled_marker(app);
     let mut l = Lb::new();
     l.push(" shell  ", th.bold(th.p.title));
-    let folder_room = room.saturating_sub(l.w + focus.width()).max(4);
+    let folder_room = room
+        .saturating_sub(l.w + focus.width() + marker.width())
+        .max(4);
     l.push(shorten(folder, folder_room), th.bold(th.p.title));
     l.push(focus, th.muted());
+    l.push(marker, th.faint());
     l
+}
+
+/// `↑ 120 lines ` while the pane's view is up in its history, else nothing.
+fn scrolled_marker(app: &App) -> String {
+    match app.pane_scrolled() {
+        0 => String::new(),
+        1 => "↑ 1 line ".to_owned(),
+        n => format!("↑ {n} lines "),
+    }
 }
 
 /// The pane: its frame and title, and the terminal or what stands for it.
@@ -188,7 +218,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
     let hint = match (app.pane_ended_code(), app.pane_screen(), focused) {
         (_, Some(_), false) if app.pane_shell_showing() => " Enter: type here · !: hide the shell ",
         (Some(_), ..) => " Enter attaches again ",
-        (None, Some(_), true) => " Ctrl+Z or F12: back to the list ",
+        (None, Some(_), true) => " Ctrl+Z or F12: back to the list · F2: zoom ",
         (None, Some(_), false) => " Enter: type here ",
         (None, None, _) => "",
     };
@@ -199,17 +229,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    if let Some(screen) = app.pane_screen() {
-        paint(frame.buffer_mut(), screen, inner, th.color);
-        // Claude's cursor, only while its terminal has the keys: a window
-        // shows its own or none (doc/0045).
-        if app.pane_has_keys()
-            && let Some((y, x)) = screen.with(|s| (!s.hide_cursor()).then(|| s.cursor_position()))
-            && x < inner.width
-            && y < inner.height
-        {
-            frame.set_cursor_position((inner.x + x, inner.y + y));
-        }
+    if draw_terminal(frame, app, inner, th) {
         return;
     }
     let width = usize::from(inner.width);
@@ -226,6 +246,52 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
         .enumerate()
     {
         put(frame, row(inner, y as u16), line.line());
+    }
+}
+
+/// The terminal copied into `inner`, with tower's selection and the cursor.
+/// Whether there is one to draw.
+fn draw_terminal(frame: &mut Frame, app: &App, inner: Rect, th: Theme) -> bool {
+    let Some(screen) = app.pane_screen() else {
+        return false;
+    };
+    paint(frame.buffer_mut(), screen, inner, th.color);
+    let selected = th.selected();
+    for (r, first, last) in app.pane_selection_spans() {
+        for c in first..=last {
+            if let Some(cell) = (r < inner.height && c < inner.width)
+                .then(|| frame.buffer_mut().cell_mut((inner.x + c, inner.y + r)))
+                .flatten()
+            {
+                cell.set_style(selected);
+            }
+        }
+    }
+    // The child's cursor, only while its terminal has the keys: a window shows
+    // its own or none (doc/0045). Up in the history it has no place.
+    if app.pane_has_keys()
+        && app.pane_scrolled() == 0
+        && let Some((y, x)) = screen.with(|s| (!s.hide_cursor()).then(|| s.cursor_position()))
+        && x < inner.width
+        && y < inner.height
+    {
+        frame.set_cursor_position((inner.x + x, inner.y + y));
+    }
+    true
+}
+
+/// The terminal alone, zoomed: the footer says what the title would. Until a
+/// client is there, what the pane says instead of it.
+fn draw_zoomed(frame: &mut Frame, app: &App, area: Rect, th: Theme) {
+    if draw_terminal(frame, app, area, th) {
+        return;
+    }
+    for (y, line) in note_lines(app, usize::from(area.width), th)
+        .into_iter()
+        .take(usize::from(area.height))
+        .enumerate()
+    {
+        put(frame, row(area, y as u16), line.line());
     }
 }
 
@@ -528,17 +594,33 @@ fn paint(buf: &mut Buffer, screen: &PaneScreen, area: Rect, color: bool) {
 /// hints in what is left.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme) {
     let w = usize::from(area.width);
-    let terminal = app.pane_focus() == PaneFocus::Terminal;
+    let zoomed = app.pane_wants_zoom();
+    let terminal = zoomed || app.pane_focus() == PaneFocus::Terminal;
     let mut left = Lb::new();
-    if terminal {
+    if zoomed {
+        left.push(" ZOOM ", th.pill(th.p.mark));
+    } else if terminal {
         left.push(" TERMINAL ", th.pill(th.p.mark));
     } else {
         left.push(" LIST ", th.pill(th.p.key));
     }
     left.push(" ", th.text());
     let mut right = Lb::new();
-    if terminal {
-        right.append(hint_spans(&["Ctrl+Z list", "F12 list"], th));
+    if zoomed {
+        // The title is gone, so its marker is here; the keys as they fit.
+        let marker = scrolled_marker(app);
+        if !marker.is_empty() {
+            right.push(format!("{marker} "), th.faint());
+        }
+        let room = w.saturating_sub(left.w + right.w + 2);
+        let hints: &[&str] = match room {
+            0..=8 => &[],
+            9..=24 => &["F2 back"],
+            _ => &["F2 back", "Ctrl+Z list"],
+        };
+        right.append(hint_spans(hints, th));
+    } else if terminal {
+        right.append(hint_spans(&["F2 zoom", "Ctrl+Z list", "F12 list"], th));
     }
     let hint_min = if terminal { right.w + 2 } else { 8 };
     let status_room = w.saturating_sub(left.w + hint_min);

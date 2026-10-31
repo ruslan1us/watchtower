@@ -456,8 +456,16 @@ untested), and Claude Code's fullscreen view it relies on is a research preview
 - `!` opens a shell in the row's folder in the pane, on stopped rows too, without waking them. It
   lives beside the Claude terminal and stays while you browse: `!` on its row toggles between the
   two, `!` on another row replaces it, and `exit` returns to the list. `Ctrl+Z` and `F12` return to
-  the list here too, so `Ctrl+Z` is not the shell's job control. The pane has no scrollback or
-  text selection of its own: `Shift`+drag uses your terminal's.
+  the list here too, so `Ctrl+Z` is not the shell's job control.
+- For a program that does not ask for the mouse (the shell at its prompt, `less`), a drag in the pane
+  selects text, and the release copies it with OSC 52 and says `copied N characters`; tower never runs
+  a clipboard tool. A double click takes a word, a click or `Esc` clears it, and output over it ends
+  it. A program that asks for the mouse, Claude Code among them, keeps getting everything.
+- The shell keeps 10,000 lines of history (about 42 MB at 130 columns when full): the wheel and
+  `Shift+PgUp` / `Shift+PgDn` scroll it while the program is not on the alternate screen, the title says
+  `↑ N lines`, a selection works up there, and any key for the program returns to the bottom.
+- `z` or `F2` is zoom: the terminal fills the window and has the keys, for Claude Code and the shell,
+  with one footer row saying `ZOOM`. `F2` leaves it, and `Ctrl+Z` or `F12` also return to the list.
 - A list that does not fit says so: `▲ 3 more` and `▼ 5 more`, which a click moves by a page. With
   `[usage] show` on, each account's usage is fixed at the bar's bottom, and on Home with reset
   times.
@@ -467,11 +475,12 @@ untested), and Claude Code's fullscreen view it relies on is a research preview
 - `s`, `d`, `a`, `e` and `t` close that session's terminal first and work as usual; `Enter`
   attaches again. Windows draw over the pane and take the keys meanwhile.
 - The mouse is captured in this style, so Claude Code gets it and a click moves the keys; hold
-  `Shift` for your terminal's own selection, or set `[ui] mouse = false`. Clipboard writes
+  `Shift` for your terminal's own selection (zoom leaves no frame in its way), or set `[ui] mouse =
+  false`. Clipboard writes
   from Claude Code pass to your terminal (Warp may need its OSC 52 setting enabled). Bells and
   other escape sequences do not.
-- It needs 100x24; a smaller terminal gets the dashboard until it grows. `[ui] list_width` sets
-  the bar's width (20 to 60).
+- It needs 100x24; a smaller terminal gets the dashboard until it grows, though zoom goes on and
+  `z` opens it there. `[ui] list_width` sets the bar's width (20 to 60).
 - `←` on an empty prompt opens Claude Code's agent view inside the pane, where it can show
   another session than the selected row.
 

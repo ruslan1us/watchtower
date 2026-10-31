@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -13,8 +13,8 @@ style. `claude attach <id>` runs correctly in a pseudo-terminal, and `vt100`, al
 dependency, rendered its real stream identically to `alacritty_terminal`
 ([reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)).
 
-This step is meant to be tried on Warp, Windows Terminal and over SSH. Clicks on buttons, a
-zoom key and lifecycle polish come later, each with its own decision. *Added 2026-10-31,
+This step is meant to be tried on Warp, Windows Terminal and over SSH. Clicks on buttons and
+lifecycle polish come later, each with its own decision. *Added 2026-10-31,
 after the owner's trial on WSL:* the owner did not want the orchestrator to open at every
 start, so nothing attaches until a row is chosen (**Home**), and the planned cards replaced
 the list's rows (**Cards**). What the trial did not question stands.
@@ -148,9 +148,61 @@ the foreground hand-over.
   shell's job control in this style**; for a job to stop, use the foreground `!` of a smaller window
   or another style. Everything else goes to the shell, `Ctrl+C` included. The shell answers nothing
   a row asks, so `●` stays, and its keys do not count as the Claude client's.
-- **A limit, recorded rather than built:** the pane has no scrollback and tower no text selection of
-  its own, so a plain drag does nothing unless the program in the shell asks for the mouse.
-  `Shift`+drag is the real terminal's own selection. Programs with their own scrolling work.
+
+**Selection in the pane** (*added 2026-10-31*). While the program shown has not asked for the mouse
+(the shell at its prompt, `less`, a client that did not), tower takes the left button itself. While
+it has, every event goes to it as before, so Claude's own selection is unchanged.
+
+- A drag selects cells in reading order, confined to the pane: past an edge it is clamped, as
+  Claude's is, and a drag that starts outside starts nothing. It shows in the theme's selection
+  colours (reverse video where the theme or `NO_COLOR` selects that way).
+- On release the text is written to the real terminal as `OSC 52 ; c ; <base64>` and the status line
+  says `copied N characters`. **Tower never runs a clipboard tool.** What shows is what is copied: a
+  row's blank end is neither highlighted nor copied, spaces at the end of a line and blank lines after
+  the text go, and a wide character is taken whole from either half. Rows the emulator marks as
+  wrapped come back as one line. It does not mark the wrap of a wide character that did not fit in the
+  last cell: one empty last cell and a wide character first on the next row stand for it.
+- A click without a drag clears the selection and focuses the pane, as before. A double click (twice
+  on a cell within 400 ms) takes the word on its row: anything but blanks, quotes and brackets, so
+  `src/app.rs:12` is one word.
+- A selection ends when what is under it changes (output, or the view moving), when the keys or the
+  program shown change, when a window opens, when the pane resizes, when the program asks for the
+  mouse, and on `Esc`, which the program does not get then. The highlight stays after the copy until
+  one of these.
+
+**History in the shell** (*added 2026-10-31*). The shell's screen keeps 10,000 lines above it, from
+`vt100`'s own scrollback: 32 bytes a cell, so about 42 MB when full at 130 columns, and only one shell
+at a time. The Claude client keeps none, and nothing changes for it: it asks for the mouse and
+scrolls itself.
+
+- While the program is not on the alternate screen and has not asked for the mouse, the wheel over
+  the pane (three lines a notch, whoever has the keys, moving no keys) and `Shift+PgUp` / `Shift+PgDn`
+  (a page, with the keys) move the view. The title has a dim `↑ N lines` meanwhile, and the cursor is
+  hidden. Otherwise they go to the program as before, and a program that comes to ask for the mouse
+  brings the view down.
+- Any key or paste that goes to the program returns to the bottom. Tower's own keys (`Ctrl+Z`, `F12`,
+  `F2`) do not. New output does not move a view that is up: `N` grows and the same lines stay, until
+  they are the oldest at the limit.
+- A selection works up there, and copies what is highlighted.
+- A resize keeps the view's place in lines. Lines of the history keep the width they were written at
+  and are not reflowed: wider ones are cut at the pane, as shown and as copied.
+
+**Zoom** (*added 2026-10-31*). `z` or `F2` with the list holding the keys, `F2` with the terminal
+holding them: the terminal fills the window, without the bar or a frame, so a terminal's own selection
+takes no border along. One footer row stays, with a `ZOOM` chip, the status line, the `↑ N lines` of the
+title that is gone, and the keys. The PTY follows at once, for the Claude client and the shell alike.
+
+- `F2` leaves zoom and keeps the keys on the terminal. `Ctrl+Z` and `F12` leave it and give the list
+  the keys. So does a program ending, an action closing it or the selection moving. `F2` never reaches
+  the program in this style; `F11` is usually the terminal's own fullscreen, and Claude Code ignored
+  `F2` in the owner's testing.
+- Zoom means the terminal has the keys: `z` gives it them, and on a running row with no client yet it
+  attaches at once, as `Enter` does. It wakes nothing: on a stopped row, a header or Home it says why
+  not. Tower's list keys are not active while zoomed, and `z` is the program's.
+- Windows draw over it and take the keys as usual. The footer's row takes no press.
+- Below 100 × 24 zoom goes on, as it needs no bar: a zoomed terminal that shrinks stays zoomed, and `z`
+  in the dashboard a small terminal gets opens the selected row's terminal zoomed. Leaving it there
+  goes back to the dashboard, which closes the client as usual. Under 20 × 4 there is no zoom.
 
 **The client ([`embed`](../src/embed.rs)).** One `<owner's command> attach <id>` at a time
 ([0003](0003-accounts-and-session-ownership.md)), in the session's folder (without one
@@ -172,7 +224,8 @@ waits up to 0.5 s. The session keeps running.
 notifications and title changes end in the emulator
 ([0007](0007-visual-only-attention.md)). The one exception: a clipboard write
 (`OSC 52 ; <selector> ; <base64>`, at most 4 MiB) is written again by tower, so copying
-works over SSH. A clipboard read is never passed on or answered.
+works over SSH. A clipboard read is never passed on or answered. *Added 2026-10-31:* tower's own copy
+of a selection in the pane goes out the same way, as the only other thing it writes itself.
 
 **Selection and focus.**
 
@@ -218,7 +271,8 @@ panel's place. The help lists the pane's keys in place of the dialog's.
 
 **Mouse, minimal, this style only.** Capture is on, with `[ui] mouse = false` to disable
 it, and off whenever the workspace is not drawn or the terminal is handed over. While the
-terminal has the keys and the emulator's mouse mode is on, events go on in SGR form with the
+terminal has the keys and the emulator's mouse mode is on (*amended 2026-10-31:* otherwise see the
+pane's selection and history above), events go on in SGR form with the
 pane's coordinates, clamped to it, and only those the mode asks for. A gesture that starts
 inside goes on outside; a press outside starts nothing there. A gesture ends when the keys
 or the selection move, without a synthetic release, which could make a copy-on-release
@@ -242,13 +296,15 @@ attention and everything else still come from the CLI's JSON
 - Selecting a row resizes the session's PTY, which takes its last client's size, and makes
   Claude Code repaint. This is what `claude attach` does; the logs of
   [0025](0025-session-terminal-size-for-logs.md) follow it.
-- One more thread and a small emulator (32 bytes a cell) per client, and only one client.
-- The terminal's own text selection usually needs `Shift` while the capture is on.
+- One more thread and a small emulator (32 bytes a cell) per client, and only one client. The shell's
+  history adds up to about 42 MB at 130 columns once it has seen 10,000 lines, until it ends.
+- The terminal's own text selection usually needs `Shift` while the capture is on. Tower's selection
+  covers programs without the mouse, and zoom gives the terminal's own selection no border to cross.
 - The plan usage display of [0043](0043-plan-usage-display.md) shows in the pane's details and,
   *since 2026-10-31,* per account on Home, with reset times, and in the bar's block (no header in
   this style).
-- Tests use a fake `claude`, the real binary in a PTY; the real client is checked by hand
-  with the keyboard only ([0015](0015-testing-strategy.md)). Never send mouse events into a
+- Tests use a fake `claude` and a real `/bin/sh`, the real binary in a PTY whose harness takes the
+  OSC 52; the real client is checked by hand with the keyboard only ([0015](0015-testing-strategy.md)). Never send mouse events into a
   real `claude attach` from a test: its copy-on-release runs PowerShell `Set-Clipboard` on
   WSL and overwrites the Windows clipboard.
 
@@ -265,6 +321,8 @@ attention and everything else still come from the CLI's JSON
 - Windows Terminal, Warp and SSH are untested. Warp's OSC 52 setting may need enabling for
   clipboard writes. `Shift+Enter` needs a terminal that reports it (`Alt+Enter` otherwise).
 - Occasional stale cells come from Claude Code's stream; `Ctrl+L` clears them.
+- A terminal may keep `Shift+PgUp` / `Shift+PgDn` for its own scrollback, as xterm does, or `F2` for
+  itself; the wheel and `z` remain. A copy over SSH or tmux needs OSC 52 to get through.
 - A character the emulator and ratatui measure differently could shift a row until the next
   paint.
 
@@ -288,6 +346,6 @@ attention and everything else still come from the CLI's JSON
 - Done in the second trial, 2026-10-31: `o`, start-and-attach and the rename opening in the pane,
   the whole selected card highlighted, `[ui] card_gap`.
 - Done in the third request, 2026-10-31: the shell in the pane, the usage block and the scroll hints.
-- Still to come: clicks on the stopped panel, a zoom key, lifecycle polish, and scrollback and a
-  selection of its own in the pane if the limit above proves too tight. The mockup's `a → alt` hand-off hint on the selected card is not
+- Done 2026-10-31: tower's own selection, the shell's history and zoom.
+- Still to come: clicks on the stopped panel and lifecycle polish. The mockup's `a → alt` hand-off hint on the selected card is not
   built.

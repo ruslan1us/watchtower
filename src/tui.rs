@@ -914,13 +914,18 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
 /// Writes the child's clipboard writes to the real terminal: the one thing
 /// that passes the pane raw, as `OSC 52` written by tower itself (doc/0045).
 fn write_clipboard(rt: &Runtime<'_>) {
-    let writes = rt.embed.take_clipboard();
+    write_to_terminal(rt, &rt.embed.take_clipboard());
+}
+
+/// Writes clipboard sequences to the real terminal, while there is one: the
+/// child's, and tower's own copy of a selection in the pane (doc/0045).
+fn write_to_terminal(rt: &Runtime<'_>, writes: &[Vec<u8>]) {
     if writes.is_empty() || terminal_gone(rt.termination) {
         return;
     }
     let mut out = io::stdout();
     for seq in writes {
-        let _ = out.write_all(&seq);
+        let _ = out.write_all(seq);
     }
     let _ = out.flush();
 }
@@ -942,6 +947,8 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                     rows: open.rows,
                     cols: open.cols,
                     needs_cwd: false,
+                    // Claude Code scrolls itself (doc/0045).
+                    history: 0,
                 };
                 match rt.embed.open(spec) {
                     Ok(screen) => app.pane_opened(open.generation, screen),
@@ -956,6 +963,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                     rows: open.rows,
                     cols: open.cols,
                     needs_cwd: true,
+                    history: crate::embed::SHELL_HISTORY,
                 };
                 match rt.embed.open_shell(spec) {
                     Ok(screen) => app.pane_opened(open.generation, screen),
@@ -968,6 +976,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
             Effect::PaneClose => rt.embed.close(),
             Effect::PaneResize { rows, cols } => rt.embed.resize(rows, cols),
             Effect::PaneWrite(bytes) => rt.embed.write(&bytes),
+            Effect::PaneCopy(seq) => write_to_terminal(rt, &[seq]),
             Effect::PollNow => {
                 rt.poller.poll_now();
             }

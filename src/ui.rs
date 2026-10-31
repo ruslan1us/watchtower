@@ -129,6 +129,7 @@ pub const FOOTER_LOGS_KEYS: &[&str] = &[
 /// (doc/0045).
 pub const FOOTER_KEYS_PANE: &[&str] = &[
     "Enter type here",
+    "z zoom",
     "n new",
     "m seen",
     "/ filter",
@@ -166,6 +167,7 @@ pub const FOOTER_KEYS_PANE_STOPPED: &[&str] = &[
 pub const FOOTER_KEYS_PANE_SHELL: &[&str] = &[
     "Enter type here",
     "! hide shell",
+    "z zoom",
     "n new",
     "/ filter",
     "h home",
@@ -267,6 +269,9 @@ fn draw_screen_and_windows(frame: &mut Frame, app: &mut App, now: Instant, now_m
         // The theme needs more colours than the terminal shows: `ansi16`,
         // said once (doc/0038).
         app.note_theme_fallback();
+    }
+    if app.style == UiStyle::Workspace && !workspace::fits(app, area) {
+        app.pane_zoom_gives_way();
     }
     match app.style {
         UiStyle::Workspace if workspace::fits(app, area) => {

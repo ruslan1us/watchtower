@@ -74,7 +74,8 @@ use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob
 mod workspace;
 
 pub use workspace::{
-    ATTACH_DEBOUNCE, PaneFocus, PaneOpen, PaneShellOpen, RELEASE_AFTER, WANTED_PATIENCE, coalesces,
+    ATTACH_DEBOUNCE, DOUBLE_CLICK, PaneFocus, PaneOpen, PaneShellOpen, RELEASE_AFTER,
+    WANTED_PATIENCE, coalesces,
 };
 
 /// How long a transient status message stays visible.
@@ -261,6 +262,9 @@ pub enum Effect {
     /// Queue bytes for the pane's PTY: a key, a paste, a mouse report, a
     /// focus report (doc/0045).
     PaneWrite(Vec<u8>),
+    /// Write tower's copy of a selection in the pane to the real terminal: a
+    /// whole `OSC 52` sequence, never a clipboard tool (doc/0045).
+    PaneCopy(Vec<u8>),
 }
 
 /// The slash commands of one account and folder (doc/0042): the last list
@@ -1129,6 +1133,9 @@ pub enum Action {
     Shell,
     /// `h`: the workspace's Home panel (doc/0045); nothing in other styles.
     PaneHome,
+    /// `z`, `F2`: the workspace's terminal fills the window (doc/0045);
+    /// nothing in other styles.
+    PaneZoom,
 }
 
 /// Keys of the logs panel while it has the focus (doc/0028), looked up
@@ -1211,10 +1218,13 @@ pub const PANE_KEY_TABLE: &[(&str, &str)] = &[
         "Ctrl+Z, F12",
         "back to the list; other keys go to Claude Code",
     ),
-    ("h, click ◆ tower", "Home; the terminal stays attached"),
     (
-        "!, Shift+drag",
-        "shell in the pane; your terminal's own selection",
+        "h, z or F2",
+        "Home, nothing closes; zoom: the terminal fills all",
+    ),
+    (
+        "drag, wheel, !",
+        "copy, scroll a program without mouse; the shell",
     ),
 ];
 
@@ -1278,6 +1288,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Right | KeyCode::Char('l') => Action::FocusLogs,
         KeyCode::Char('!') => Action::Shell,
         KeyCode::Char('h') => Action::PaneHome,
+        KeyCode::Char('z') | KeyCode::F(2) => Action::PaneZoom,
         _ => return None,
     };
     Some(action)
@@ -3485,6 +3496,7 @@ impl App {
                 self.select(self.entries.len().saturating_sub(1));
             }
             Action::PaneHome => self.pane_go_home(),
+            Action::PaneZoom => effects = self.pane_zoom_key(),
             Action::Attach if self.selected_header().is_some() => self.toggle_group(),
             Action::Attach if self.pane_active() => effects = self.pane_enter(),
             Action::Attach => effects = self.request_action(Purpose::Attach),

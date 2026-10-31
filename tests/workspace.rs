@@ -1012,6 +1012,7 @@ fn mouse_events_go_on_clamped_and_only_while_the_mode_is_on() {
     tower.send(&mouse(0, 1, 30, 'm'));
     thread::sleep(PAUSE);
     assert_eq!(tower.keys_of(&id).len(), before, "{:?}", tower.keys_of(&id));
+    assert!(!tower.wrote(b"\x1b]52;"), "tower selects nothing here");
 }
 
 impl Tower {
@@ -1239,4 +1240,399 @@ fn the_other_styles_never_attach_nor_capture_the_mouse() {
         let code = tower.stop();
         assert_eq!(code, Some(128 + libc::SIGTERM), "{style}");
     }
+}
+
+// ---- the pane's selection, the shell's history and zoom (doc/0045) ----------------
+
+/// Where `text` shows on the screen, row and column from 0, in cells.
+fn find(tower: &Tower, text: &str) -> Option<(u16, u16)> {
+    let parser = tower.screen.lock().unwrap();
+    let screen = parser.screen();
+    let (rows, cols) = screen.size();
+    (0..rows).find_map(|r| {
+        // The row's text, and the cell each byte of it came from.
+        let (mut line, mut cell_of) = (String::new(), Vec::new());
+        for c in 0..cols {
+            let cell = screen.cell(r, c).unwrap();
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let shown = if cell.has_contents() {
+                cell.contents()
+            } else {
+                " "
+            };
+            line.push_str(shown);
+            cell_of.extend(std::iter::repeat_n(c, shown.len()));
+        }
+        line.find(text).map(|byte| (r, cell_of[byte]))
+    })
+}
+
+/// Waits for `text` on the screen, and where it shows.
+fn wait_found(tower: &Tower, text: &str) -> (u16, u16) {
+    tower.wait_for(&format!("`{text}` on the screen"), |t| {
+        find(t, text).is_some()
+    });
+    find(tower, text).unwrap()
+}
+
+/// A press, a drag and a release on the screen's cells, from 0.
+fn drag_cells(tower: &mut Tower, from: (u16, u16), to: (u16, u16)) {
+    tower.send(&mouse(0, from.1 + 1, from.0 + 1, 'M'));
+    tower.send(&mouse(32, to.1 + 1, to.0 + 1, 'M'));
+    tower.send(&mouse(0, to.1 + 1, to.0 + 1, 'm'));
+}
+
+fn wait_wrote(tower: &Tower, what: &[u8]) {
+    tower.wait_for(
+        &format!("tower writes {:?}", String::from_utf8_lossy(what)),
+        |t| t.wrote(what),
+    );
+}
+
+fn background(tower: &Tower, row: u16, col: u16) -> vt100::Color {
+    let parser = tower.screen.lock().unwrap();
+    parser.screen().cell(row, col).unwrap().bgcolor()
+}
+
+/// The size of the terminal a process has as its stdin, rows and columns.
+fn size_of(pid: i32) -> Option<(u16, u16)> {
+    let tty = File::open(format!("/proc/{pid}/fd/0")).ok()?;
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: a valid winsize out-pointer on an open descriptor.
+    let rc = unsafe { libc::ioctl(tty.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+    (rc == 0).then_some((size.ws_row, size.ws_col))
+}
+
+const F2: &[u8] = b"\x1bOQ";
+const SHIFT_PAGE_UP: &[u8] = b"\x1b[5;2~";
+const WHEEL_UP: u8 = 64;
+
+/// The shell in the pane with the keys, with one line printed that a test can
+/// find; the shell's pid.
+fn shell_printing(tower: &mut Tower, line: &str) -> i32 {
+    let pid = shell_terminal(tower);
+    // The command line shows the octal form, so only the output has the text.
+    let typed: String = line
+        .chars()
+        .map(|c| format!("\\{:03o}", c as u32))
+        .collect();
+    tower.send(format!("printf '{typed}\\n'\r").as_bytes());
+    wait_found(tower, line);
+    pid
+}
+
+#[test]
+fn a_drag_in_the_shell_is_highlighted_and_copied_with_osc_52_only() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_printing(&mut tower, "hello selection");
+    let (row, col) = find(&tower, "hello selection").unwrap();
+    let plain = background(&tower, row, col);
+    drag_cells(&mut tower, (row, col + 6), (row, col + 14));
+    // base64 of `selection`, exactly.
+    wait_wrote(&tower, b"\x1b]52;c;c2VsZWN0aW9u\x1b\\");
+    tower.wait_screen("copied 9 characters");
+    tower.wait_for("the highlight", |t| {
+        background(t, row, col + 6) != plain && background(t, row, col + 14) != plain
+    });
+    assert_eq!(background(&tower, row, col + 5), plain, "before it");
+    assert_eq!(background(&tower, row, col + 15), plain, "after it");
+    // `Esc` ends it and the shell gets nothing.
+    tower.send(b"\x1b");
+    tower.wait_for("the highlight goes", |t| {
+        background(t, row, col + 6) == plain
+    });
+    // A click copies nothing more.
+    let writes = {
+        let raw = tower.raw.lock().unwrap();
+        raw.windows(5).filter(|w| *w == b"\x1b]52;").count()
+    };
+    tower.send(&mouse(0, col + 1, row + 1, 'M'));
+    tower.send(&mouse(0, col + 1, row + 1, 'm'));
+    tower.send(b"echo done$((1+1))\r");
+    tower.wait_screen("done2");
+    let raw = tower.raw.lock().unwrap();
+    assert_eq!(raw.windows(5).filter(|w| *w == b"\x1b]52;").count(), writes);
+}
+
+#[test]
+fn a_drag_from_the_bar_selects_nothing_and_a_drag_inside_stays_inside() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_printing(&mut tower, "inside text");
+    let (row, col) = find(&tower, "inside text").unwrap();
+    // Pressed inside and let go over the bar: from the pane's first column.
+    drag_cells(&mut tower, (row, col + 5), (row, 2));
+    wait_wrote(&tower, b"\x1b]52;c;aW5zaWRl\x1b\\");
+    assert_eq!(col, PANE_X - 1, "the output starts the pane's row");
+    tower.wait_screen(" TERMINAL ");
+    // Pressed on the bar: the keys go to the list, and the rest does nothing.
+    let from = tower.raw_len();
+    drag_cells(&mut tower, (row, 2), (row, col + 5));
+    tower.wait_screen(" LIST ");
+    thread::sleep(PAUSE);
+    assert!(!tower.wrote_since(from, b"\x1b]52;"));
+}
+
+#[test]
+fn wide_characters_and_a_wrapped_line_copy_as_they_read() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_terminal(&mut tower);
+    // `日本語` as UTF-8, and 140 `x` in a pane 130 wide.
+    tower.send(
+        b"printf 'A\\346\\227\\245\\346\\234\\254\\350\\252\\236B\\n'; \
+          i=0; while [ $i -lt 140 ]; do printf x; i=$((i+1)); done; printf '\\n'\r",
+    );
+    let (row, col) = wait_found(&tower, "A日本語B");
+    // The harness counts cells: from the second half of `日` to the first of `語`.
+    drag_cells(&mut tower, (row, col + 2), (row, col + 5));
+    // base64 of `日本語`.
+    wait_wrote(&tower, b"\x1b]52;c;5pel5pys6Kqe\x1b\\");
+    tower.wait_screen("copied 3 characters");
+
+    let long = (row + 1, PANE_X - 1);
+    drag_cells(&mut tower, long, (row + 2, PANE_X - 1 + 9));
+    tower.wait_screen("copied 140 characters");
+    assert!(!tower.wrote(b"\x1b]52;c;eA==\x1b\\"));
+}
+
+#[test]
+fn a_program_asking_for_the_mouse_gets_it_and_tower_selects_nothing() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_printing(&mut tower, "text under a program");
+    let mice = tower.tower_dir().join("mice");
+    tower.send(
+        format!(
+            "stty raw -echo; printf '\\033[?1002;1006h\\033[1;1HMOUSE ON\\n'; exec cat > '{}'\r",
+            mice.display()
+        )
+        .as_bytes(),
+    );
+    wait_found(&tower, "MOUSE ON");
+    let (row, col) = find(&tower, "MOUSE ON").unwrap();
+    drag_cells(&mut tower, (row, col), (row, col + 4));
+    tower.send(&mouse(WHEEL_UP, col + 1, row + 1, 'M'));
+    tower.send(b"!");
+    tower.wait_for("the program reads every event", |_| {
+        let got = std::fs::read(&mice).unwrap_or_default();
+        contains(&got, b"\x1b[<0;1;1M")
+            && contains(&got, b"\x1b[<32;5;1M")
+            && contains(&got, b"\x1b[<0;5;1m")
+            && contains(&got, b"\x1b[<64;1;1M")
+            && contains(&got, b"!")
+    });
+    assert!(!tower.wrote(b"\x1b]52;"));
+    assert!(!tower.screen_text().contains("copied"));
+    assert!(!tower.screen_text().contains('↑'));
+}
+
+#[test]
+fn the_shell_scrolls_by_wheel_and_keys_and_a_key_returns_to_the_bottom() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_terminal(&mut tower);
+    tower.send(b"seq 1 300; printf 'th\\145 end\\n'\r");
+    wait_found(&tower, "the end");
+    assert!(find(&tower, "the end").is_some());
+    // The wheel: three lines a notch, and the title says so.
+    tower.send(&mouse(WHEEL_UP, PANE_X + 3, PANE_Y + 3, 'M'));
+    tower.wait_screen("↑ 3 lines");
+    tower.send(SHIFT_PAGE_UP);
+    tower.wait_screen("↑ 39 lines");
+    tower.send(SHIFT_PAGE_UP);
+    tower.send(SHIFT_PAGE_UP);
+    tower.wait_screen("↑ 111 lines");
+    assert!(find(&tower, "the end").is_none(), "up in the history");
+    // A selection there copies what shows: the top line of the view.
+    let top = (PANE_Y - 1, PANE_X - 1);
+    let shown: String = {
+        let parser = tower.screen.lock().unwrap();
+        (0..3)
+            .filter_map(|c| {
+                let cell = parser.screen().cell(top.0, top.1 + c).unwrap();
+                cell.has_contents().then(|| cell.contents().to_owned())
+            })
+            .collect()
+    };
+    let at_top: usize = shown.trim().parse().unwrap();
+    assert!((100..300).contains(&at_top), "{shown}");
+    tower.send(&mouse(0, top.1 + 1, top.0 + 1, 'M'));
+    tower.send(&mouse(32, top.1 + 3, top.0 + 1, 'M'));
+    tower.send(&mouse(0, top.1 + 3, top.0 + 1, 'm'));
+    let want = watchtower::embed::clipboard_write(&at_top.to_string()).unwrap();
+    wait_wrote(&tower, &want);
+    // `Shift+PgDn` comes back, and the key goes nowhere.
+    tower.send(b"\x1b[6;2~");
+    tower.wait_screen("↑ 75 lines");
+    // A key the program gets: at the bottom, no marker.
+    tower.send(b"echo typed$((40+2))\r");
+    tower.wait_screen("typed42");
+    tower.wait_for("the marker goes", |t| !t.screen_text().contains('↑'));
+}
+
+#[test]
+fn new_output_does_not_move_the_view_while_scrolled_up() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_terminal(&mut tower);
+    let flag = tower.tower_dir().join("flag");
+    tower.send(
+        format!(
+            "(while [ ! -e '{}' ]; do sleep 0.05; done; seq 1000 1009) & seq 1 100; printf 'r\\145ady\\n'\r",
+            flag.display()
+        )
+        .as_bytes(),
+    );
+    wait_found(&tower, "ready");
+    tower.send(SHIFT_PAGE_UP);
+    tower.wait_screen("↑ 36 lines");
+    let row_text = |t: &Tower| -> Vec<String> {
+        t.screen_text()
+            .lines()
+            .skip(1)
+            .take(36)
+            .map(|l| l.chars().skip(usize::from(PANE_X)).take(10).collect())
+            .collect()
+    };
+    let before = row_text(&tower);
+    std::fs::write(&flag, "").unwrap();
+    tower.wait_screen("↑ 46 lines");
+    assert_eq!(row_text(&tower), before, "the same lines at the same place");
+    assert!(!tower.screen_text().contains("1009"));
+}
+
+#[test]
+fn the_history_stops_at_its_limit_and_stays_small() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_terminal(&mut tower);
+    tower.send(b"seq 1 15000; printf 'th\\145 end\\n'\r");
+    wait_found(&tower, "the end");
+    // More pages than the limit has.
+    for _ in 0..300 {
+        tower.send(SHIFT_PAGE_UP);
+    }
+    tower.wait_screen("↑ 10000 lines");
+    tower.send(SHIFT_PAGE_UP);
+    tower.send(b"\x1b[6;2~");
+    tower.wait_screen("↑ 9964 lines");
+    // At the pane's width a line is about 4 KiB: what the limit promises.
+    let status = std::fs::read_to_string(format!("/proc/{}/status", tower.child.id())).unwrap();
+    let rss_kb: u64 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+        .unwrap();
+    assert!(rss_kb < 150 * 1024, "{rss_kb} kB");
+}
+
+#[test]
+fn zoom_gives_the_client_the_whole_window_and_returns() {
+    let (mut tower, id, pid) = attached(Options {
+        on_attach: b"CLAUDE SCREEN\r\n".to_vec(),
+        ..Options::default()
+    });
+    tower.wait_screen("CLAUDE SCREEN");
+    tower.wait_for("the pane's size", |_| size_of(pid) == Some((37, 130)));
+    // `z` from the list: the whole window but the footer, with the keys.
+    tower.send(b"z");
+    tower.wait_screen(" ZOOM ");
+    tower.wait_for("the first column", |t| {
+        t.screen_text()
+            .lines()
+            .next()
+            .is_some_and(|l| l.starts_with("ATTACHED"))
+    });
+    tower.wait_for("the new size", |_| size_of(pid) == Some((39, 160)));
+    assert!(!tower.screen_text().contains("alpha-task"));
+    // Keys are the child's now, `z` and list letters too; `F2` is not.
+    tower.send(b"zqn");
+    tower.wait_keys(&id, b"zqn");
+    tower.send(F2);
+    tower.wait_screen(" TERMINAL ");
+    tower.wait_for("the pane's size again", |_| size_of(pid) == Some((37, 130)));
+    tower.send(b"after");
+    tower.wait_keys(&id, b"after");
+    assert!(
+        !contains(&tower.keys_of(&id), b"\x1bOQ"),
+        "F2 stays tower's"
+    );
+    // From the terminal, and back to the list with `Ctrl+Z`.
+    tower.send(F2);
+    tower.wait_screen(" ZOOM ");
+    tower.wait_for("the new size", |_| size_of(pid) == Some((39, 160)));
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
+    tower.wait_for("the pane's size again", |_| size_of(pid) == Some((37, 130)));
+    // `F2` from the list, and back with `F12`.
+    tower.send(F2);
+    tower.wait_screen(" ZOOM ");
+    tower.send(b"\x1b[24~");
+    tower.wait_screen(" LIST ");
+    assert_eq!(tower.attaches().len(), 1, "one client all along");
+}
+
+#[test]
+fn zoom_works_for_the_shell_with_its_size_and_its_selection() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    shell_terminal(&mut tower);
+    tower.send(F2);
+    tower.wait_screen(" ZOOM ");
+    tower.send(b"stty size\r");
+    tower.wait_screen("39 160");
+    let (row, col) = find(&tower, "39 160").unwrap();
+    assert_eq!(col, 0, "from the window's first column");
+    drag_cells(&mut tower, (row, 0), (row, 1));
+    wait_wrote(&tower, b"\x1b]52;c;Mzk=\x1b\\");
+    tower.wait_screen("copied 2 characters");
+    // The wheel, with the marker on the footer.
+    tower.send(b"seq 1 100; printf 'th\\145 end\\n'\r");
+    wait_found(&tower, "the end");
+    tower.send(&mouse(WHEEL_UP, 5, 5, 'M'));
+    tower.wait_for("the marker on the footer", |t| {
+        t.screen_text()
+            .lines()
+            .last()
+            .is_some_and(|l| l.contains("↑ 3 lines"))
+    });
+    tower.send(b"\x1b[24~");
+    tower.wait_screen(" LIST ");
+    tower.send(b"\r");
+    tower.wait_screen(" TERMINAL ");
+    tower.send(b"stty size\r");
+    tower.wait_screen("37 130");
+}
+
+#[test]
+fn zoom_ends_with_the_shell() {
+    let (mut tower, _id, _client) = attached(Options::default());
+    let pid = shell_terminal(&mut tower);
+    tower.send(F2);
+    tower.wait_screen(" ZOOM ");
+    tower.send(b"exit\r");
+    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_screen(" LIST ");
+    assert!(!tower.screen_text().contains(" ZOOM "));
+}
+
+#[test]
+fn below_the_width_zoom_opens_the_terminal_in_the_whole_window() {
+    let mut tower = Tower::start(Options {
+        rows: 20,
+        cols: 80,
+        ..Options::default()
+    });
+    tower.wait_screen("alpha-task");
+    thread::sleep(PAUSE);
+    assert!(tower.attaches().is_empty());
+    tower.send(b"j");
+    tower.send(b"z");
+    tower.wait_screen(" ZOOM ");
+    let (_, pid) = tower.wait_attaches(1);
+    tower.wait_for("the window's size", |_| size_of(pid) == Some((19, 80)));
+    tower.send(F2);
+    tower.wait_for("the dashboard", |t| !t.screen_text().contains(" ZOOM "));
+    tower.wait_for("the client is closed", |_| !alive(pid));
 }

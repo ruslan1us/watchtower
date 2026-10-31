@@ -6,14 +6,16 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Position, Rect};
 
 use super::{
     App, AttachRequest, Effect, Entry, Filter, Keep, Overlay, Purpose, Selected, Severity, row_key,
 };
 use crate::config::{Account, UiStyle};
-use crate::embed::{self, PaneScreen};
+use crate::embed::{self, PaneCell, PaneScreen};
 use crate::merge::MergedSession;
 use crate::rename;
 
@@ -28,6 +30,12 @@ pub const RELEASE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How long a session just started may take to be listed before the pane stops
 /// waiting to open it.
 pub const WANTED_PATIENCE: Duration = Duration::from_secs(30);
+
+/// How far apart two presses on a cell make a double click.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// The lines one notch of the wheel moves the pane's history.
+const WHEEL_LINES: isize = 3;
 
 /// Why a row is not attached.
 const HELD_ENDED: &str = "its terminal client ended";
@@ -119,6 +127,21 @@ struct Wanted {
     from: (bool, Option<Selected>),
 }
 
+/// Tower's own text selection in the pane, for a program that did not ask for
+/// the mouse (doc/0045). Its cells are the pane's, whatever the view's place in
+/// the history: moving the view ends it.
+struct PaneSelection {
+    anchor: PaneCell,
+    head: PaneCell,
+    /// The release has not come, so it has not been copied.
+    dragging: bool,
+    /// What it covers, as last read: when that changes the selection ends.
+    text: String,
+    /// The program it was made on, and the pane's place then.
+    generation: u64,
+    rect: Rect,
+}
+
 /// What a client needs of its row.
 struct RowInfo {
     key: String,
@@ -167,6 +190,17 @@ pub(super) struct PaneState {
     wanted: Option<Wanted>,
     /// A press went to the child and its release has not come.
     gesture: bool,
+    selection: Option<PaneSelection>,
+    /// A press tower took on a program without the mouse: a drag from here
+    /// selects, a release without one was a click.
+    press: Option<PaneCell>,
+    /// The last such press, for a double click.
+    last_press: Option<(Instant, PaneCell)>,
+    /// The terminal fills the window; only while it has the keys.
+    zoom: bool,
+    /// `z` in the dashboard a small terminal gets: the pane comes back to zoom
+    /// when the next frame has made its place (doc/0045).
+    zoom_asked: bool,
     generations: u64,
     narrow_noted: bool,
 }
@@ -193,6 +227,11 @@ impl Default for PaneState {
             wake: None,
             wanted: None,
             gesture: false,
+            selection: None,
+            press: None,
+            last_press: None,
+            zoom: false,
+            zoom_asked: false,
             generations: 0,
             narrow_noted: false,
         }
@@ -225,6 +264,30 @@ impl App {
     /// chosen, so nothing is selected or attached by itself (doc/0045).
     pub fn pane_home(&self) -> bool {
         self.pane.home && self.pane_active()
+    }
+
+    /// Whether the terminal fills the window, or will in this frame (doc/0045).
+    pub fn pane_wants_zoom(&self) -> bool {
+        self.pane.zoom || self.pane.zoom_asked
+    }
+
+    /// Called by the renderer when the workspace does not fit in any form: a
+    /// zoom asked for has no place to come back to.
+    pub fn pane_zoom_gives_way(&mut self) {
+        self.pane.zoom_asked = false;
+    }
+
+    /// How many lines the pane's view is above the bottom of its history.
+    pub fn pane_scrolled(&self) -> usize {
+        self.pane_screen().map_or(0, PaneScreen::scrolled)
+    }
+
+    /// The cells of tower's selection in the pane, row, first and last column.
+    pub fn pane_selection_spans(&self) -> Vec<(u16, u16, u16)> {
+        match (&self.pane.selection, self.pane_screen()) {
+            (Some(sel), Some(screen)) => screen.selected(sel.anchor, sel.head).spans,
+            _ => Vec::new(),
+        }
     }
 
     /// Whether a client failed to start, so tower draws the dashboard.
@@ -327,6 +390,13 @@ impl App {
     pub fn set_pane_bar(&mut self, bar: Rect, rows: Vec<(u16, usize)>) {
         self.pane.bar = Some(bar);
         self.pane.bar_rows = rows;
+        self.pane.bar_more = (None, None);
+    }
+
+    /// Set by the renderer while zoom hides the bar: nothing to click on.
+    pub fn clear_pane_bar(&mut self) {
+        self.pane.bar = None;
+        self.pane.bar_rows.clear();
         self.pane.bar_more = (None, None);
     }
 
@@ -441,6 +511,9 @@ impl App {
             pane.focus_shell = false;
             pane.focus = PaneFocus::List;
             pane.gesture = false;
+            pane.selection = None;
+            pane.press = None;
+            pane.zoom = false;
             pane.selected = None;
             pane.since = None;
             pane.ended = None;
@@ -478,6 +551,15 @@ impl App {
         {
             self.pane.wake = None;
         }
+        if std::mem::take(&mut self.pane.zoom_asked) {
+            effects.extend(self.pane_zoom_on());
+        }
+        // Zoom lasts while the terminal has the keys, however they left.
+        if self.pane.focus != PaneFocus::Terminal {
+            self.pane.zoom = false;
+        }
+        self.pane_selection_tick();
+        self.pane_history_tick();
         // The pane's size, followed at once.
         if let (Some(client), Some(rect)) = (self.pane.client.as_mut(), self.pane.rect) {
             let size = (rect.height, rect.width);
@@ -538,6 +620,9 @@ impl App {
     /// How soon [`App::pane_tick`] has something to do: when the debounce of
     /// a selection ends. The runtime's wait is at most this long.
     pub fn pane_wait(&self, now: Instant) -> Option<Duration> {
+        if self.pane_active() && self.settings.is_none() && self.pane_due() {
+            return Some(Duration::ZERO);
+        }
         if !self.pane_active()
             || self.pane_home()
             || self.pane_shell_showing()
@@ -547,6 +632,19 @@ impl App {
         }
         let rested_at = self.pane.since? + ATTACH_DEBOUNCE;
         Some(rested_at.saturating_duration_since(now))
+    }
+
+    /// The frame just drawn made [`App::pane_tick`] something to do: the pane
+    /// has a new size, or a zoom waits for its place. A key that zooms does not
+    /// wait for the next turn of the loop.
+    fn pane_due(&self) -> bool {
+        let Some(rect) = self.pane.rect else {
+            return false;
+        };
+        let size = (rect.height, rect.width);
+        self.pane.zoom_asked
+            || self.pane.client.as_ref().is_some_and(|c| c.size != size)
+            || self.pane.shell.as_ref().is_some_and(|s| s.size != size)
     }
 
     // ---- what the runtime reports ---------------------------------------------
@@ -743,6 +841,7 @@ impl App {
         self.pane.since = Some(now);
         self.pane.wanted = None;
         self.pane.gesture = false;
+        self.pane.zoom = false;
         let mut effects = Vec::new();
         if self.pane_client_key() != Some(key) {
             let cwd = self
@@ -1090,6 +1189,8 @@ impl App {
     /// Gives the list the keys; the client stays. Any gesture ends.
     fn pane_focus_list(&mut self, now: Instant) -> Vec<Effect> {
         self.pane.gesture = false;
+        self.pane.zoom = false;
+        self.pane_clear_selection();
         if self.pane.focus == PaneFocus::List {
             return Vec::new();
         }
@@ -1123,12 +1224,39 @@ impl App {
     }
 
     /// A key while the terminal has them: `Ctrl+Z` and `F12` are tower's and
-    /// give the list the keys; every other key goes to the child.
+    /// give the list the keys, `F2` zooms, `Esc` ends a selection and
+    /// `Shift+PgUp` / `Shift+PgDn` move the history of a program that can
+    /// (doc/0045). Every other key goes to the child and brings the view back
+    /// to the bottom.
     pub(super) fn pane_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('z' | 'Z') if ctrl => return self.pane_focus_list(Instant::now()),
             KeyCode::F(12) => return self.pane_focus_list(Instant::now()),
+            KeyCode::F(2) => {
+                self.pane.zoom = !self.pane.zoom;
+                return Vec::new();
+            }
+            KeyCode::Esc if self.pane.selection.is_some() => {
+                self.pane_clear_selection();
+                return Vec::new();
+            }
+            KeyCode::PageUp | KeyCode::PageDown
+                if key.modifiers == KeyModifiers::SHIFT && self.pane_scrollable() =>
+            {
+                let page = self
+                    .pane
+                    .rect
+                    .map_or(1, |r| r.height.saturating_sub(1))
+                    .max(1);
+                let page = isize::try_from(page).unwrap_or(1);
+                self.pane_scroll(if key.code == KeyCode::PageUp {
+                    page
+                } else {
+                    -page
+                });
+                return Vec::new();
+            }
             _ => {}
         }
         let application = self
@@ -1136,10 +1264,208 @@ impl App {
             .is_some_and(PaneScreen::application_cursor);
         let bytes = embed::encode_key(&key, application);
         if bytes.is_empty() {
-            Vec::new()
-        } else {
-            vec![self.pane_write(bytes)]
+            return Vec::new();
         }
+        self.pane_to_bottom();
+        vec![self.pane_write(bytes)]
+    }
+
+    // ---- zoom (doc/0045) ----------------------------------------------------------
+
+    /// `z` or `F2` with the list holding the keys: the terminal of the selected
+    /// row fills the window and gets them. From the dashboard of a small
+    /// terminal too, since zoom needs no room for the bar.
+    pub(super) fn pane_zoom_key(&mut self) -> Vec<Effect> {
+        if self.style != UiStyle::Workspace || self.pane.failed.is_some() {
+            return Vec::new();
+        }
+        if self.pane_active() {
+            return self.pane_zoom_on();
+        }
+        if let Some(why) = self.pane_zoom_refused() {
+            self.set_message(why, Severity::Info);
+            return Vec::new();
+        }
+        // The fallback's selection is a real one: Home does not stand for it.
+        self.pane.home = false;
+        self.pane.chosen = true;
+        self.pane.zoom_asked = true;
+        Vec::new()
+    }
+
+    /// Why the selected row has no terminal to zoom.
+    fn pane_zoom_refused(&self) -> Option<&'static str> {
+        if self.pane_shell_showing() {
+            return None;
+        }
+        let Some(m) = self.selected_session() else {
+            return Some("choose a session to zoom its terminal");
+        };
+        let attached = m.session.key().is_some() && self.pane_client_key() == m.session.key();
+        let startable = m.session.is_attachable()
+            && m.session.has_live_process()
+            && !self.pane_row_busy(m)
+            && self.pane_row_info(m).is_some();
+        if attached || startable {
+            None
+        } else {
+            Some("this row has no terminal to zoom; Enter opens one if it can")
+        }
+    }
+
+    fn pane_zoom_on(&mut self) -> Vec<Effect> {
+        if let Some(why) = self.pane_zoom_refused() {
+            self.set_message(why, Severity::Info);
+            return Vec::new();
+        }
+        let effects = self.pane_enter();
+        self.pane.zoom = self.pane.focus == PaneFocus::Terminal;
+        effects
+    }
+
+    // ---- the history and tower's selection (doc/0045) ---------------------------------
+
+    /// Whether tower scrolls what the pane shows.
+    fn pane_scrollable(&self) -> bool {
+        !self.pane_home() && self.pane_screen().is_some_and(PaneScreen::scrollable)
+    }
+
+    /// Moves the view; a selection ends with what it was on.
+    fn pane_scroll(&mut self, lines: isize) {
+        if self
+            .pane_screen()
+            .is_some_and(|screen| screen.scroll(lines))
+        {
+            self.pane_clear_selection();
+        }
+    }
+
+    /// What goes to the program brings the view back to the bottom.
+    fn pane_to_bottom(&mut self) {
+        if self.pane_screen().is_some_and(PaneScreen::to_bottom) {
+            self.pane_clear_selection();
+        }
+    }
+
+    fn pane_clear_selection(&mut self) {
+        self.pane.selection = None;
+        self.pane.press = None;
+    }
+
+    /// The program the pane shows, by its generation.
+    fn pane_shown_generation(&self) -> Option<u64> {
+        if self.pane_shell_showing() {
+            return self.pane.shell.as_ref().map(|shell| shell.generation);
+        }
+        self.pane.client.as_ref().map(|client| client.generation)
+    }
+
+    /// A selection ends when what is under it changes, when the keys or the
+    /// program shown change, when the pane moves or resizes, and when the
+    /// program asks for the mouse.
+    fn pane_selection_tick(&mut self) {
+        let Some(sel) = &self.pane.selection else {
+            return;
+        };
+        let same = self.pane_has_keys()
+            && self.pane.rect == Some(sel.rect)
+            && self.pane_shown_generation() == Some(sel.generation)
+            && self.pane_screen().is_some_and(|screen| {
+                screen.mouse_mode() == vt100::MouseProtocolMode::None
+                    && screen.selected(sel.anchor, sel.head).text == sel.text
+            });
+        if !same {
+            self.pane_clear_selection();
+        }
+    }
+
+    /// A program that came to ask for the mouse scrolls itself: no view stays
+    /// up there with nothing to bring it down.
+    fn pane_history_tick(&self) {
+        if let Some(screen) = self.pane.shell.as_ref().and_then(|s| s.screen.as_ref())
+            && !screen.scrollable()
+        {
+            screen.to_bottom();
+        }
+    }
+
+    /// Starts or moves a selection from `anchor` to `head`.
+    fn pane_set_selection(&mut self, anchor: PaneCell, head: PaneCell, rect: Rect) {
+        let (Some(generation), Some(screen)) = (self.pane_shown_generation(), self.pane_screen())
+        else {
+            return;
+        };
+        let text = screen.selected(anchor, head).text;
+        self.pane.selection = Some(PaneSelection {
+            anchor,
+            head,
+            dragging: true,
+            text,
+            generation,
+            rect,
+        });
+    }
+
+    /// The left button over a program that did not ask for the mouse: a drag
+    /// selects, confined to the pane; a click ends a selection; a double click
+    /// takes the word; the release copies what is highlighted.
+    fn pane_select_mouse(&mut self, mouse: MouseEvent, rect: Rect, now: Instant) -> Vec<Effect> {
+        let cell = (
+            mouse.row.clamp(rect.y, rect.bottom() - 1) - rect.y,
+            mouse.column.clamp(rect.x, rect.right() - 1) - rect.x,
+        );
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.pane_clear_selection();
+                let double = self.pane.last_press.take().is_some_and(|(at, on)| {
+                    on == cell && now.saturating_duration_since(at) < DOUBLE_CLICK
+                });
+                let word = self.pane_screen().and_then(|s| s.word_at(cell));
+                match word.filter(|_| double) {
+                    Some((first, last)) => {
+                        self.pane.press = Some(first);
+                        self.pane_set_selection(first, last, rect);
+                    }
+                    None => {
+                        self.pane.press = Some(cell);
+                        self.pane.last_press = (!double).then_some((now, cell));
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(anchor) = self.pane.press {
+                    self.pane_set_selection(anchor, cell, rect);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.pane.press = None;
+                return self.pane_copy_selection();
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The release of a drag: what is highlighted goes to the real terminal's
+    /// clipboard with `OSC 52`, and the status line says how much. The highlight
+    /// stays until the selection ends.
+    fn pane_copy_selection(&mut self) -> Vec<Effect> {
+        let Some(sel) = self.pane.selection.as_mut().filter(|sel| sel.dragging) else {
+            return Vec::new();
+        };
+        sel.dragging = false;
+        if sel.text.is_empty() {
+            self.pane_clear_selection();
+            return Vec::new();
+        }
+        let chars = sel.text.chars().count();
+        let Some(write) = embed::clipboard_write(&sel.text) else {
+            self.set_message("the selection is too long to copy", Severity::Warning);
+            return Vec::new();
+        };
+        let plural = if chars == 1 { "" } else { "s" };
+        self.set_message(format!("copied {chars} character{plural}"), Severity::Info);
+        vec![Effect::PaneCopy(write)]
     }
 
     /// Pasted text. The child takes it as its bracketed-paste mode says; a
@@ -1149,6 +1475,7 @@ impl App {
     pub fn handle_paste(&mut self, text: &str) -> Vec<Effect> {
         if self.pane_has_keys() {
             let bracketed = self.pane_screen().is_some_and(PaneScreen::bracketed_paste);
+            self.pane_to_bottom();
             return vec![self.pane_write(embed::encode_paste(text, bracketed))];
         }
         if !self.window_open() && !self.filter.editing {
@@ -1173,19 +1500,31 @@ impl App {
     /// events go on in SGR form with the pane's coordinates, clamped to it: a
     /// gesture that started inside goes on outside; a press outside starts
     /// nothing. The wheel over the list moves the selection like the arrows.
+    /// A program that did not ask for the mouse gets tower's own selection and,
+    /// in the shell, the wheel moves its history.
     /// A window takes the keys and the mouse does nothing.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Vec<Effect> {
+        self.handle_mouse_at(mouse, Instant::now())
+    }
+
+    /// [`App::handle_mouse`] at the time `now`, which a double click looks at.
+    pub fn handle_mouse_at(&mut self, mouse: MouseEvent, now: Instant) -> Vec<Effect> {
         let Some(rect) = self.pane.rect.filter(|_| self.pane_active()) else {
             return Vec::new();
         };
         if self.window_open() {
             self.pane.gesture = false;
+            self.pane_clear_selection();
             return Vec::new();
         }
         let at = Position::new(mouse.column, mouse.row);
         let inside = rect.contains(at);
         let mut effects = Vec::new();
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            // Zoomed, the footer's row is all there is outside: it takes nothing.
+            if !inside && self.pane.zoom {
+                return effects;
+            }
             if !inside {
                 effects.extend(self.pane_focus_list(Instant::now()));
                 self.pane_click_list(at);
@@ -1208,6 +1547,16 @@ impl App {
                 return effects;
             }
         }
+        // The wheel over the pane moves a history, whoever has the keys.
+        let wheel = match mouse.kind {
+            MouseEventKind::ScrollUp => WHEEL_LINES,
+            MouseEventKind::ScrollDown => -WHEEL_LINES,
+            _ => 0,
+        };
+        if inside && wheel != 0 && self.pane_scrollable() {
+            self.pane_scroll(wheel);
+            return effects;
+        }
         if self.pane.focus != PaneFocus::Terminal {
             return effects;
         }
@@ -1216,8 +1565,12 @@ impl App {
         };
         use vt100::MouseProtocolMode as Mode;
         let mode = screen.mouse_mode();
+        if mode == Mode::None {
+            self.pane.gesture = false;
+            effects.extend(self.pane_select_mouse(mouse, rect, now));
+            return effects;
+        }
         let wanted = match mouse.kind {
-            _ if mode == Mode::None => false,
             MouseEventKind::Down(_) => inside,
             MouseEventKind::Up(_) => self.pane.gesture && mode != Mode::Press,
             MouseEventKind::Drag(_) => {

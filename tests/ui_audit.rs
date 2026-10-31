@@ -48,7 +48,7 @@ use std::time::Instant;
 use common::{NoEnviron, ch, ctrl, key};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use watchtower::actions::RemoveError;
 use watchtower::app::{
     App, DIALOG_KEY_TABLE, Effect, KEY_TABLE, LOGS_KEY_TABLE, Overlay, Severity,
@@ -619,6 +619,45 @@ fn with_shell(app: &mut App) {
     app.style = style;
 }
 
+/// [`with_shell`] with a long history, the view up in it, and a selection
+/// across two rows there (doc/0045).
+fn with_selection(app: &mut App) {
+    let style = app.style;
+    app.style = UiStyle::Workspace;
+    draw(app, 160, 45);
+    let effects = press(app, ch('!'));
+    let open = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::PaneShellOpen(open) => Some(open.clone()),
+            _ => None,
+        })
+        .expect("a shell opens in the pane");
+    let screen = watchtower::embed::PaneScreen::with_history(
+        open.rows,
+        open.cols,
+        watchtower::embed::SHELL_HISTORY,
+    );
+    for k in 0..200 {
+        screen.feed(format!("output line {k}\r\n").as_bytes());
+    }
+    app.pane_opened(open.generation, screen);
+    draw(app, 160, 45);
+    let rect_x = watchtower::ui::workspace_list_width(app, 160) + 1;
+    let at = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(at(MouseEventKind::ScrollUp, rect_x + 2, 3));
+    let left = MouseButton::Left;
+    app.handle_mouse(at(MouseEventKind::Down(left), rect_x + 2, 2));
+    app.handle_mouse(at(MouseEventKind::Drag(left), rect_x + 8, 3));
+    app.handle_mouse(at(MouseEventKind::Up(left), rect_x + 8, 3));
+    app.style = style;
+}
+
 /// Sixty sessions, more than any bar shows.
 fn many_rows() -> App {
     let live = r#""pid": 4150, "status": "idle","#;
@@ -1092,6 +1131,39 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
         let mut app = base();
         select(&mut app, LONG_NAME);
         with_shell(&mut app);
+        just(app)
+    });
+    // Tower's selection in the shell, and the window it is in.
+    s!("list-workspace-selection", || {
+        let mut app = base();
+        select(&mut app, LONG_NAME);
+        with_selection(&mut app);
+        just(app)
+    });
+    // Zoom: the terminal alone, with the marker of the view on the footer, and
+    // a window over it.
+    s!("list-workspace-zoom", || {
+        let mut app = base();
+        select(&mut app, CYR_NAME);
+        with_pane(&mut app);
+        app.style = UiStyle::Workspace;
+        press(&mut app, ch('z'));
+        just(app)
+    });
+    s!("list-workspace-zoom-shell", || {
+        let mut app = base();
+        select(&mut app, LONG_NAME);
+        with_selection(&mut app);
+        app.style = UiStyle::Workspace;
+        press(&mut app, key(KeyCode::F(2)));
+        just(app)
+    });
+    s!("dialog-workspace-zoom", || {
+        let mut app = base();
+        with_pane(&mut app);
+        app.style = UiStyle::Workspace;
+        press(&mut app, ch('z'));
+        app.open_dialog(ProjectList::default());
         just(app)
     });
     s!("help-workspace", || {
@@ -2497,13 +2569,22 @@ fn check_frame_all(f: &Frame) -> Vec<(Finding, Option<(usize, usize)>)> {
         if dialog_key && f.look == "workspace" && f.w >= 100 {
             continue;
         }
-        // While the terminal has the keys, `?` is Claude Code's.
+        // While the terminal has the keys, `?` is Claude Code's. Zoomed, at
+        // any size.
         if matches!(
             f.scenario,
-            "list-workspace-terminal-keys" | "list-workspace-shell"
+            "list-workspace-terminal-keys" | "list-workspace-shell" | "list-workspace-selection"
         ) && *must == "? help"
             && f.look == "workspace"
             && f.w >= 100
+        {
+            continue;
+        }
+        if matches!(
+            f.scenario,
+            "list-workspace-zoom" | "list-workspace-zoom-shell"
+        ) && *must == "? help"
+            && f.look == "workspace"
         {
             continue;
         }
@@ -2827,6 +2908,28 @@ fn the_workspace_draws_its_pane_and_gives_way_below_its_size() {
         "the dashboard: {}",
         f.text()
     );
+}
+
+#[test]
+fn zoom_and_a_selection_draw_as_they_say() {
+    let text = frame("list-workspace-zoom", "workspace", 160, 45).text();
+    assert!(text.contains(" ZOOM "), "{text}");
+    assert!(!text.contains(" TERMINAL "), "{text}");
+    assert!(!text.contains("◆ tower"), "the bar is gone: {text}");
+    assert!(
+        rows_of(frame("list-workspace-zoom", "workspace", 160, 45))[0].starts_with(" Claude Code"),
+        "from the first cell: {text}"
+    );
+    let text = frame("list-workspace-zoom-shell", "workspace", 160, 45).text();
+    assert!(text.contains(" ZOOM "), "{text}");
+    assert!(text.contains("↑ 3 lines"), "{text}");
+    let text = frame("dialog-workspace-zoom", "workspace", 160, 45).text();
+    assert!(text.contains("New session"), "{text}");
+    assert!(text.contains(" ZOOM "), "{text}");
+    let text = frame("list-workspace-selection", "workspace", 160, 45).text();
+    assert!(text.contains("copied "), "{text}");
+    assert!(text.contains("↑ 3 lines"), "{text}");
+    assert!(text.contains("output line"), "{text}");
 }
 
 #[test]
