@@ -127,9 +127,17 @@ impl Fake {
             .map(str::to_owned)
     }
 
-    /// The arguments of every call, in order.
+    /// The arguments of every finished call, in order. A running tower keeps
+    /// polling, so a call can be counted before its file is complete: those
+    /// are left out instead of failing the read.
     pub fn all_argv(&self) -> Vec<Vec<String>> {
-        (1..=self.calls()).map(|n| self.argv_of(n)).collect()
+        (1..=self.calls())
+            .filter(|n| {
+                std::fs::read(self.dir.path().join(format!("argv.{n}.bin")))
+                    .is_ok_and(|bytes| bytes.ends_with(&[0]))
+            })
+            .map(|n| self.argv_of(n))
+            .collect()
     }
 
     /// How many times the fake was run.

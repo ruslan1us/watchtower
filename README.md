@@ -47,6 +47,9 @@ What it adds on top:
   numbers Claude Code's own `/usage` reports after each account (`5h 24% · 7d 12%`), and
   the details panel when they reset. Off by default and for your information only
   ([Plan usage](#plan-usage)).
+- **A workspace style, if you turn it on.** `[ui] style = "workspace"` shows sessions as cards on
+  the left and the selected session's real Claude Code terminal on the right, with mouse support,
+  zoom and a shell pane ([Workspace style](#workspace-style-experimental)).
 - **A dashboard look by default:** count pills per state, the list in panels, and a detail
   panel for the selected session; `[ui] style = "minimal"` gives the plain list
   ([Configuration](#configuration)), and the experimental `"workspace"` shows Claude's real
