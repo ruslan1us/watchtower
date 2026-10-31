@@ -55,6 +55,10 @@ What it adds on top:
   ([Configuration](#configuration)), and the experimental `"workspace"` shows Claude's real
   terminal beside the list ([Workspace style](#workspace-style-experimental)).
 
+![the Home panel: session counts, sessions that need you, plan usage and the main keys](assets/screenshot-home.png)
+
+![the new-session dialog drawn over the workspace](assets/screenshot-new-session.png)
+
 ## What it does not do
 
 Tower never runs, supervises or reconfigures agents. It has no PTY handling, no tmux, no
@@ -483,10 +487,6 @@ real terminal in a pane beside it, where the details panel was. It's still exper
 has been used in Warp, locally and over SSH, but other terminals are untested, and Claude
 Code's fullscreen view it relies on is a research preview
 ([0045](doc/0045-workspace-style.md)).
-
-![the Home panel: session counts, sessions that need you, plan usage and the main keys](assets/screenshot-home.png)
-
-![the new-session dialog drawn over the workspace](assets/screenshot-new-session.png)
 
 - Nothing attaches at the start: the pane shows **Home**, with no row selected: the version, the
   counts per group, the sessions that need you, each account's plan usage when `[usage] show` is
