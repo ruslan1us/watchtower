@@ -15,6 +15,11 @@
 //! answers that its background service may be restarting and the row has no
 //! live process, [`remove_with_fallback`] retries with the commands of the
 //! other accounts the hand-off guard allows (doc/0018), first success wins.
+//!
+//! Restarting a session onto the installed Claude Code ([`respawn`], doc/0047)
+//! works the same way: the owner's command, the short `id`. Never `--all`: the
+//! id check refuses anything that starts with `-`, and tower restarts several
+//! sessions by looping over their ids.
 
 use crate::cli::{CliError, CliOutput, CliRunner, CommandLine};
 use crate::config::Account;
@@ -35,6 +40,11 @@ pub fn stop_command(account: &Account, id: &str) -> CommandLine {
 /// `--force-remove-worktree`.
 pub fn remove_command(account: &Account, id: &str) -> CommandLine {
     CommandLine::for_account(account, ["rm", id])
+}
+
+/// `<account command> respawn <id>` (doc/0047). Never `--all`.
+pub fn respawn_command(account: &Account, id: &str) -> CommandLine {
+    CommandLine::for_account(account, ["respawn", id])
 }
 
 /// True when `id` can be passed as a short id: non-empty, no whitespace or
@@ -97,6 +107,32 @@ pub enum RemoveError {
         /// Exit code; `None` when killed by a signal.
         code: Option<i32>,
         /// stdout and stderr, each trimmed, joined by a newline.
+        message: String,
+    },
+}
+
+/// Why `respawn` did not confirm the restart (doc/0047).
+#[derive(Debug, thiserror::Error)]
+pub enum RespawnError {
+    /// The id is empty or malformed; nothing was run.
+    #[error("invalid session id `{0}`")]
+    InvalidId(String),
+    /// The command could not be run or timed out.
+    #[error(transparent)]
+    Cli(#[from] CliError),
+    /// `No job matching '<id>'`: the account knows no such session.
+    #[error("{message}")]
+    UnknownId {
+        /// The CLI's message, trimmed.
+        message: String,
+    },
+    /// Any other outcome: a non-zero exit, or exit 0 without
+    /// `respawned <id>`.
+    #[error("respawn failed (exit {}): {message}", code_label(*code))]
+    Failed {
+        /// Exit code; `None` when killed by a signal.
+        code: Option<i32>,
+        /// stdout and stderr, trimmed.
         message: String,
     },
 }
@@ -169,6 +205,31 @@ pub fn interpret_remove(out: &CliOutput, id: &str) -> Result<(), RemoveError> {
         code: out.code,
         message: full_text(out),
     })
+}
+
+/// Interprets the output of `respawn <id>` (see [`respawn`]).
+pub fn interpret_respawn(out: &CliOutput, id: &str) -> Result<(), RespawnError> {
+    if out.success() && confirms(out, "respawned", id) {
+        return Ok(());
+    }
+    if let Some(message) = unknown_id(out) {
+        return Err(RespawnError::UnknownId { message });
+    }
+    Err(RespawnError::Failed {
+        code: out.code,
+        message: full_text(out),
+    })
+}
+
+/// Runs `<account command> respawn <id>` once (doc/0047). Success means exit
+/// 0 and `respawned <id>`. `account` must be the owning account; `id` the
+/// short id, so `--all` can never get through here.
+pub fn respawn(runner: &CliRunner, account: &Account, id: &str) -> Result<(), RespawnError> {
+    if !is_valid_id(id) {
+        return Err(RespawnError::InvalidId(id.to_owned()));
+    }
+    let out = runner.run_line(&respawn_command(account, id))?;
+    interpret_respawn(&out, id)
 }
 
 /// Runs `<account command> stop <id>` once (doc/0009). Success means exit 0

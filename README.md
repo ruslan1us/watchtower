@@ -25,8 +25,12 @@ What it adds on top:
   `orchestrator` that you can ask what your sessions are doing, and, when you ask and
   confirm, to start or wake a session through tower ([The orchestrator](#the-orchestrator)).
 - **Visual-only attention.** A session that starts waiting for you or fails gets a `●`
-  marker and bold text until you attach or mark it seen. No bell, sound or desktop
-  notifications.
+  marker and bold text until you attach or mark it seen, and the terminal's tab title says
+  `tower · 2 need you`, so it shows from another tab. No bell, sound or desktop notifications.
+- **Pinned sessions.** `P` keeps a session in its own group at the top, whatever its state
+  ([Pinning](#pinning-a-session)).
+- **Restart after an update.** `U` restarts a session onto the installed Claude Code, `Ctrl+U`
+  every running one, each under its own account ([Restarting](#restarting-after-an-update)).
 - **Quick reply.** `t` on a session waiting for review sends it a text (typed, or a
   [prompt template](#prompt-templates)) as your next prompt, under its own account and id,
   without attaching ([Quick reply](#quick-reply)).
@@ -63,7 +67,8 @@ multi-user mode: it is a single-user local tool around the unmodified official `
 binary. The quick reply (`t`) sends a session a text without attaching, and the plan
 usage display is opt-in and only shows what Claude Code reports
 ([0043](doc/0043-plan-usage-display.md)). There is no automatic or limit-based hand-off,
-no sorting, suggestion or action based on usage, no pinning and no chat or diff views.
+no sorting, suggestion or action based on usage, and no chat or diff views. `P` pins in tower's
+own list only; Claude Code's own pin has no CLI.
 The full list of non-goals is in [0014](doc/0014-v1-scope.md).
 
 ## Accounts and terms
@@ -306,6 +311,12 @@ does not parse is not applied; the status line shows the error until it is fixed
   color_depth = "256"   # or "truecolor", "16"
   ```
 
+- **Tab title.** Tower sets the terminal's window or tab title in every style: `tower`, or
+  `tower · 2 need you` while sessions need attention, so it shows from another tab
+  ([0047](doc/0047-tab-title-pinning-and-restart.md)). It is written only when the text changes,
+  comes from tower alone, and the previous title comes back when tower hands the terminal over or
+  exits. `[ui] tab_title = false` (also in Settings) leaves the title alone.
+
 - **Background logs follow.** Tower fetches `claude logs` of every working session, and
   of the session you are attached to, every `logs_follow_secs` seconds (default `10`), so
   the logs panel keeps the whole screen however long a session works
@@ -431,6 +442,35 @@ while a session waits on a permission prompt or a question dialog: attach to ans
 (`Enter`). A session woken without a prompt (`working · idle`) is offered. The status line shows `stopping <name>…`, `waking <name> with your text…` and
 `sent to <name>` ([0040](doc/0040-quick-reply.md)).
 
+## Pinning a session
+
+`P` on a row pins it, `P` again unpins it ([0047](doc/0047-tab-title-pinning-and-restart.md)).
+Grouped by state, pinned sessions have their own `Pinned` group right after Orchestrator, whatever
+their state, stopped ones too; the row still shows its state, and its `●` still counts. Grouped by
+project they sort first within their project. It folds, filters and counts like any group, in every
+style, and in the workspace it is a group of cards. The orchestrator and interactive rows cannot be
+pinned.
+
+The pin lives in tower's `state.json`, by the session's short id, so `/clear` does not lose it. It
+is tower's list only: Claude Code knows nothing of it, and a pinned session still stops after about
+an hour of idling. A pin whose session no listing showed for 14 days is dropped.
+
+## Restarting after an update
+
+A running session stays on the Claude Code it started with. `U` on a row asks, then runs
+`<owner's command> respawn <id>` ([0047](doc/0047-tab-title-pinning-and-restart.md)). The
+conversation, id, name, account and saved options stay. **What is lost is said first:** a running
+turn is interrupted and does not continue, and a pending prompt is dropped and what it asked for
+does not run. A terminal attached to the session elsewhere is disconnected.
+
+- `U` on a group header restarts that group's running sessions, and `Ctrl+U` every running session.
+  That window counts them per account (`main: 3 sessions`), says what it leaves out, and only a
+  capital `Y` goes.
+- Tower goes by id, with each session's own account's command, and never uses `respawn --all`.
+- A stopped session has nothing to restart: it runs the installed Claude Code when woken.
+- In the workspace the pane's terminal closes first, and comes back once the session is running.
+- Tower cannot tell you which sessions run an older version: the CLI does not say, per session.
+
 ## Workspace style (experimental)
 
 `[ui] style = "workspace"` (also in Settings, `c`) draws the list in a bar and Claude Code's
@@ -473,7 +513,8 @@ untested), and Claude Code's fullscreen view it relies on is a research preview
   `Ctrl+C` too, except `Ctrl+Z` and `F12`, which return to the list and stay attached. After
   10 minutes without the keys the terminal is released.
 - `s`, `d`, `a`, `e` and `t` close that session's terminal first and work as usual; `Enter`
-  attaches again. Windows draw over the pane and take the keys meanwhile.
+  attaches again. `U` closes it too, and it comes back by itself once the session has restarted.
+  Windows draw over the pane and take the keys meanwhile.
 - The mouse is captured in this style, so Claude Code gets it and a click moves the keys; hold
   `Shift` for your terminal's own selection (zoom leaves no frame in its way), or set `[ui] mouse =
   false`. Clipboard writes
@@ -504,6 +545,9 @@ Session list ([0011](doc/0011-keybindings.md)):
 | `d` | Remove the session (asks first) |
 | `m` | Mark a highlighted session as seen |
 | `t` | [Quick reply](#quick-reply): send the session a text as your next prompt (idle or stopped sessions) |
+| `P` | [Pin or unpin](#pinning-a-session) the session |
+| `U` | [Restart](#restarting-after-an-update) the session onto the installed Claude Code (asks first); on a group header, the group's running sessions |
+| `Ctrl+U` | Restart every running session (asks first, per account; only `Y` goes) |
 | `/` | Text filter on name, project and account; `Esc` clears it |
 | `p` | Group by state / by project |
 | `i` | Show / hide interactive sessions |
@@ -657,7 +701,7 @@ rules; delete it to get tower's version.
 Next to the config, in `~/.config/watchtower/`:
 
 - `state.json`: what the CLI does not expose: each session's owning account, tracked
-  state-change times, acknowledged highlights, recent projects. Written atomically; losing
+  state-change times, acknowledged highlights, pinned sessions, recent projects. Written atomically; losing
   it loses only conveniences, and a corrupt one is moved aside as `state.json.corrupt`.
 - `state.json.lock`: the lock that lets several tower instances share `state.json`.
 - `config.toml.bak`: a one-time copy of your config, made before tower first writes it;
@@ -696,6 +740,10 @@ Next to the config, in `~/.config/watchtower/`:
 - Claude Code stops idle sessions (the orchestrator too) after about an hour; they wake,
   more slowly, on the next attach.
 - `Ctrl+Enter` is not reported by many terminals, especially over SSH; use `Alt+Enter`.
+- The tab title comes back through the terminal's own title stack, so a terminal without one
+  keeps `tower` until your shell's prompt sets a title, and a dropped SSH connection can leave a
+  count behind. Only tmux was tested; Warp and Windows Terminal were not. `[ui] tab_title = false`
+  turns it off ([0047](doc/0047-tab-title-pinning-and-restart.md)).
 - Keys are fixed. Open questions are listed in each decision in [`doc/`](doc/README.md).
 
 ## Development

@@ -36,10 +36,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::actions::{self, Removal, StopError};
+use crate::actions::{self, Removal, RespawnError, StopError};
 use crate::app::{
     App, ConfigCheckJob, DispatchJob, Effect, HandoffJob, OrchestratorJob, ProjectScan, RemoveJob,
-    RenameJob, ReplyJob, SessionAction, SidecarJob,
+    RenameJob, ReplyJob, RestartJob, SessionAction, SidecarJob,
 };
 use crate::cli::{CliError, CliRunner};
 use crate::commands::{CommandList, CommandLoad};
@@ -70,6 +70,11 @@ pub enum JobResult {
     Stop(SessionAction, Result<(), StopError>),
     /// `rm <id>`, with its fallback (doc/0034).
     Remove(RemoveJob, Removal),
+    /// `done` sessions of restart `run` are through (doc/0047).
+    RestartStep { run: u64, done: usize },
+    /// A finished restart (doc/0047): one result per session of the job, in
+    /// its order.
+    Restart(RestartJob, Vec<Result<(), RespawnError>>),
     /// A step of a running hand-off has started.
     HandoffStep(Step),
     /// A finished hand-off (doc/0004). The job is boxed to keep the enum
@@ -123,6 +128,11 @@ impl JobResult {
             JobResult::Orchestrator(job, result) => app.orchestrator_finished(job, result),
             JobResult::Stop(action, result) => app.stop_finished(action, result),
             JobResult::Remove(job, removal) => app.remove_finished(job, removal),
+            JobResult::RestartStep { run, done } => {
+                app.restart_step(run, done);
+                Vec::new()
+            }
+            JobResult::Restart(job, results) => app.restart_finished(job, results),
             JobResult::HandoffStep(step) => {
                 app.handoff_step(step);
                 Vec::new()
@@ -343,6 +353,34 @@ impl Jobs {
                 &job.action.id,
             );
             JobResult::Remove(job, removal)
+        });
+    }
+
+    /// Restarts `job`'s sessions onto the installed Claude Code (doc/0047):
+    /// `<owner's command> respawn <id>` for each in turn, each with its own
+    /// account's command, whatever the others did. A failed worker counts as
+    /// a failure of every session.
+    pub fn restart(&self, job: RestartJob) {
+        let fail = |job: RestartJob, err: CliError| {
+            let results = job
+                .items
+                .iter()
+                .map(|_| {
+                    Err(RespawnError::Failed {
+                        code: None,
+                        message: err.to_string(),
+                    })
+                })
+                .collect();
+            JobResult::Restart(job, results)
+        };
+        self.launch("restart", job, fail, |runner, tx, job| {
+            let mut results = Vec::with_capacity(job.items.len());
+            for (done, action) in job.items.iter().enumerate() {
+                let _ = tx.send(JobResult::RestartStep { run: job.run, done });
+                results.push(actions::respawn(runner, &action.account, &action.id));
+            }
+            JobResult::Restart(job, results)
         });
     }
 

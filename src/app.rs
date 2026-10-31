@@ -5,7 +5,8 @@
 //! new-session dialog ([`crate::dialog`], doc/0008), stop and remove, the
 //! logs panel and its scrolling (doc/0009, doc/0028), the hand-off to another account (doc/0004), the
 //! rename window of `e` (doc/0027), the quick reply window of `t`
-//! (doc/0040), the
+//! (doc/0040), pinning and restarting sessions (`P`, `U`, `Ctrl+U`,
+//! doc/0047), the
 //! orchestrator key `o` (doc/0010), the tracked activity times and the
 //! attention highlight with `m` (doc/0006, doc/0007, via
 //! [`crate::activity`]), and the key table (doc/0011).
@@ -33,7 +34,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
-use crate::actions::{Fallback, Removal, RemoveError, StopError};
+use crate::actions::{Fallback, Removal, RemoveError, RespawnError, StopError};
 use crate::activity;
 use crate::commands::{CommandKey, CommandList, CommandLoad, Commands};
 use crate::config::ConfigError;
@@ -131,6 +132,10 @@ pub enum Effect {
     /// Run `<owning account command> stop <id>` on a worker thread, then
     /// call [`App::stop_finished`] (doc/0009).
     Stop(SessionAction),
+    /// Run `<owning account command> respawn <id>` for each session of the
+    /// job on a worker thread, reporting to [`App::restart_step`], then call
+    /// [`App::restart_finished`] (doc/0047).
+    Restart(RestartJob),
     /// Run `<owning account command> rm <id>` on a worker thread, with the
     /// other accounts' commands as a fallback when the job allows it, then
     /// call [`App::remove_finished`] (doc/0009, doc/0034).
@@ -423,6 +428,86 @@ pub struct SessionAction {
     pub name: String,
 }
 
+/// Sessions to restart onto the installed Claude Code (doc/0047), in order;
+/// each carries its own owner's account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartJob {
+    /// Names this restart in what is reported about it.
+    pub run: u64,
+    pub items: Vec<SessionAction>,
+}
+
+/// What a restart costs a session (doc/0047), as the reference doc records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartCost {
+    /// It is idle, or waits for its next prompt.
+    Nothing,
+    /// A turn runs: it is interrupted and does not continue.
+    RunningTurn,
+    /// It waits on this (`permission prompt`, `input needed`, …): the prompt
+    /// is dropped and what it asked for does not run.
+    PendingPrompt(String),
+    /// A background task such as a shell outlived its turn (doc/0032); what
+    /// happens to it is not verified.
+    BackgroundTask,
+}
+
+impl RestartCost {
+    /// What restarting `s` costs, from its row.
+    pub fn of(s: &Session) -> RestartCost {
+        if let (Some(Status::Waiting), Some(what)) = (&s.status, &s.waiting_for) {
+            RestartCost::PendingPrompt(what.to_string())
+        } else if groups::spins(s) {
+            RestartCost::RunningTurn
+        } else if groups::bg_task(s) {
+            RestartCost::BackgroundTask
+        } else {
+            RestartCost::Nothing
+        }
+    }
+}
+
+/// A restart of several sessions, waiting for its stronger confirmation
+/// (doc/0047): what it would do, per account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartPlan {
+    /// `every running session`, `the Working group`, `the project ~/api`.
+    pub scope: String,
+    /// The sessions, each with its owner's command.
+    pub items: Vec<SessionAction>,
+    /// How many of them each account has, in config order.
+    pub by_account: Vec<(String, usize)>,
+    /// How many have a running turn, which is interrupted.
+    pub turns: usize,
+    /// How many wait on a prompt, which is dropped.
+    pub prompts: usize,
+    /// How many have a background task running.
+    pub tasks: usize,
+    /// Left out: no process to restart.
+    pub stopped: usize,
+    /// Left out: no account known to run the command with.
+    pub unknown: usize,
+    /// Left out: tower is working on them (hand-off, rename, reply, restart).
+    pub busy: usize,
+}
+
+impl RestartPlan {
+    /// What the plan leaves out, for the window and the status line.
+    pub fn left_out(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.stopped > 0 {
+            out.push(format!("{} stopped", self.stopped));
+        }
+        if self.unknown > 0 {
+            out.push(format!("{} with an unknown account", self.unknown));
+        }
+        if self.busy > 0 {
+            out.push(format!("{} tower is working on", self.busy));
+        }
+        out
+    }
+}
+
 /// A remove of one session (doc/0009) and which other accounts' commands
 /// may retry it if the owner's background service does not answer
 /// (doc/0034).
@@ -586,11 +671,13 @@ pub enum Purpose {
     /// Send a quick reply: stop and wake it under the chosen account
     /// (doc/0040).
     Reply,
+    /// Restart it onto the installed Claude Code (doc/0047).
+    Restart,
 }
 
 impl Purpose {
     /// The verb for messages: `attach`, `stop`, `remove`, `rename`,
-    /// `reply`.
+    /// `reply`, `restart`.
     pub fn verb(self) -> &'static str {
         match self {
             Purpose::Attach => "attach",
@@ -598,6 +685,7 @@ impl Purpose {
             Purpose::Remove => "remove",
             Purpose::Rename => "rename",
             Purpose::Reply => "reply",
+            Purpose::Restart => "restart",
         }
     }
 }
@@ -621,6 +709,13 @@ pub enum Confirm {
         detail: String,
         interrupts: bool,
     },
+    /// Restart one session onto the installed Claude Code (doc/0047).
+    Restart {
+        action: SessionAction,
+        cost: RestartCost,
+    },
+    /// Restart several sessions: only `Y` confirms (doc/0047).
+    RestartMany(Box<RestartPlan>),
 }
 
 /// A running hand-off, for the status line and the row-action guard.
@@ -631,6 +726,16 @@ struct HandoffProgress {
     id: String,
     /// Its `sessionId`.
     session_id: String,
+    text: String,
+}
+
+/// A running restart, for the status line and the row-action guard
+/// (doc/0047).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartRun {
+    run: u64,
+    /// Short ids of its sessions.
+    ids: Vec<String>,
     text: String,
 }
 
@@ -666,9 +771,15 @@ struct ReplyProgress {
 /// (doc/0027): its state tuples are not recorded while the rename runs,
 /// and once it is listed stopped again its last tuple is taken without a
 /// new change time. `done`: the rename reported back at that time.
+///
+/// A restart (doc/0047, `restart`) is quiet too: the row lists as stopped for a
+/// moment, and that is no activity. Once it is listed live again its tuple is
+/// compared with the one from before: the same keeps its time and its
+/// acknowledgement, another (a turn it interrupted) is a change like any other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Quiet {
     done: Option<Instant>,
+    restart: bool,
 }
 
 /// How long a finished rename keeps a session quiet while waiting for a
@@ -1136,6 +1247,13 @@ pub enum Action {
     /// `z`, `F2`: the workspace's terminal fills the window (doc/0045);
     /// nothing in other styles.
     PaneZoom,
+    /// `P`: pin or unpin the session (doc/0047).
+    Pin,
+    /// `U`: restart the session, or a selected header's group, onto the
+    /// installed Claude Code (doc/0047).
+    Restart,
+    /// `Ctrl+U`: restart every running session (doc/0047).
+    RestartAll,
 }
 
 /// Keys of the logs panel while it has the focus (doc/0028), looked up
@@ -1166,10 +1284,9 @@ pub enum LogsAction {
 /// heading and the 6 dialog or logs keys the help has 22 rows inside its
 /// border.
 pub const KEY_TABLE: &[(&str, &str)] = &[
-    ("↑/↓, k/j", "move selection"),
     (
-        "PgUp/PgDn",
-        "move one page; Home/End, g/G: first / last line",
+        "↑/↓, k/j",
+        "move selection; PgUp/PgDn page; Home/End, g/G ends",
     ),
     ("Enter", "attach; on a group header: collapse / expand"),
     ("Tab", "collapse / expand the group of the selected line"),
@@ -1180,6 +1297,7 @@ pub const KEY_TABLE: &[(&str, &str)] = &[
     ("a, e", "continue under another account (hand-off); rename"),
     ("s, d", "stop (confirm when working or blocked); remove"),
     ("m, t", "mark the highlighted session as seen; quick reply"),
+    ("P, U", "pin; restart (on a header: its group; Ctrl+U: all)"),
     (
         "Space, Esc, →",
         "toggle / close the logs panel; → scrolls it",
@@ -1252,6 +1370,7 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         return match key.code {
             KeyCode::Char('c') | KeyCode::Char('C') => Some(Action::Quit),
             KeyCode::Char('z') | KeyCode::Char('Z') => Some(Action::DetachKeyHint),
+            KeyCode::Char('u') | KeyCode::Char('U') => Some(Action::RestartAll),
             _ => None,
         };
     }
@@ -1289,6 +1408,8 @@ pub fn list_action(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('!') => Action::Shell,
         KeyCode::Char('h') => Action::PaneHome,
         KeyCode::Char('z') | KeyCode::F(2) => Action::PaneZoom,
+        KeyCode::Char('P') => Action::Pin,
+        KeyCode::Char('U') => Action::Restart,
         _ => return None,
     };
     Some(action)
@@ -1381,6 +1502,10 @@ pub struct App {
     reply: Option<ReplyWindow>,
     /// Quick replies running on worker threads, in the order started.
     replying: Vec<ReplyProgress>,
+    /// Every restart on its way (doc/0047).
+    restarting: Vec<RestartRun>,
+    /// Numbers the restarts.
+    restart_runs: u64,
     /// Where the config came from, once the runtime says
     /// ([`App::set_config_source`]).
     config_source: Option<ConfigSource>,
@@ -1541,6 +1666,8 @@ impl App {
             rename_attach: None,
             reply: None,
             replying: Vec::new(),
+            restarting: Vec::new(),
+            restart_runs: 0,
             config_source: None,
             logs: None,
             popup: None,
@@ -2112,6 +2239,52 @@ impl App {
             .count()
     }
 
+    /// Whether the user pinned this row (doc/0047). The orchestrator and
+    /// interactive rows keep their own groups, whatever the sidecar says.
+    pub fn is_pinned(&self, m: &MergedSession) -> bool {
+        !m.session.is_interactive()
+            && !orchestrator::is_orchestrator(&m.session)
+            && m.session
+                .id
+                .as_deref()
+                .is_some_and(|id| self.sidecar.is_pinned(id))
+    }
+
+    /// The group a row is listed in when grouping by state: Pinned for a
+    /// pinned row, else what its state gives it (doc/0006, doc/0047).
+    pub fn list_group(&self, m: &MergedSession) -> Group {
+        if self.is_pinned(m) {
+            Group::Pinned
+        } else {
+            groups::classify(&m.session)
+        }
+    }
+
+    /// The sessions of a list group that the filter lets through.
+    pub fn group_members(&self, key: &GroupKey) -> Vec<&MergedSession> {
+        self.sessions
+            .iter()
+            .filter(|m| match key {
+                GroupKey::State(g) => self.list_group(m) == *g,
+                GroupKey::Project(p) => {
+                    let g = groups::classify(&m.session);
+                    g != Group::Orchestrator
+                        && g != Group::Interactive
+                        && paths::shorten_home(&m.session.cwd, &self.home) == *p
+                }
+            })
+            .filter(|m| self.matches_filter(m))
+            .collect()
+    }
+
+    /// The terminal title tower wants: `None` when `[ui] tab_title` leaves it
+    /// alone. The counter is the status line's (doc/0007, doc/0047).
+    pub fn tab_title(&self) -> Option<String> {
+        self.config
+            .ui_tab_title
+            .then(|| crate::tabtitle::text(self.attention_count()))
+    }
+
     /// The selected session, if any.
     pub fn selected_session(&self) -> Option<&MergedSession> {
         match self.entries.get(self.selected_entry()?)? {
@@ -2332,6 +2505,14 @@ impl App {
         }
         // And every quick reply on its way (doc/0040).
         for r in &self.replying {
+            out.push(StatusSegment {
+                text: r.text.clone(),
+                severity: Severity::Info,
+                refresh: false,
+            });
+        }
+        // And every restart on its way (doc/0047).
+        for r in &self.restarting {
             out.push(StatusSegment {
                 text: r.text.clone(),
                 severity: Severity::Info,
@@ -2627,9 +2808,24 @@ impl App {
                     // A rename's wake is not activity (doc/0027): nothing
                     // is recorded while it runs, and the tuple of the
                     // stopped row after it is taken without a change time.
-                    Some(Quiet { done: Some(_) }) if !m.session.has_live_process() => {
+                    Some(Quiet {
+                        done: Some(_),
+                        restart: false,
+                    }) if !m.session.has_live_process() => {
                         activity |= self.sidecar.rebase_state(key, &tuple);
                         self.quiet.remove(key);
+                    }
+                    Some(Quiet {
+                        done: Some(_),
+                        restart: true,
+                    }) if m.session.has_live_process() => {
+                        self.quiet.remove(key);
+                        activity |= self.sidecar.observe_state_at(
+                            key,
+                            &tuple,
+                            m.session.started_at,
+                            now_ms,
+                        );
                     }
                     Some(_) => {}
                     None => {
@@ -2662,6 +2858,14 @@ impl App {
             .flat_map(|p| p.rows.iter().flatten())
             .filter_map(Session::key);
         changed |= self.sidecar.observe_listing(seen, complete, now_ms);
+        // The pins go by the short id, under the same rules (doc/0047).
+        let seen_ids = self
+            .polls
+            .iter()
+            .filter(|p| p.error.is_none())
+            .flat_map(|p| p.rows.iter().flatten())
+            .filter_map(|s| s.id.as_deref());
+        changed |= self.sidecar.observe_pins(seen_ids, complete, now_ms);
         self.set_sessions(merged);
         (changed, activity)
     }
@@ -2903,6 +3107,100 @@ impl App {
             }
             Err(err) => dialog.error = Some(err),
         }
+    }
+
+    /// `done` sessions of restart `run` are through (doc/0047).
+    pub fn restart_step(&mut self, run: u64, done: usize) {
+        if let Some(r) = self.restarting.iter_mut().find(|r| r.run == run)
+            && r.ids.len() > 1
+        {
+            r.text = restart_progress(r.ids.len(), done);
+        }
+    }
+
+    /// Reports a finished restart and polls (doc/0047). One failure says why
+    /// on the status line; several sessions' failures open a window with each
+    /// account's answer. The pane's client comes back for what restarted.
+    pub fn restart_finished(
+        &mut self,
+        job: RestartJob,
+        results: Vec<Result<(), RespawnError>>,
+    ) -> Vec<Effect> {
+        self.restarting.retain(|r| r.run != job.run);
+        let now = Instant::now();
+        for (action, result) in job.items.iter().zip(&results) {
+            let key = self
+                .sessions
+                .iter()
+                .find(|m| m.session.id.as_deref() == Some(action.id.as_str()))
+                .and_then(|m| m.session.key())
+                .map(str::to_owned);
+            let Some(key) = key else {
+                continue;
+            };
+            if result.is_ok() {
+                if let Some(q) = self.quiet.get_mut(&key) {
+                    q.done = Some(now);
+                }
+            } else {
+                self.quiet.remove(&key);
+            }
+        }
+        let total = job.items.len();
+        let mut restarted: Vec<&SessionAction> = Vec::new();
+        let mut failed: Vec<(&SessionAction, String)> = Vec::new();
+        for (action, result) in job.items.iter().zip(&results) {
+            match result {
+                Ok(()) => restarted.push(action),
+                Err(err) => failed.push((action, one_line(&err.to_string()))),
+            }
+        }
+        let ids: Vec<&str> = restarted.iter().map(|a| a.id.as_str()).collect();
+        self.pane_restarted(&ids);
+        if let ([action], [(_, why)]) = (job.items.as_slice(), failed.as_slice()) {
+            self.set_message(
+                format!("cannot restart {}: {why}", action.name),
+                Severity::Error,
+            );
+        } else if let ([action], []) = (job.items.as_slice(), failed.as_slice()) {
+            self.set_message(
+                format!("restarted {} ({})", action.name, action.id),
+                Severity::Info,
+            );
+        } else if failed.is_empty() {
+            let mut accounts: Vec<(&str, usize)> = Vec::new();
+            for action in &restarted {
+                match accounts.iter_mut().find(|(a, _)| *a == action.account.name) {
+                    Some((_, n)) => *n += 1,
+                    None => accounts.push((&action.account.name, 1)),
+                }
+            }
+            let accounts: Vec<String> = accounts.iter().map(|(a, n)| format!("{a} {n}")).collect();
+            self.set_message(
+                format!("restarted {total} sessions ({})", accounts.join(", ")),
+                Severity::Info,
+            );
+        } else {
+            let text = format!(
+                "restarted {} of {total} sessions; {} failed",
+                restarted.len(),
+                failed.len()
+            );
+            let mut lines = vec![text.clone(), String::new()];
+            lines.extend(failed.iter().map(|(action, why)| {
+                format!(
+                    "{} ({}, account {}): {why}",
+                    action.name, action.id, action.account.name
+                )
+            }));
+            self.open_late(Waiting::Popup(Popup {
+                title: "Some sessions were not restarted".to_owned(),
+                lines,
+                scroll: 0,
+            }));
+            self.set_message(text, Severity::Warning);
+        }
+        vec![Effect::PollNow]
     }
 
     /// Reports a finished stop and polls (doc/0009).
@@ -3438,6 +3736,7 @@ impl App {
             Purpose::Attach => {}
             Purpose::Stop => effects.extend(self.stop_or_confirm(action, confirm_stop)),
             Purpose::Remove => self.confirm_remove(action),
+            Purpose::Restart => self.confirm_restart(action),
             Purpose::Rename => {
                 let new = picker.rename_to.clone().unwrap_or_default();
                 effects.extend(self.start_rename(&picker.key, action.account, new));
@@ -3454,12 +3753,19 @@ impl App {
         match key.code {
             KeyCode::Char('c') if ctrl => vec![Effect::Quit],
             _ if ctrl || alt => Vec::new(),
+            // Several sessions take a capital `Y` (doc/0047).
+            KeyCode::Char('y') if matches!(confirm, Confirm::RestartMany(_)) => {
+                self.set_message("press Y (with Shift) to restart them", Severity::Info);
+                Vec::new()
+            }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.overlay = Overlay::None;
                 match confirm {
                     Confirm::Stop { action, .. } => self.run_stop(action),
                     Confirm::Remove { action } => self.run_remove(action),
                     Confirm::Handoff { job, .. } => self.start_handoff(*job),
+                    Confirm::Restart { action, .. } => self.run_restart(vec![action]),
+                    Confirm::RestartMany(plan) => self.run_restart(plan.items),
                 }
             }
             // The default is cancel (doc/0011), so Enter cancels too.
@@ -3469,6 +3775,7 @@ impl App {
                     Confirm::Stop { .. } => "stop",
                     Confirm::Remove { .. } => "remove",
                     Confirm::Handoff { .. } => "hand-off",
+                    Confirm::Restart { .. } | Confirm::RestartMany(_) => "restart",
                 };
                 self.set_message(format!("{verb} cancelled"), Severity::Info);
                 Vec::new()
@@ -3509,6 +3816,9 @@ impl App {
             Action::Settings => return self.request_settings(),
             Action::Rename => effects = self.request_rename(),
             Action::Reply => effects = self.request_reply(),
+            Action::Pin => effects = self.request_pin(),
+            Action::Restart => effects = self.request_restart(),
+            Action::RestartAll => effects = self.request_restart_all(),
             Action::Shell => return self.request_shell(),
             Action::MarkSeen => effects = self.mark_seen(),
             Action::ToggleLogs | Action::FocusLogs if self.pane_active() => {
@@ -3745,6 +4055,10 @@ impl App {
             self.set_message(reply_running_text(&name), Severity::Info);
             return Vec::new();
         }
+        if self.restarting_row(&m.session) {
+            self.set_message(restart_running_text(&name), Severity::Info);
+            return Vec::new();
+        }
         let confirm_stop = stop_needs_confirmation(&m.session);
         match &m.owner {
             Ownership::Known { account, .. } => {
@@ -3772,6 +4086,10 @@ impl App {
                         self.confirm_remove(action);
                         Vec::new()
                     }
+                    Purpose::Restart => {
+                        self.confirm_restart(action);
+                        Vec::new()
+                    }
                     // Renames start from the rename window (doc/0027),
                     // replies from `t` (doc/0040).
                     Purpose::Rename | Purpose::Reply => Vec::new(),
@@ -3797,6 +4115,223 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    // ---- pinning a session (doc/0047) ---------------------------------------
+
+    /// `P`: pins or unpins the selected row. It is stored by short id, since
+    /// the `sessionId` changes after `/clear`.
+    fn request_pin(&mut self) -> Vec<Effect> {
+        let Some(m) = self.selected_session() else {
+            if self.selected_header().is_some() {
+                self.set_message("P pins a session: select its row", Severity::Info);
+            }
+            return Vec::new();
+        };
+        let name = m.session.display_name();
+        if m.session.is_interactive() {
+            self.set_message(
+                format!("{name} runs in another terminal; only background sessions can be pinned"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        if orchestrator::is_orchestrator(&m.session) {
+            self.set_message(
+                "the orchestrator has its own group at the top",
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        let Some(id) = m.session.id.clone() else {
+            self.set_message(
+                format!("{name} has no short id; tower cannot pin it"),
+                Severity::Info,
+            );
+            return Vec::new();
+        };
+        let pinned = self.sidecar.toggle_pin(&id, sidecar::now_ms());
+        self.rebuild_view(Keep::Same);
+        let text = if pinned {
+            format!("pinned {name} (P unpins)")
+        } else {
+            format!("unpinned {name}")
+        };
+        self.set_message(text, Severity::Info);
+        vec![Effect::SaveSidecar]
+    }
+
+    // ---- restarting after a Claude Code update (doc/0047) --------------------
+
+    /// Whether a restart of this row runs.
+    pub(crate) fn restarting_row(&self, s: &Session) -> bool {
+        s.id.as_deref().is_some_and(|id| {
+            self.restarting
+                .iter()
+                .any(|r| r.ids.iter().any(|i| i == id))
+        })
+    }
+
+    /// `U`: on a header its group's running sessions, on a row that session.
+    /// A stopped row has nothing to restart: a wake starts the installed
+    /// Claude Code anyway, and `respawn` would wake it.
+    fn request_restart(&mut self) -> Vec<Effect> {
+        if let Some(key) = self.selected_header().cloned() {
+            let scope = match &key {
+                GroupKey::State(g) => format!("the {} group", g.title()),
+                GroupKey::Project(_) => format!("the project {}", key.title()),
+            };
+            let plan = self.restart_plan(scope, &self.group_members(&key));
+            self.ask_restart_many(plan);
+            return Vec::new();
+        }
+        let Some(m) = self.selected_session() else {
+            if self.pane_home() {
+                self.set_message(
+                    "choose a session first: ↓ or a click; Ctrl+U restarts every running session",
+                    Severity::Info,
+                );
+            }
+            return Vec::new();
+        };
+        if !m.session.is_interactive() && !m.session.has_live_process() {
+            let name = m.session.display_name();
+            self.set_message(
+                format!("{name} is stopped: nothing to restart; it runs the installed Claude Code when woken"),
+                Severity::Info,
+            );
+            return Vec::new();
+        }
+        self.request_action(Purpose::Restart)
+    }
+
+    /// `Ctrl+U`: every running session, each by its owner's command. The list's
+    /// filter and folding do not count: the window says how many.
+    fn request_restart_all(&mut self) -> Vec<Effect> {
+        let rows: Vec<&MergedSession> = self.sessions.iter().collect();
+        let plan = self.restart_plan("every running session".to_owned(), &rows);
+        self.ask_restart_many(plan);
+        Vec::new()
+    }
+
+    /// What restarting `rows` would do: the running background rows with a
+    /// known owner, in config order, and how many others are left out.
+    fn restart_plan(&self, scope: String, rows: &[&MergedSession]) -> RestartPlan {
+        let mut plan = RestartPlan {
+            scope,
+            items: Vec::new(),
+            by_account: Vec::new(),
+            turns: 0,
+            prompts: 0,
+            tasks: 0,
+            stopped: 0,
+            unknown: 0,
+            busy: 0,
+        };
+        for account in &self.config.accounts {
+            let mut count = 0;
+            for m in rows {
+                let s = &m.session;
+                let Some(id) = s.id.clone().filter(|_| !s.is_interactive()) else {
+                    continue;
+                };
+                if m.owner.account() != Some(account.name.as_str()) || !s.has_live_process() {
+                    continue;
+                }
+                if self.pane_row_busy(m) {
+                    plan.busy += 1;
+                } else {
+                    match RestartCost::of(s) {
+                        RestartCost::Nothing => {}
+                        RestartCost::RunningTurn => plan.turns += 1,
+                        RestartCost::PendingPrompt(_) => plan.prompts += 1,
+                        RestartCost::BackgroundTask => plan.tasks += 1,
+                    }
+                    count += 1;
+                    plan.items.push(SessionAction {
+                        account: account.clone(),
+                        id,
+                        name: s.display_name(),
+                    });
+                }
+            }
+            if count > 0 {
+                plan.by_account.push((account.name.clone(), count));
+            }
+        }
+        for m in rows {
+            let s = &m.session;
+            if s.is_interactive() || s.id.is_none() {
+                continue;
+            }
+            if !s.has_live_process() {
+                plan.stopped += 1;
+            } else if m
+                .owner
+                .account()
+                .is_none_or(|a| self.config.account(a).is_none())
+            {
+                plan.unknown += 1;
+            }
+        }
+        plan
+    }
+
+    /// Opens the stronger confirmation, or says why there is nothing to ask.
+    fn ask_restart_many(&mut self, plan: RestartPlan) {
+        if plan.items.is_empty() {
+            let mut left = plan.left_out();
+            if left.is_empty() {
+                left.push("no running sessions".to_owned());
+            }
+            self.set_message(
+                format!("nothing to restart in {}: {}", plan.scope, left.join(", ")),
+                Severity::Info,
+            );
+            return;
+        }
+        self.overlay = Overlay::Confirm(Confirm::RestartMany(Box::new(plan)));
+    }
+
+    fn confirm_restart(&mut self, action: SessionAction) {
+        let cost = self
+            .sessions
+            .iter()
+            .find(|m| m.session.id.as_deref() == Some(action.id.as_str()))
+            .map_or(RestartCost::Nothing, |m| RestartCost::of(&m.session));
+        self.overlay = Overlay::Confirm(Confirm::Restart { action, cost });
+    }
+
+    fn run_restart(&mut self, items: Vec<SessionAction>) -> Vec<Effect> {
+        self.restart_runs += 1;
+        let run = self.restart_runs;
+        let text = match items.as_slice() {
+            [one] => format!("restarting {}…", one.name),
+            many => restart_progress(many.len(), 0),
+        };
+        self.restarting.push(RestartRun {
+            run,
+            ids: items.iter().map(|a| a.id.clone()).collect(),
+            text,
+        });
+        for action in &items {
+            let key = self
+                .sessions
+                .iter()
+                .find(|m| m.session.id.as_deref() == Some(action.id.as_str()))
+                .and_then(|m| m.session.key())
+                .map(str::to_owned);
+            if let Some(key) = key {
+                self.quiet.insert(
+                    key,
+                    Quiet {
+                        done: None,
+                        restart: true,
+                    },
+                );
+            }
+        }
+        vec![Effect::Restart(RestartJob { run, items })]
     }
 
     // ---- renaming a session (doc/0027) -------------------------------------
@@ -3849,6 +4384,9 @@ impl App {
         }
         if self.replying_row(s) {
             return Some(reply_running_text(&name));
+        }
+        if self.restarting_row(s) {
+            return Some(restart_running_text(&name));
         }
         if let Some(r) = &self.renaming {
             return Some(if self.renaming_row(s) {
@@ -4071,8 +4609,13 @@ impl App {
             text: format!("{head}: waking it under {}…", r.owner.name),
             head,
         });
-        self.quiet
-            .insert(r.session_id.clone(), Quiet { done: None });
+        self.quiet.insert(
+            r.session_id.clone(),
+            Quiet {
+                done: None,
+                restart: false,
+            },
+        );
         vec![Effect::Rename(job)]
     }
 
@@ -4276,6 +4819,9 @@ impl App {
         }
         if self.replying_row(s) {
             return Some(reply_running_text(&name));
+        }
+        if self.restarting_row(s) {
+            return Some(restart_running_text(&name));
         }
         if let Some(p) = &self.pending_attach
             && s.key() == Some(p.key.as_str())
@@ -4975,6 +5521,10 @@ impl App {
                 format!("{name} is being renamed; wait until it finishes"),
                 Severity::Info,
             );
+            return Vec::new();
+        }
+        if self.restarting_row(&m.session) {
+            self.set_message(restart_running_text(&name), Severity::Info);
             return Vec::new();
         }
         let owner = m.owner.clone();
@@ -6046,6 +6596,10 @@ impl App {
             self.set_message(reply_running_text(&name), Severity::Info);
             return Vec::new();
         }
+        if self.restarting_row(&m.session) {
+            self.set_message(restart_running_text(&name), Severity::Info);
+            return Vec::new();
+        }
         if m.session.id.is_none() {
             self.set_message(
                 format!("{name} has no short id; tower cannot hand it off"),
@@ -6650,9 +7204,18 @@ impl App {
     fn rebuild_view(&mut self, keep: Keep) {
         let now_ms = sidecar::now_ms();
         let all = std::mem::take(&mut self.sessions);
-        let grouped = groups::group_with(self.grouping, &all, &self.home, |m| {
-            change_at(&self.quiet, &self.sidecar, &m.session, now_ms)
-        });
+        let grouped = groups::group_pinned(
+            self.grouping,
+            &all,
+            &self.home,
+            |m| change_at(&self.quiet, &self.sidecar, &m.session, now_ms),
+            |m| {
+                m.session
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| self.sidecar.is_pinned(id))
+            },
+        );
         let order: Vec<(GroupKey, Vec<MergedSession>)> = grouped
             .into_iter()
             .map(|g| (g.key, g.rows.into_iter().cloned().collect()))
@@ -6722,7 +7285,18 @@ impl App {
                 })
                 .unwrap_or(self.selected),
         };
+        // A row being restarted lists as stopped for a moment, in a group that
+        // may be folded (doc/0047): the selection comes back to it.
+        let restarting = match &self.selected_key {
+            Some(Selected::Row(key)) if self.quiet.get(key).is_some_and(|q| q.restart) => {
+                self.selected_key.clone()
+            }
+            _ => None,
+        };
         self.select(index);
+        if restarting.is_some() {
+            self.selected_key = restarting;
+        }
     }
 }
 
@@ -6752,6 +7326,16 @@ fn learned_text(name: &str, known: &str, picked: &str) -> String {
     } else {
         format!("{name} turned out to run under {known}; using {known} instead of {picked}")
     }
+}
+
+/// The refusal for a row whose restart runs (doc/0047).
+fn restart_running_text(name: &str) -> String {
+    format!("tower is restarting {name}; wait until it finishes")
+}
+
+/// The status line while several sessions restart (doc/0047).
+fn restart_progress(total: usize, done: usize) -> String {
+    format!("restarting {total} sessions ({done} done)…")
 }
 
 /// The refusal for a row whose quick reply runs (doc/0040).

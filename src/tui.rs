@@ -26,7 +26,10 @@
 //! The terminal settings from before the first raw mode are saved once and
 //! put back after every foreground child and on exit, so a child that died
 //! in raw mode cannot leave the user's shell in it.
-//! Tower never writes BEL or OSC notifications (doc/0007). It enables no
+//! Tower never writes BEL or OSC notifications (doc/0007). It sets the
+//! terminal's title with `OSC 2` while `[ui] tab_title` is on, puts the previous
+//! one back around every hand-over and on exit, and writes nothing to a terminal
+//! that hung up ([`TITLE`], doc/0047). It enables no
 //! mouse capture or bracketed paste, except while the opt-in workspace style
 //! is on the screen (doc/0045); where the terminal supports the
 //! keyboard-enhancement protocol it pushes `DISAMBIGUATE_ESCAPE_CODES`, so
@@ -43,7 +46,7 @@ use std::io::{self, IsTerminal, Stdout, Write};
 use std::os::fd::RawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -75,6 +78,7 @@ use crate::orchestrator::StartError;
 use crate::paths::{self, Dirs};
 use crate::poller::Poller;
 use crate::sidecar::Loaded;
+use crate::tabtitle::TabTitle;
 use crate::{dispatch, editor};
 
 /// How long the loop waits for input before checking for poll results and
@@ -160,6 +164,21 @@ fn resume_terminal_modes() {
     }
     if PASTE_ON.load(Ordering::SeqCst) {
         let _ = execute!(io::stdout(), EnableBracketedPaste);
+    }
+}
+
+/// What tower did to the terminal's title (doc/0047), so every way out (normal
+/// exit, panic, hand-over) puts the previous one back.
+static TITLE: Mutex<TabTitle> = Mutex::new(TabTitle::new());
+
+/// Writes what one of the [`TITLE`] steps asked for. A failed write has no use
+/// for an answer: the terminal is going.
+fn write_title(step: impl FnOnce(&mut TabTitle) -> String) {
+    let bytes = step(&mut TITLE.lock().unwrap_or_else(PoisonError::into_inner));
+    if !bytes.is_empty() {
+        let mut out = io::stdout();
+        let _ = out.write_all(bytes.as_bytes());
+        let _ = out.flush();
     }
 }
 
@@ -813,6 +832,7 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
             }
             last_draw = Some(Instant::now());
             sync_terminal_modes(app.wants_mouse(), app.pane_active());
+            write_title(|title| title.update(app.tab_title().as_deref()));
         }
         let mut effects = Vec::new();
         // One event per turn, as before: effects (e.g. an attach, whose
@@ -1097,6 +1117,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 app.editor_finished(result);
             }
             Effect::Stop(action) => rt.jobs.stop(action),
+            Effect::Restart(job) => rt.jobs.restart(job),
             Effect::Remove(job) => rt.jobs.remove(job),
             Effect::FetchLogs(target) => rt.follower.fetch(app.follow_spec(&target), true),
             Effect::FollowLogs(target) => rt.follower.fetch(app.follow_spec(&target), false),
@@ -1207,6 +1228,7 @@ fn enter() -> io::Result<(Term, bool)> {
 pub fn restore_terminal() {
     pop_enhancement();
     sync_terminal_modes(false, false);
+    write_title(TabTitle::restore);
     let _ = disable_raw_mode();
     restore_original_termios();
     let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
@@ -1280,6 +1302,7 @@ impl Handover for TermHandover<'_> {
         drain_events(self.pending);
         pop_enhancement();
         pause_terminal_modes();
+        write_title(TabTitle::hand_over);
         execute!(io::stdout(), Show, LeaveAlternateScreen)?;
         disable_raw_mode()?;
         io::stdout().flush()?;

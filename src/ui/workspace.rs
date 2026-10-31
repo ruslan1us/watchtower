@@ -322,6 +322,7 @@ fn count_label(group: Group, n: usize) -> String {
     match group {
         Group::Orchestrator if n > 1 => format!("{n} orchestrators"),
         Group::Orchestrator => "1 orchestrator".to_owned(),
+        Group::Pinned => format!("{n} pinned"),
         Group::NeedsMe if n > 1 => format!("{n} need you"),
         Group::NeedsMe => "1 needs you".to_owned(),
         Group::Failed => format!("{n} failed"),

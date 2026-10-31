@@ -55,8 +55,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::activity;
 use crate::app::{
     App, Confirm, DIALOG_KEY_TABLE, Entry, KEY_TABLE, LOGS_KEY_TABLE, LogsPanel, LogsView, Overlay,
-    PANE_KEY_TABLE, Picker, Popup, Purpose, QuitPrompt, Severity, StatusSegment, TargetPicker,
-    UntrustedHandoff, UntrustedOrchestrator, UntrustedRename, UntrustedReply,
+    PANE_KEY_TABLE, Picker, Popup, Purpose, QuitPrompt, RestartCost, RestartPlan, Severity,
+    StatusSegment, TargetPicker, UntrustedHandoff, UntrustedOrchestrator, UntrustedRename,
+    UntrustedReply,
 };
 use crate::config::UiStyle;
 use crate::groups;
@@ -1323,6 +1324,16 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm, area: Rect, look: Look) {
             }
             (" Continue under another account? ", text)
         }
+        Confirm::Restart { action, cost } => {
+            let mut text = vec![format!(
+                "Restart {} ({}, account {}) onto the installed Claude Code?",
+                action.name, action.id, action.account.name
+            )];
+            text.extend(restart_cost_text(cost));
+            text.push(RESTART_KEEPS.to_owned());
+            (" Restart session? ", text)
+        }
+        Confirm::RestartMany(plan) => (" Restart sessions? ", restart_many_text(plan)),
     };
     text.push(String::new());
     let w = area.width.saturating_sub(4).min(76);
@@ -1338,11 +1349,99 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm, area: Rect, look: Look) {
         .flat_map(|t| wrap(t, inner_w))
         .map(|r| look.labelled_line(&format!(" {r}"), labels))
         .collect();
-    lines.push(answer_line("yes", "no (default)", look));
+    lines.push(if matches!(confirm, Confirm::RestartMany(_)) {
+        restart_answer_line(look)
+    } else {
+        answer_line("yes", "no (default)", look)
+    });
     let h = lines.len() as u16 + 2;
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     frame.render_widget(Paragraph::new(lines).block(look.overlay_block(title)), rect);
+}
+
+/// What stays through a restart, and what does not (doc/0047).
+const RESTART_KEEPS: &str = "The conversation, id, name, account and saved options stay; a \
+                             terminal attached elsewhere is disconnected.";
+
+/// What a restart costs this session, in the words of the reference doc.
+fn restart_cost_text(cost: &RestartCost) -> Option<String> {
+    match cost {
+        RestartCost::Nothing => None,
+        RestartCost::RunningTurn => Some(
+            "It is working: the running turn is interrupted and does not continue; the session \
+             then waits for you."
+                .to_owned(),
+        ),
+        RestartCost::PendingPrompt(what) => Some(format!(
+            "It waits on a {what}: the prompt is dropped and what it asked for does not run."
+        )),
+        RestartCost::BackgroundTask => Some(
+            "A background task of it is running; tower has not verified that it survives."
+                .to_owned(),
+        ),
+    }
+}
+
+/// `1 is`, `2 are`.
+fn is_are(n: usize) -> String {
+    if n == 1 {
+        "1 is".to_owned()
+    } else {
+        format!("{n} are")
+    }
+}
+
+/// The text of the stronger confirmation: how many on each account.
+fn restart_many_text(plan: &RestartPlan) -> Vec<String> {
+    let total = plan.items.len();
+    let noun = if total == 1 { "session" } else { "sessions" };
+    let mut text = vec![format!(
+        "Restart {total} {noun} onto the installed Claude Code: {}.",
+        plan.scope
+    )];
+    for (account, n) in &plan.by_account {
+        let noun = if *n == 1 { "session" } else { "sessions" };
+        text.push(format!("{account}: {n} {noun}"));
+    }
+    if plan.turns > 0 {
+        text.push(format!(
+            "{} working: the running turn is interrupted and does not continue.",
+            is_are(plan.turns)
+        ));
+    }
+    if plan.prompts > 0 {
+        text.push(format!(
+            "{} waiting on a prompt: the prompt is dropped and what it asked for does not run.",
+            is_are(plan.prompts)
+        ));
+    }
+    if plan.tasks > 0 {
+        text.push(format!(
+            "{} running a background task; tower has not verified that it survives.",
+            is_are(plan.tasks)
+        ));
+    }
+    text.push(RESTART_KEEPS.to_owned());
+    let left = plan.left_out();
+    if !left.is_empty() {
+        text.push(format!("Left out: {}.", left.join(", ")));
+    }
+    text
+}
+
+/// The stronger confirmation's answers: only a capital `Y` restarts.
+fn restart_answer_line(look: Look) -> Line<'static> {
+    let key = look.answer_key();
+    let text = look.text();
+    Line::from(vec![
+        Span::styled(" Y", key),
+        Span::styled(" (with Shift) restart   ", text),
+        Span::styled("n", key),
+        Span::styled("/", text),
+        Span::styled("Esc", key),
+        Span::styled(" no (default)", text),
+    ])
 }
 
 /// The popup window: wrapped text, scrolled; the scroll offset is clamped
@@ -1599,6 +1698,10 @@ fn draw_picker(frame: &mut Frame, app: &App, picker: &Picker, area: Rect, look: 
         )),
         Purpose::Reply => lines.push(Line::styled(
             " Tower wakes it with that account to send your text, which moves the session to it.",
+            look.text(),
+        )),
+        Purpose::Restart => lines.push(Line::styled(
+            " Tower restarts it with that account's command.",
             look.text(),
         )),
         Purpose::Stop | Purpose::Remove => {}

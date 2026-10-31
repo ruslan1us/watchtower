@@ -107,6 +107,7 @@ pub struct Report {
 pub fn group_slug(group: Group) -> &'static str {
     match group {
         Group::Orchestrator => "orchestrator",
+        Group::Pinned => "pinned",
         Group::NeedsMe => "needs-me",
         Group::Failed => "failed",
         Group::ReadyForReview => "ready-for-review",

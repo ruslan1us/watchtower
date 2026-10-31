@@ -913,6 +913,7 @@ impl Theme {
         let p = self.p;
         match g {
             Group::Orchestrator => p.teal,
+            Group::Pinned => p.teal,
             Group::NeedsMe => p.amber,
             Group::Failed => p.red,
             Group::ReadyForReview => p.green,

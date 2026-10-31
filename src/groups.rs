@@ -12,6 +12,10 @@ pub enum Group {
     /// Background rows named exactly `orchestrator` (doc/0010), whatever
     /// their state: pinned at the top and never highlighted (doc/0007).
     Orchestrator,
+    /// Sessions the user pinned (doc/0047), whatever their state. Only a list
+    /// grouped by state has it; [`classify`] never returns it, so a pinned row
+    /// keeps its state's detail, colour and attention.
+    Pinned,
     /// `state: blocked`, or `status: waiting` in any state.
     NeedsMe,
     /// `state: failed`.
@@ -31,8 +35,9 @@ pub enum Group {
 
 impl Group {
     /// All groups in display order.
-    pub const ALL: [Group; 8] = [
+    pub const ALL: [Group; 9] = [
         Group::Orchestrator,
+        Group::Pinned,
         Group::NeedsMe,
         Group::Failed,
         Group::ReadyForReview,
@@ -46,6 +51,7 @@ impl Group {
     pub fn title(self) -> &'static str {
         match self {
             Group::Orchestrator => "Orchestrator",
+            Group::Pinned => "Pinned",
             Group::NeedsMe => "Needs me",
             Group::Failed => "Failed",
             Group::ReadyForReview => "Ready for review",
@@ -177,8 +183,9 @@ fn state_detail(s: &Session, group: Group) -> String {
             Some(status) => status.to_string(),
             None => "interactive".to_owned(),
         },
-        // Not a state group; `state_group` never returns it.
+        // Not state groups; `state_group` never returns them.
         Group::Orchestrator => "orchestrator".to_owned(),
+        Group::Pinned => "pinned".to_owned(),
     }
 }
 
@@ -207,11 +214,33 @@ where
     T: AsRef<Session>,
     F: Fn(&T) -> Option<i64>,
 {
+    group_by_state_pinned(items, last_change, |_| false)
+}
+
+/// [`group_by_state_with`] with the rows `pinned` names in the Pinned group,
+/// right after Orchestrator (doc/0047). The orchestrator and interactive rows
+/// keep their own groups: neither can be pinned.
+pub fn group_by_state_pinned<T, F, P>(
+    items: &[T],
+    last_change: F,
+    pinned: P,
+) -> Vec<GroupRows<'_, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+    P: Fn(&T) -> bool,
+{
+    let listed_in = |t: &T| match classify(t.as_ref()) {
+        Group::Orchestrator => Group::Orchestrator,
+        Group::Interactive => Group::Interactive,
+        _ if pinned(t) => Group::Pinned,
+        group => group,
+    };
     let mut out: Vec<GroupRows<'_, T>> = Vec::new();
     for group in Group::ALL {
         let mut rows: Vec<(Option<i64>, String, &T)> = items
             .iter()
-            .filter(|t| classify(t.as_ref()) == group)
+            .filter(|t| listed_in(t) == group)
             .map(|t| (last_change(t), t.as_ref().display_name(), t))
             .collect();
         if rows.is_empty() {
@@ -300,15 +329,32 @@ where
     T: AsRef<Session>,
     F: Fn(&T) -> Option<i64>,
 {
+    group_pinned(mode, items, home, last_change, |_| false)
+}
+
+/// [`group_with`] with the rows `pinned` names first: in their own group by
+/// state, first within their project by project (doc/0047).
+pub fn group_pinned<'a, T, F, P>(
+    mode: Grouping,
+    items: &'a [T],
+    home: &Path,
+    last_change: F,
+    pinned: P,
+) -> Vec<KeyedRows<'a, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+    P: Fn(&T) -> bool,
+{
     match mode {
-        Grouping::State => group_by_state_with(items, last_change)
+        Grouping::State => group_by_state_pinned(items, last_change, pinned)
             .into_iter()
             .map(|g| KeyedRows {
                 key: GroupKey::State(g.group),
                 rows: g.rows,
             })
             .collect(),
-        Grouping::Project => group_by_project_with(items, home, last_change),
+        Grouping::Project => group_by_project_pinned(items, home, last_change, pinned),
     }
 }
 
@@ -329,17 +375,34 @@ where
     T: AsRef<Session>,
     F: Fn(&T) -> Option<i64>,
 {
-    type Row<'r, T> = (Group, Option<i64>, String, &'r T);
+    group_by_project_pinned(items, home, last_change, |_| false)
+}
+
+/// [`group_by_project_with`] with the rows `pinned` names first within their
+/// project (doc/0047).
+pub fn group_by_project_pinned<'a, T, F, P>(
+    items: &'a [T],
+    home: &Path,
+    last_change: F,
+    pinned: P,
+) -> Vec<KeyedRows<'a, T>>
+where
+    T: AsRef<Session>,
+    F: Fn(&T) -> Option<i64>,
+    P: Fn(&T) -> bool,
+{
+    // A pinned row sorts before an unpinned one: `false` comes first.
+    type Row<'r, T> = (bool, Group, Option<i64>, String, &'r T);
     let mut projects: Vec<(String, Vec<Row<'a, T>>)> = Vec::new();
     let mut interactive: Vec<Row<'a, T>> = Vec::new();
-    let mut pinned: Vec<&'a T> = Vec::new();
+    let mut orchestrators: Vec<&'a T> = Vec::new();
     for t in items {
         let s = t.as_ref();
         if orchestrator::is_orchestrator(s) {
-            pinned.push(t);
+            orchestrators.push(t);
             continue;
         }
-        let row = (classify(s), last_change(t), s.display_name(), t);
+        let row = (!pinned(t), classify(s), last_change(t), s.display_name(), t);
         if s.is_interactive() {
             interactive.push(row);
             continue;
@@ -350,30 +413,34 @@ where
             None => projects.push((project, vec![row])),
         }
     }
-    let by_state =
-        |a: &Row<'a, T>, b: &Row<'a, T>| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2));
+    let by_state = |a: &Row<'a, T>, b: &Row<'a, T>| {
+        a.0.cmp(&b.0)
+            .then(a.1.cmp(&b.1))
+            .then(b.2.cmp(&a.2))
+            .then(a.3.cmp(&b.3))
+    };
     for (_, rows) in &mut projects {
         rows.sort_by(by_state);
     }
-    let newest = |rows: &[Row<'a, T>]| rows.iter().filter_map(|r| r.1).max();
+    let newest = |rows: &[Row<'a, T>]| rows.iter().filter_map(|r| r.2).max();
     projects.sort_by(|a, b| newest(&b.1).cmp(&newest(&a.1)).then(a.0.cmp(&b.0)));
     interactive.sort_by(by_state);
-    pinned.sort_by_key(|t| std::cmp::Reverse(orchestrator::rank(t.as_ref())));
+    orchestrators.sort_by_key(|t| std::cmp::Reverse(orchestrator::rank(t.as_ref())));
     let mut out: Vec<KeyedRows<'a, T>> = Vec::new();
-    if !pinned.is_empty() {
+    if !orchestrators.is_empty() {
         out.push(KeyedRows {
             key: GroupKey::State(Group::Orchestrator),
-            rows: pinned,
+            rows: orchestrators,
         });
     }
     out.extend(projects.into_iter().map(|(p, rows)| KeyedRows {
         key: GroupKey::Project(p),
-        rows: rows.into_iter().map(|r| r.3).collect(),
+        rows: rows.into_iter().map(|r| r.4).collect(),
     }));
     if !interactive.is_empty() {
         out.push(KeyedRows {
             key: GroupKey::State(Group::Interactive),
-            rows: interactive.into_iter().map(|r| r.3).collect(),
+            rows: interactive.into_iter().map(|r| r.4).collect(),
         });
     }
     out

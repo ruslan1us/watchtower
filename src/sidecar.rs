@@ -4,7 +4,8 @@
 //! (doc/0003), the `started` owner of dispatched sessions and
 //! `recent_projects` (doc/0008), the activity times tower tracks
 //! (`last_state`, `last_change_ms`, doc/0006) and the acknowledged
-//! attention tuple (`acknowledged`, doc/0007). Unknown fields are kept.
+//! attention tuple (`acknowledged`, doc/0007), and the pinned sessions
+//! (`pins`, doc/0047). Unknown fields are kept.
 //!
 //! Writes are atomic (a temp file unique to the process and save, fsync,
 //! rename). A corrupt file is moved aside as `state.json.corrupt` and tower
@@ -150,6 +151,24 @@ pub struct SessionRecord {
     pub extra: Map<String, Value>,
 }
 
+/// One pinned session (doc/0047), under its short `id` in [`Sidecar::pins`]:
+/// the `sessionId` changes while a session is live after `/clear`, the short
+/// id does not.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PinRecord {
+    /// When the user pinned it, Unix ms. Tells a new pin from an old one when
+    /// two towers merge theirs.
+    #[serde(default)]
+    pub pinned_ms: i64,
+    /// When the session last appeared in a successful listing, Unix ms, to
+    /// [`SEEN_RESOLUTION_MS`]. Drives pruning, as for session records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_ms: Option<i64>,
+    /// Fields this version does not know, kept as-is.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// One entry of `recent_projects` (doc/0008).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentProject {
@@ -173,6 +192,9 @@ pub struct Sidecar {
     /// Most-recently-used projects for the new-session dialog.
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
+    /// Pinned sessions by short `id` (doc/0047).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pins: BTreeMap<String, PinRecord>,
     /// Top-level fields this version does not know, kept as-is.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -192,6 +214,7 @@ impl Default for Sidecar {
             version: VERSION,
             sessions: BTreeMap::new(),
             recent_projects: Vec::new(),
+            pins: BTreeMap::new(),
             extra: Map::new(),
             tracking: Tracking {
                 base: Snapshot {
@@ -211,6 +234,7 @@ struct Snapshot {
     version: u32,
     sessions: BTreeMap<String, SessionRecord>,
     recent_projects: Vec<RecentProject>,
+    pins: BTreeMap<String, PinRecord>,
     extra: Map<String, Value>,
 }
 
@@ -310,6 +334,7 @@ impl SaveJob {
             version: merged.version,
             sessions: merged.sessions.clone(),
             recent_projects: merged.recent_projects.clone(),
+            pins: merged.pins.clone(),
             extra: merged.extra.clone(),
             tracking: Tracking::default(),
         };
@@ -530,6 +555,7 @@ impl Sidecar {
         self.version = s.version;
         self.sessions = s.sessions;
         self.recent_projects = s.recent_projects;
+        self.pins = s.pins;
         self.extra = s.extra;
     }
 
@@ -576,6 +602,7 @@ impl Sidecar {
         let base = &self.tracking.base;
         self.sessions != base.sessions
             || self.recent_projects != base.recent_projects
+            || self.pins != base.pins
             || self.extra != base.extra
     }
 
@@ -594,8 +621,61 @@ impl Sidecar {
             version: self.version,
             sessions: self.sessions.clone(),
             recent_projects: self.recent_projects.clone(),
+            pins: self.pins.clone(),
             extra: self.extra.clone(),
         }
+    }
+
+    /// Whether the session with the short id `id` is pinned (doc/0047).
+    pub fn is_pinned(&self, id: &str) -> bool {
+        self.pins.contains_key(id)
+    }
+
+    /// Pins the session with the short id `id`, or unpins it when it was
+    /// pinned (doc/0047). Returns whether it is pinned now.
+    pub fn toggle_pin(&mut self, id: &str, now_ms: i64) -> bool {
+        if self.pins.remove(id).is_some() {
+            return false;
+        }
+        self.pins.insert(
+            id.to_owned(),
+            PinRecord {
+                pinned_ms: now_ms,
+                last_seen_ms: Some(now_ms),
+                extra: Map::new(),
+            },
+        );
+        true
+    }
+
+    /// Records one poll's short ids for the pins, by the rules of
+    /// [`Sidecar::observe_listing`]: a listed pin's `last_seen_ms` is kept
+    /// fresh, and only when `complete` a pin not listed for
+    /// [`PRUNE_UNSEEN_MS`] is dropped. Returns true when the state changed.
+    pub fn observe_pins<'a, I>(&mut self, seen: I, complete: bool, now_ms: i64) -> bool
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let mut changed = false;
+        for id in seen {
+            if let Some(pin) = self.pins.get_mut(id)
+                && pin
+                    .last_seen_ms
+                    .is_none_or(|t| now_ms.saturating_sub(t) >= SEEN_RESOLUTION_MS)
+            {
+                pin.last_seen_ms = Some(now_ms);
+                changed = true;
+            }
+        }
+        if complete {
+            let before = self.pins.len();
+            self.pins.retain(|_, pin| {
+                let last = pin.last_seen_ms.unwrap_or(0).max(pin.pinned_ms);
+                now_ms.saturating_sub(last) < PRUNE_UNSEEN_MS
+            });
+            changed |= self.pins.len() != before;
+        }
+        changed
     }
 
     /// The owner fields of `key`'s record in memory, as [`read_owner`]
@@ -1068,8 +1148,39 @@ fn merge_snapshot(base: &Snapshot, mine: &Snapshot, disk: Snapshot) -> Snapshot 
             &out.recent_projects,
         );
     }
+    let ids: BTreeSet<&String> = base.pins.keys().chain(mine.pins.keys()).collect();
+    for id in ids {
+        match merge_pin(base.pins.get(id), mine.pins.get(id), out.pins.get(id)) {
+            Some(pin) => out.pins.insert(id.clone(), pin),
+            None => out.pins.remove(id),
+        };
+    }
     merge_map(&base.extra, &mine.extra, &mut out.extra);
     out
+}
+
+/// Merges one pin (doc/0047); `None` means not pinned. What counts is whether
+/// this instance pinned or unpinned it, which `pinned_ms` tells: if not, the
+/// file's answer stands, with the later seen time. If it did, its answer wins,
+/// unless it unpinned and the file holds a newer pin.
+fn merge_pin(
+    base: Option<&PinRecord>,
+    mine: Option<&PinRecord>,
+    disk: Option<&PinRecord>,
+) -> Option<PinRecord> {
+    let pinned_at = |r: Option<&PinRecord>| r.map(|r| r.pinned_ms);
+    if pinned_at(mine) == pinned_at(base) {
+        let seen = mine.and_then(|m| m.last_seen_ms);
+        return disk.map(|d| PinRecord {
+            last_seen_ms: d.last_seen_ms.max(seen),
+            ..d.clone()
+        });
+    }
+    match mine {
+        Some(m) => Some(m.clone()),
+        None if pinned_at(disk) == pinned_at(base) => None,
+        None => disk.cloned(),
+    }
 }
 
 /// Merges one session record; `None` means no record.

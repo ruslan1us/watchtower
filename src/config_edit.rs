@@ -123,11 +123,12 @@ pub enum SettingKey {
     LogsFollowSecs,
     UsageShow,
     UsageRefreshSecs,
+    UiTabTitle,
 }
 
 impl SettingKey {
     /// Every setting, in display order.
-    pub const ALL: [SettingKey; 18] = [
+    pub const ALL: [SettingKey; 19] = [
         SettingKey::UiStyle,
         SettingKey::UiTheme,
         SettingKey::UiColorDepth,
@@ -146,6 +147,7 @@ impl SettingKey {
         SettingKey::TrackSubagents,
         SettingKey::UsageShow,
         SettingKey::UsageRefreshSecs,
+        SettingKey::UiTabTitle,
     ];
 
     /// The key's path in the file: `["ui", "style"]`, `["default_model"]`.
@@ -168,6 +170,7 @@ impl SettingKey {
             SettingKey::LogsFollowSecs => &["logs_follow_secs"],
             SettingKey::TrackSubagents => &["sessions", "track_subagents"],
             SettingKey::UsageShow => &["usage", "show"],
+            SettingKey::UiTabTitle => &["ui", "tab_title"],
             SettingKey::UsageRefreshSecs => &["usage", "refresh_secs"],
         }
     }
@@ -198,7 +201,8 @@ impl SettingKey {
             | SettingKey::LogsFollowSecs
             | SettingKey::TrackSubagents
             | SettingKey::UsageShow
-            | SettingKey::UsageRefreshSecs => Section::General,
+            | SettingKey::UsageRefreshSecs
+            | SettingKey::UiTabTitle => Section::General,
         }
     }
 
@@ -223,6 +227,7 @@ impl SettingKey {
             SettingKey::TrackSubagents => "track subagents",
             SettingKey::UsageShow => "show plan usage",
             SettingKey::UsageRefreshSecs => "usage refresh",
+            SettingKey::UiTabTitle => "terminal tab title",
         }
     }
 
@@ -296,6 +301,10 @@ impl SettingKey {
                 "How often each account's /usage is asked. r also refreshes values older than a \
                  minute."
             }
+            SettingKey::UiTabTitle => {
+                "Show tower and how many sessions need you in the terminal's window or tab title, \
+                 so you can see it from another tab. Put back when tower hands over or exits."
+            }
         }
     }
 
@@ -322,7 +331,7 @@ impl SettingKey {
             SettingKey::TrackSubagents => {
                 "sessions started from now on; the list from the next poll"
             }
-            SettingKey::UsageShow => "at once",
+            SettingKey::UsageShow | SettingKey::UiTabTitle => "at once",
             SettingKey::UsageRefreshSecs => "from the next probe",
         }
     }
@@ -342,7 +351,8 @@ impl SettingKey {
             SettingKey::ProjectRoots | SettingKey::ExtraProjects => Shape::Paths,
             SettingKey::AllowCrossGroupHandoff
             | SettingKey::TrackSubagents
-            | SettingKey::UsageShow => Shape::Bool,
+            | SettingKey::UsageShow
+            | SettingKey::UiTabTitle => Shape::Bool,
             SettingKey::PollIntervalSecs
             | SettingKey::LogsFollowSecs
             | SettingKey::UsageRefreshSecs
@@ -705,7 +715,8 @@ impl EditSession {
             SettingKey::HandoffPrompt => SettingKind::Text,
             SettingKey::AllowCrossGroupHandoff
             | SettingKey::TrackSubagents
-            | SettingKey::UsageShow => SettingKind::Bool,
+            | SettingKey::UsageShow
+            | SettingKey::UiTabTitle => SettingKind::Bool,
             SettingKey::PollIntervalSecs => SettingKind::Int {
                 min: *POLL_INTERVAL_RANGE.start() as i64,
                 max: *POLL_INTERVAL_RANGE.end() as i64,
@@ -764,6 +775,7 @@ impl EditSession {
             SettingKey::LogsFollowSecs => SettingValue::Int(DEFAULT_LOGS_FOLLOW_SECS as i64),
             SettingKey::TrackSubagents => SettingValue::Bool(true),
             SettingKey::UsageShow => SettingValue::Bool(false),
+            SettingKey::UiTabTitle => SettingValue::Bool(true),
             SettingKey::UsageRefreshSecs => SettingValue::Int(usage::DEFAULT_REFRESH_SECS as i64),
         }
     }

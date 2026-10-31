@@ -118,6 +118,7 @@ pub mod shell;
 pub mod sidecar;
 pub mod status;
 pub mod subagents;
+pub mod tabtitle;
 pub mod templates;
 pub mod tui;
 pub mod ui;

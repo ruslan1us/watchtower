@@ -148,6 +148,12 @@ card_size = "medium"
 # Default: 1
 card_gap = 1
 
+# Every style (doc/0047): tower sets the terminal's window or tab title, so it
+# shows from another tab: "tower", or "tower · 2 need you" while sessions need
+# attention. The previous title comes back when tower hands over or exits.
+# Default: true
+tab_title = true
+
 # Sessions tower starts (doc/0029).
 [sessions]
 # Show the subagents (Agent tool) each session runs. Tower passes the

@@ -1060,6 +1060,31 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
         just(app)
     });
 
+    // Pinned sessions (doc/0047): their own group by state, and the rows the
+    // other scenarios use, with their state, attention and long names.
+    s!("list-pinned", || {
+        let mut app = base();
+        for name in [LONG_NAME, CYR_NAME, "say-ok"] {
+            select(&mut app, name);
+            press(&mut app, ch('P'));
+        }
+        just(app)
+    });
+    s!("list-pinned-by-project", || {
+        let mut app = base();
+        select(&mut app, "say-ok");
+        press(&mut app, ch('P'));
+        press(&mut app, ch('p'));
+        just(app)
+    });
+    s!("list-pinned-folded", || {
+        let mut app = base();
+        select(&mut app, "print-date");
+        press(&mut app, ch('P'));
+        press(&mut app, key(KeyCode::Tab));
+        just(app)
+    });
+
     // The workspace's pane with a terminal in it (doc/0045), and a window
     // over it.
     s!("list-workspace-pane", || {
@@ -1496,6 +1521,31 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
         let mut app = base();
         select(&mut app, LONG_NAME);
         press(&mut app, ch('d'));
+        just(app)
+    });
+    // Restarting after a Claude Code update (doc/0047): one session, whatever
+    // it is doing, and several, per account.
+    s!("confirm-restart-working", || {
+        let mut app = base();
+        select(&mut app, LONG_NAME);
+        press(&mut app, ch('U'));
+        just(app)
+    });
+    s!("confirm-restart-prompt", || {
+        let mut app = base();
+        select(&mut app, CYR_NAME);
+        press(&mut app, ch('U'));
+        just(app)
+    });
+    s!("confirm-restart-task", || {
+        let mut app = base();
+        select(&mut app, "nightly-report");
+        press(&mut app, ch('U'));
+        just(app)
+    });
+    s!("confirm-restart-many", || {
+        let mut app = base();
+        press(&mut app, ctrl('u'));
         just(app)
     });
     s!("popup-refusal", || {

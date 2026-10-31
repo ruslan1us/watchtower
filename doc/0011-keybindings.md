@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision · `z`, `F2`, `Shift+PgUp` / `Shift+PgDn` and `Esc` over a selection in the workspace's pane, 2026-10-31, by the same decision
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision · `z`, `F2`, `Shift+PgUp` / `Shift+PgDn` and `Esc` over a selection in the workspace's pane, 2026-10-31, by the same decision · `P`, `U` and `Ctrl+U` added by [0047](0047-tab-title-pinning-and-restart.md)
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -41,6 +41,9 @@ built-in agent view and `Ctrl+Z` returns to tower ([0005](0005-attach-and-detach
 | `e` | Rename the session ([0027](0027-rename-sessions.md)): a window with the name; a stopped session is renamed from tower, a running one inside it after an attach |
 | `t` | *Added by [0040](0040-quick-reply.md):* quick reply: a window for a text that tower sends as the session's next prompt under its owner (an idle live session is stopped and woken with it, a stopped one woken); not offered while the session works, is busy or waits on a prompt, and the status line says why |
 | `!` | *Added by [0037](0037-git-summary-and-shell.md):* a shell (`$SHELL`, else `/bin/sh`) in the selected row's folder, handed the terminal like an attach; `exit` returns to tower |
+| `P` | *Added by [0047](0047-tab-title-pinning-and-restart.md):* pin or unpin the session; pinned rows have their own group after Orchestrator (by project: first within their project) |
+| `U` | *Added by [0047](0047-tab-title-pinning-and-restart.md):* restart the session onto the installed Claude Code (`respawn`), after a confirmation that says what it costs; on a group header, that group's running sessions after the stronger confirmation below |
+| `Ctrl+U` | *Added by [0047](0047-tab-title-pinning-and-restart.md):* restart every running session, after the stronger confirmation |
 | `?` | Help overlay listing all keys |
 | `q`, `Ctrl+C` | Quit; asks for confirmation only if a dialog is open or a hand-off runs |
 | `Esc` | Cancel an attach waiting for its refresh; else close the topmost panel, overlay or filter |
@@ -53,7 +56,8 @@ gives the keys back to the list; `Esc` clears it. `Ctrl+C` quits as in the
 list, `Ctrl+Z` stays a no-op, and `←` is not bound.
 
 **Confirmation prompts:** `y` confirms, `n` or `Esc` cancels; the default is cancel, so
-`Enter` cancels too.
+`Enter` cancels too. *Amended by [0047](0047-tab-title-pinning-and-restart.md):* restarting several sessions takes a capital `Y`
+(`Н` on a RU/UA layout) in a window that counts them per account; `y` only says so.
 
 **Hand-off** ([0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md)):
 `a` offers only the accounts the session may go to: the other accounts of the owner's
@@ -236,7 +240,8 @@ the pane move its history; any key the program gets returns to the bottom.
   detach hint.
 - The help overlay fits a 24-row terminal: related list keys share a line
   (`s, d`, `p, i`, `a, e`, `m, t` since [0040](0040-quick-reply.md), `!, c, r, ?` since
-  [0037](0037-git-summary-and-shell.md), `q/Ctrl+C, Ctrl+Z` since 2026-10-21, …),
+  [0037](0037-git-summary-and-shell.md), `q/Ctrl+C, Ctrl+Z` since 2026-10-21, `P, U` and the page
+  keys in the first row since [0047](0047-tab-title-pinning-and-restart.md), …),
   followed by the dialog keys: at most 22 rows inside the border. The Settings
   window has its own key list (`?` there). *Amended by
   [0028](0028-scrolling-the-logs-panel.md):* opened from the focused logs panel,

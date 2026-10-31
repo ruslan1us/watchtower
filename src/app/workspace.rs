@@ -41,6 +41,7 @@ const WHEEL_LINES: isize = 3;
 const HELD_ENDED: &str = "its terminal client ended";
 const HELD_ACTION: &str = "tower closed its terminal for your last action on it";
 const HELD_RELEASED: &str = "its terminal was released after 10 minutes without the keys";
+const HELD_RESTART: &str = "tower closed its terminal for the restart";
 
 /// Who has the keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -377,6 +378,7 @@ impl App {
         self.handing_off(&m.session)
             || self.renaming_row(&m.session)
             || self.replying_row(&m.session)
+            || self.restarting_row(&m.session)
     }
 
     /// Set by the renderer on every frame: the pane's inside, while the
@@ -760,6 +762,9 @@ impl App {
     /// attached again by itself. Returns whether the runtime closes the
     /// client.
     pub fn pane_before(&mut self, effect: &Effect) -> bool {
+        if let Effect::Restart(job) = effect {
+            return self.pane_before_restart(job);
+        }
         let Some(id) = action_id(effect) else {
             return false;
         };
@@ -785,6 +790,46 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// A restart ends every client attached to the session, so the pane's
+    /// goes first (doc/0047); [`App::pane_restarted`] lets it come back.
+    fn pane_before_restart(&mut self, job: &super::RestartJob) -> bool {
+        if self.style != UiStyle::Workspace {
+            return false;
+        }
+        let Some(client) = self
+            .pane
+            .client
+            .take_if(|c| job.items.iter().any(|a| a.id == c.id))
+        else {
+            return false;
+        };
+        self.pane.held = Some(Held {
+            key: client.key,
+            why: HELD_RESTART,
+        });
+        self.pane_drop_rename();
+        self.pane.focus = PaneFocus::List;
+        self.pane.gesture = false;
+        true
+    }
+
+    /// The sessions with these ids are back: a hold for their restart ends,
+    /// so the pane attaches to the selected row again. A failed restart keeps
+    /// the hold, and `Enter` asks.
+    pub(super) fn pane_restarted(&mut self, ids: &[&str]) {
+        let Some(held) = self.pane.held.as_ref().filter(|h| h.why == HELD_RESTART) else {
+            return;
+        };
+        let back = self
+            .sessions
+            .iter()
+            .filter(|m| m.session.key() == Some(held.key.as_str()))
+            .any(|m| m.session.id.as_deref().is_some_and(|id| ids.contains(&id)));
+        if back {
+            self.pane.held = None;
+        }
     }
 
     /// While the workspace is drawn every attach opens in the pane, with the

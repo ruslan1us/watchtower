@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31 · tower's own title by [0047](0047-tab-title-pinning-and-restart.md), which also closes the client around a restart
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -225,7 +225,8 @@ notifications and title changes end in the emulator
 ([0007](0007-visual-only-attention.md)). The one exception: a clipboard write
 (`OSC 52 ; <selector> ; <base64>`, at most 4 MiB) is written again by tower, so copying
 works over SSH. A clipboard read is never passed on or answered. *Added 2026-10-31:* tower's own copy
-of a selection in the pane goes out the same way, as the only other thing it writes itself.
+of a selection in the pane goes out the same way, as the only other thing it writes itself. *Amended by [0047](0047-tab-title-pinning-and-restart.md):* tower also writes its own title, in
+every style; nothing of the child's goes with it.
 
 **Selection and focus.**
 
@@ -249,7 +250,8 @@ of a selection in the pane goes out the same way, as the only other thing it wri
 - A client that exits returns the keys to the list and polls at once. A non-zero exit keeps
   its last screen until the selection moves, so its error can be read.
 - Any tower action that stops, wakes or removes the row (`s`, `d`, `a`, `e`, `t`) closes its
-  client first and then works as today.
+  client first and then works as today. *Amended by [0047](0047-tab-title-pinning-and-restart.md):* so does a restart (`U`, `Ctrl+U`), and
+  the pane attaches again once it succeeded and the row is listed live.
 - *Amended 2026-10-31:* every attach opens in the pane while the workspace is drawn: `o`,
   start-and-attach in the dialog and the rename of a running session, as `Enter` on a stopped row
   already did. Each selects its row (opening a folded group, clearing a filter that hides it),

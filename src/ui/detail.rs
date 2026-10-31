@@ -275,23 +275,6 @@ fn key_rows(app: &App, subject: &Subject, width: usize, max_rows: usize, th: The
     rows
 }
 
-/// The sessions of a list group that the view lets through.
-fn members<'a>(app: &'a App, key: &GroupKey) -> Vec<&'a MergedSession> {
-    app.sessions()
-        .iter()
-        .filter(|m| match key {
-            GroupKey::State(g) => groups::classify(&m.session) == *g,
-            GroupKey::Project(p) => {
-                let g = groups::classify(&m.session);
-                g != Group::Orchestrator
-                    && g != Group::Interactive
-                    && paths::shorten_home(&m.session.cwd, app.home()) == *p
-            }
-        })
-        .filter(|m| app.matches_filter(m))
-        .collect()
-}
-
 /// A summary of a group: its title on a pill (wrapped onto at most `rows`
 /// rows of a line `width` columns wide), then sessions, highlighted,
 /// accounts and states.
@@ -304,7 +287,7 @@ fn group_lines(
     rows: usize,
     th: Theme,
 ) -> Vec<Lb> {
-    let members = members(app, key);
+    let members = app.group_members(key);
     let pill = th.pill(th.key_color(key));
     let mut lines: Vec<Lb> = wrap_capped(key.title(), width.saturating_sub(4).max(8), rows)
         .into_iter()
@@ -604,10 +587,16 @@ fn session_lines(
     if let Some(name) = name {
         lines.extend(kv_wrapped("name", name, width, name_rows, text, th));
     }
+    // A pinned row keeps its state's group here (doc/0047).
+    let group_text = if app.is_pinned(m) {
+        format!("{} · pinned", group.title())
+    } else {
+        group.title().to_owned()
+    };
     lines.extend([
         kv(
             "group",
-            group.title(),
+            group_text,
             th.hue(th.group_color(group)).add_modifier(Modifier::BOLD),
             th,
         ),

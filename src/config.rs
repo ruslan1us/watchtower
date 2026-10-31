@@ -483,6 +483,9 @@ pub struct Config {
     /// `[ui] card_gap`: the blank rows between cards and before each group
     /// header in the workspace style's list (doc/0045).
     pub ui_card_gap: u16,
+    /// `[ui] tab_title` (default `true`): tower sets the terminal's window or
+    /// tab title, with the attention count, in every style (doc/0047).
+    pub ui_tab_title: bool,
     /// `[sessions] track_subagents` (default `true`): pass the observe-only
     /// subagent hooks with `--settings` to the sessions tower starts and
     /// read the files they write (doc/0029). When `false`, no `--settings`
@@ -601,6 +604,7 @@ struct RawUi {
     list_width: Option<u16>,
     card_size: Option<String>,
     card_gap: Option<u16>,
+    tab_title: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -788,6 +792,7 @@ impl Config {
             ui_list_width,
             ui_card_size,
             ui_card_gap,
+            ui_tab_title: ui.tab_title.unwrap_or(true),
             track_subagents: raw.sessions.and_then(|s| s.track_subagents).unwrap_or(true),
             usage_show: usage.show.unwrap_or(false),
             usage_refresh_secs,
@@ -892,6 +897,7 @@ mod tests {
             list_width,
             card_size,
             card_gap,
+            tab_title,
         } = ui.expect("[ui] is documented");
         assert!(style.is_some());
         assert!(theme.is_some());
@@ -900,6 +906,7 @@ mod tests {
         assert!(list_width.is_some());
         assert!(card_size.is_some());
         assert!(card_gap.is_some());
+        assert!(tab_title.is_some());
         assert!(default_account.is_some());
         assert!(poll_interval_secs.is_some());
         assert!(logs_follow_secs.is_some());

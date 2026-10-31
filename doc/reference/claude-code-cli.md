@@ -2,7 +2,8 @@
 
 Verified against Claude Code 2.1.302 on 2026-10-18; facts marked 2.1.303 were verified
 with that version (renaming and hooks passed with `--settings` on 2026-10-19), and the
-[plan usage limits](#plan-usage-limits) with 2.1.312 on 2026-10-28. Re-verify after upgrades.
+[plan usage limits](#plan-usage-limits) with 2.1.312 on 2026-10-28, and
+[`respawn`](#restarting-a-session-claude-respawn) with 2.1.316 on 2026-10-31. Re-verify after upgrades.
 
 This page collects the facts about Claude Code that Watchtower's design depends on. Each
 fact is marked:
@@ -51,8 +52,8 @@ Example accounts used throughout: `main` (command `claude`, config dir `~/.claud
 | `claude stop <id>` / `claude kill <id>` | Stops the session's process; the conversation is kept. **Short id only**: a name, a full `sessionId` or a pid gives `No job matching '<x>'`. Idempotent: on an already stopped session it prints `stopped <id>` and exits 0. | CLI help, verified |
 | `claude rm <id> [--discard-unpushed <commit>@<worktree>] [--force-remove-worktree <worktree>]` | Removes the row and, when safe, the session's worktree. The transcript stays on disk. Works on exited sessions. Refuses on uncommitted changes, unpushed commits or a worktree in use, and prints the flag to pass for a second try. Can also refuse with `couldn't remove <id> — the background service may be restarting. …` (exit 1) while the hosting account's supervisor is not running; another account's command then removes it ([Multiple config dirs](#multiple-config-dirs-accounts), [0034](../0034-remove-with-another-account-when-the-service-is-down.md)). | CLI help, verified (success case; service refusal on the owner's server 2026-10-20) |
 | `claude -p --output-format stream-json --verbose --no-session-persistence --safe-mode "/usage"` | Runs `/usage` as a local command (no model turn) and prints the plan's usage, structured in `usage_report`; see [Plan usage limits](#plan-usage-limits). Used by [0043](../0043-plan-usage-display.md). | verified (2.1.312) |
-| `claude respawn <id>\|--all` | Restarts sessions onto the currently installed binary. | CLI help |
-| `claude daemon status\|logs\|stop [--any] [--keep-workers]` | Supervisor information (pid, version, socket dir, worker counts), its log, stopping it. | CLI help |
+| `claude respawn <id>\|--all` | "Restart a background session (or all of them) so it picks up the current Claude binary." **Short id only**: a name gives `No job matching '<x>'`. Details in [Restarting a session](#restarting-a-session-claude-respawn). `--all` was not run. | CLI help; `<id>` verified (2.1.316) |
+| `claude daemon status\|logs\|stop [--any] [--keep-workers]` | Supervisor information (pid, version, socket dir, worker counts), its log, stopping it. `status` is text for people; see [Restarting a session](#restarting-a-session-claude-respawn) for what it says about versions. | CLI help, verified (2.1.316) |
 
 ### Option values
 
@@ -382,6 +383,45 @@ running `/clear`:
   start prompt: after `/clear` it answered an overview question in the format its `CLAUDE.md`
   asks for and, asked to start a session, stated the details and asked for confirmation first).
 - Not verified: whether pending `notify_when_idle` notices survive `/clear`.
+
+## Restarting a session (`claude respawn`)
+
+`claude respawn --help` (2.1.316) prints `Usage: claude respawn <id>|--all` and `Restart a
+background session (or all of them) so it picks up the current Claude binary.`
+
+Verified with `<id>` on 2.1.316 in WSL with one account (2026-10-31), on one throwaway session
+started with `--name`, `--model`, `--permission-mode manual` and `--settings`. Only one version
+was installed, so the binary did not change across these restarts:
+
+| Situation before | stdout, exit | Row afterwards |
+|---|---|---|
+| Idle, `done`, `idle` | `respawned <id>`, 0 | `done`, `idle`; new `pid`, new `startedAt` |
+| Permission prompt pending, `blocked`, `waiting` | `respawned <id>`, 0 | `blocked`, `idle`, no `waitingFor`. The prompt is gone and the command did not run; after an attach the transcript shows `Interrupted · What should Claude do instead?` |
+| Running turn with a foreground command, `working`, `busy` | `respawned <id>`, 0, in about 1.2 s | `blocked`, `idle`, stable for at least 10 s: the turn does not continue, its command is gone, and the transcript shows `Interrupted · What should Claude do instead?` |
+| Stopped (`claude stop`), no `pid` | `respawned <id>`, 0 | **It wakes**: new `pid`, `working`, `idle`, no turn |
+| After `/clear`, live | `respawned <id>`, 0 | The `sessionId` from after `/clear` stays |
+
+- Stderr was empty each time. An unknown id or a name: stderr `No job matching '<x>'` and exit 1.
+- Kept, each checked after a restart: the short `id`, the `sessionId`, the `name`; the
+  conversation (asked afterwards, it quoted an earlier message); the permission mode (the footer
+  says `manual mode on`, and a writing command asked again); the model (`/status` shows it); the
+  hooks of `--settings` (a `Stop` hook fired on the next turns).
+- A `claude attach` client of the session ends when it restarts, with exit 0, printing
+  `Session <id> has exited.` and a line with `claude --resume <sessionId>`. Attaching again works.
+- While it runs the row lists without `pid` and `status`, so a poll in that moment sees it stopped.
+- `/proc/<pid>/cmdline` of the session is `claude bg-spare --bg-spare <socket>` both before and
+  after, so it does not show the saved options. `/proc/<pid>/exe` is a versioned path.
+
+Not run: `--all`, and `respawn` without an id, because they would restart the owner's working
+sessions. So it is not known whether `--all` wakes stopped sessions as `<id>` does, or what it
+reaches when two accounts share their lists.
+
+**Versions.** The listing has no version field. `claude daemon status` prints the supervisor's
+version and, as of 2.1.316, a count such as `2 from a different CLI version (most stay attachable
+and upgrade automatically once idle — exec runs never respawn)`, per account and not per session.
+That automatic upgrade was not observed here.
+
+How Watchtower uses it: [0047](../0047-tab-title-pinning-and-restart.md).
 
 ## Supervisor lifecycle
 
@@ -828,6 +868,9 @@ subscription; how Watchtower uses it: [0043](../0043-plan-usage-display.md).
 | `rm` success | `removed <id>` | 0 | verified |
 | `rm` on a row with no live process while the hosting account's supervisor is not running | `couldn't remove <id> — the background service may be restarting. Try again in a moment.` (stream not recorded) | 1 | verified (owner's server, 2026-10-20, version not recorded) |
 | `stop` success, also on an already stopped session | `stopped <id>` | 0 | verified |
+| `respawn <id>` success, also on a stopped session, which it wakes | `respawned <id>` on stdout | 0 | verified (2.1.316) |
+| `respawn` with an unknown id or a name | stderr `No job matching '<x>'` | 1 | verified (2.1.316) |
+| `attach` when its session is restarted | `Session <id> has exited.` and a `claude --resume <sessionId>` line | 0 | verified (2.1.316) |
 | `attach` after detach | none | 0 | verified |
 | `attach` while agent view is disabled | `'attach' is disabled by …` | 1 | verified |
 | `--bg` success | stdout `backgrounded · <id> · <name>` plus hint lines; stderr `Starting background service…` when the supervisor starts | 0 | verified |
@@ -845,6 +888,10 @@ subscription; how Watchtower uses it: [0043](../0043-plan-usage-display.md).
 
 ## Not yet verified
 
+- `claude respawn --all` (deliberately not run), `respawn <id>` with another account's command,
+  `respawn` of a session with a running background shell, and `respawn` when the installed binary
+  really is newer ([Restarting a session](#restarting-a-session-claude-respawn)).
+- Whether a live session upgrades by itself once idle, as `claude daemon status` says.
 - Whether managed skills and workflows show in the `/` menu the way the docs suggest;
   tower does not offer them ([0042](../0042-slash-command-suggestions.md)). (claude.ai's
   synced skills: verified, see [Skills and custom commands](#skills-and-custom-commands-the--menu).)

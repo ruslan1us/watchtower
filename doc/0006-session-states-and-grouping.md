@@ -1,6 +1,6 @@
 # 0006. Session states, grouping and activity times
 
-- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md) · busy rows outside `working` (`done · bg task`, no spinner) amended by [0032](0032-background-task-after-a-finished-turn.md) · header folders fitted to the width, amended 2026-10-21
+- Status: Accepted · 2026-10-18 · a rename's wake is not activity, amended by [0027](0027-rename-sessions.md) · subagent lines under rows added by [0029](0029-tracking-subagents.md) · busy rows outside `working` (`done · bg task`, no spinner) amended by [0032](0032-background-task-after-a-finished-turn.md) · header folders fitted to the width, amended 2026-10-21 · the Pinned group, and pinned rows first within a project, added by [0047](0047-tab-title-pinning-and-restart.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0020](0020-visual-styles.md), [0029](0029-tracking-subagents.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -39,6 +39,7 @@ view shows a one-line summary and an activity age, but they are not in the JSON
 | Group | Rows | Detail shown | Default |
 |---|---|---|---|
 | Orchestrator | background rows named exactly `orchestrator` ([0010](0010-orchestrator.md)), whatever their state | the detail of the group its state gives it below; "ready" when it waits for the user (`blocked` without `waitingFor`, or `done`) | expanded |
+| Pinned (*added by [0047](0047-tab-title-pinning-and-restart.md)*) | background rows the user pinned with `P`, whatever their state; not the orchestrator | the detail of the group its state gives it | expanded |
 | Needs me | `state: blocked`, or `status: waiting` in any state | `waitingFor`; "waiting for your reply" when absent | expanded |
 | Failed | `state: failed` | "failed" | expanded |
 | Ready for review | `state: done` (turn finished, waiting for the next prompt) | "done" | expanded |
@@ -79,6 +80,7 @@ ordered by the state order above, and the Interactive toggle still applies.
   with no known time comes last, and ties go by name.
 - Inside a project, rows follow the group order of the table, then last change
   (most recent first), then name. Rows keep their state detail and highlight.
+  *Amended by [0047](0047-tab-title-pinning-and-restart.md):* pinned rows come first, there is no Pinned group in this mode.
 - Interactive rows keep their own Interactive group, last, so `i` hides them
   in either mode, and the orchestrator rows keep their Orchestrator group,
   first.

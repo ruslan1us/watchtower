@@ -1,6 +1,6 @@
 # 0007. Attention is visual only
 
-- Status: Accepted · 2026-10-18 · a rename's wake is never highlighted, amended by [0027](0027-rename-sessions.md) · clipboard writes of the workspace's client pass, `●` clears on focus there, by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-18 · a rename's wake is never highlighted, amended by [0027](0027-rename-sessions.md) · clipboard writes of the workspace's client pass, `●` clears on focus there, by [0045](0045-workspace-style.md) · the terminal's title with the counter, by [0047](0047-tab-title-pinning-and-restart.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0010](0010-orchestrator.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
@@ -85,6 +85,11 @@ never emits OSC 9, OSC 777 or OSC 99 desktop-notification sequences, and does
 not change the terminal or tab title to signal attention. No option to enable
 these exists in v1.
 
+*Amended by [0047](0047-tab-title-pinning-and-restart.md):* tower does set the terminal's title to its own text with the
+counter, `tower · 2 need you`, while `[ui] tab_title` is on, as the owner asked. A title
+is no sound and no notification, so the rule above stands for BEL, sound and `OSC 9`, `99`
+and `777`, and "attention is only noticed when the tower screen is visible" no longer holds.
+
 *Amended by [0045](0045-workspace-style.md):* in the opt-in workspace style the highlight clears when the row's
 terminal gets the keys, and stays clear while it has them. Tower also writes the OSC 52
 clipboard writes of Claude Code in the pane to the terminal, and its own copy of a selection in the
@@ -117,3 +122,4 @@ replace every control character with `?`.
 - **Highlighting `done` sessions too.** Not done: "Ready for review" is its own
   group near the top and is not urgent. Can be revisited.
 - **Terminal title with a count.** Rejected: signals outside the tower screen are out of scope.
+  *Taken up by [0047](0047-tab-title-pinning-and-restart.md)* at the owner's request.
