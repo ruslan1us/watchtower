@@ -33,7 +33,7 @@ poll interval's), applied live like the poll interval.
 color_depth` (`auto`, `truecolor`, `256` or `16`), applied live like the
 theme. *Amended by [0043](0043-plan-usage-display.md):* also `[usage] show` and `[usage]
 refresh_secs` (60 to 3600, a parser rule), applied live.
-*Amended by [0045](0045-workspace-style.md):* also `[ui] card_size` (`large`, `medium` or `small`) and `[ui] card_gap` (0 or 1, a parser rule),
+*Amended by [0045](0045-workspace-style.md):* also `[ui] card_size` (`large`, `medium`, `small` or `tiny`) and `[ui] card_gap` (0 or 1, a parser rule),
 applied live.
 
 **Values offered.** The window offers, per setting, the values the code

@@ -207,18 +207,26 @@ pub enum CardSize {
     Medium,
     /// 2 rows without an outline, with a coloured left edge.
     Small,
+    /// 1 row: a state glyph and the name, with no gap between cards.
+    Tiny,
 }
 
 impl CardSize {
     /// Every value, in the order the Settings window offers them.
-    pub const ALL: [CardSize; 3] = [CardSize::Large, CardSize::Medium, CardSize::Small];
+    pub const ALL: [CardSize; 4] = [
+        CardSize::Large,
+        CardSize::Medium,
+        CardSize::Small,
+        CardSize::Tiny,
+    ];
 
-    /// The config value: `large`, `medium` or `small`.
+    /// The config value: `large`, `medium`, `small` or `tiny`.
     pub fn as_str(self) -> &'static str {
         match self {
             CardSize::Large => "large",
             CardSize::Medium => "medium",
             CardSize::Small => "small",
+            CardSize::Tiny => "tiny",
         }
     }
 
@@ -228,6 +236,7 @@ impl CardSize {
             CardSize::Large => 4,
             CardSize::Medium => 3,
             CardSize::Small => 2,
+            CardSize::Tiny => 1,
         }
     }
 
@@ -238,7 +247,7 @@ impl CardSize {
             .find(|c| c.as_str() == value)
             .ok_or_else(|| {
                 ConfigError::Invalid(format!(
-                    "[ui] card_size `{value}` is not known; use \"large\", \"medium\" or                      \"small\""
+                    "[ui] card_size `{value}` is not known; use \"large\", \"medium\", \"small\" or \"tiny\""
                 ))
             })
     }

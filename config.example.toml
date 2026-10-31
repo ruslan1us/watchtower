@@ -141,12 +141,13 @@ mouse = true
 list_width = 0
 
 # Workspace style only (doc/0045): the cards in the session list. "large" is 4
-# rows, "medium" 3 and "small" 2, without an outline.
+# rows, "medium" 3, "small" 2 without an outline, and "tiny" 1, the name only,
+# with no gap between its cards.
 # Default: "medium"
 card_size = "medium"
 
 # Workspace style only (doc/0045): blank rows between cards and before each
-# group, 0 or 1. 0 fits more cards.
+# group, 0 or 1. 0 fits more cards. "tiny" cards take it before groups only.
 # Default: 1
 card_gap = 1
 

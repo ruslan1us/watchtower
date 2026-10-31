@@ -301,6 +301,55 @@ fn look_previews_as_it_changes_and_the_card_size_only_in_the_workspace() {
 }
 
 #[test]
+fn look_offers_the_tiny_cards_and_saves_them() {
+    let env = env(None);
+    let mut app = opened(&env, Origin::FirstRun);
+    go_to(&mut app, Step::Look);
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Right));
+    press(&mut app, key(KeyCode::Right));
+    // Everything still fits the smallest terminal the steps draw on.
+    let shown = screen(&mut app, 80, 24).join("\n");
+    assert!(shown.contains("tiny"), "{shown}");
+    assert!(shown.contains("1 row: the name only"), "{shown}");
+    assert!(
+        shown.contains("style") && shown.contains("theme"),
+        "{shown}"
+    );
+    assert!(shown.contains("Enter"), "the keys: {shown}");
+    go_to(&mut app, Step::Done);
+    let shown = screen(&mut app, 80, 24).join("\n");
+    assert!(shown.contains("tiny"), "the summary: {shown}");
+    press(&mut app, enter());
+    assert_eq!(loaded(&env).ui_card_size, CardSize::Tiny);
+    assert_eq!(app.config().ui_card_size, CardSize::Tiny);
+    assert!(
+        file(&env).contains("card_size = \"tiny\""),
+        "{}",
+        file(&env)
+    );
+}
+
+#[test]
+fn tower_setup_starts_from_tiny_cards_and_a_step_back_is_no_change() {
+    let text = "[ui]\nstyle = \"workspace\"\ncard_size = \"tiny\"\n\n\
+                [[accounts]]\nname = \"main\"\ncommand = \"claude\"\n";
+    let env = env(Some(text));
+    let mut app = opened(&env, Origin::Setup);
+    go_to(&mut app, Step::Look);
+    let shown = screen(&mut app, 80, 24).join("\n");
+    assert!(shown.contains("tiny"), "{shown}");
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Down));
+    press(&mut app, key(KeyCode::Left));
+    press(&mut app, key(KeyCode::Right));
+    go_to(&mut app, Step::Done);
+    press(&mut app, enter());
+    assert_eq!(file(&env), text, "nothing to write");
+}
+
+#[test]
 fn the_written_choices_can_all_be_the_defaults() {
     let env = env(None);
     let mut app = opened(&env, Origin::FirstRun);

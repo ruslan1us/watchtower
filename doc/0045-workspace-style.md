@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31 · tower's own title by [0047](0047-tab-title-pinning-and-restart.md), which also closes the client around a restart · preselected in the welcome window by [0048](0048-first-run-welcome.md)
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31 · tower's own title by [0047](0047-tab-title-pinning-and-restart.md), which also closes the client around a restart · preselected in the welcome window by [0048](0048-first-run-welcome.md) · `tiny` cards, 2026-10-31
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -77,6 +77,10 @@ large (4 rows)            medium (3 rows)           small (2 rows)
 │ state           8m │    │ state       …/last │    ▌ state  …/last   main
 │ ~/workspace/folder │    ╰─ main ─────── 8m ─╯
 ╰─ main ─────────────╯
+
+tiny (1 row, added 2026-10-31)
+▌● ▪ name             +2
+   ▪ another
 ```
 
 - The outline has the state's theme colour; `small` has a coloured `▌` edge instead. The
@@ -106,12 +110,24 @@ large (4 rows)            medium (3 rows)           small (2 rows)
   Cards that fit with 6 group headers, when the list scrolls (the footer, the bar's title row and
   the two hint rows are taken; the usage block takes its rows too):
 
-  | Terminal | `large` | `medium` | `small` |
-  |---|---|---|---|
-  | 200 × 50, `card_gap = 1` | 8 | 10 | 13 |
-  | 120 × 36, `card_gap = 1` | 5 | 6 | 9 |
-  | 200 × 50, `card_gap = 0` | 10 | 13 | 20 |
-  | 120 × 36, `card_gap = 0` | 6 | 8 | 13 |
+  | Terminal | `large` | `medium` | `small` | `tiny` |
+  |---|---|---|---|---|
+  | 200 × 50, `card_gap = 1` | 8 | 10 | 13 | 35 |
+  | 120 × 36, `card_gap = 1` | 5 | 6 | 9 | 21 |
+  | 200 × 50, `card_gap = 0` | 10 | 13 | 20 | 40 |
+  | 120 × 36, `card_gap = 0` | 6 | 8 | 13 | 26 |
+
+- *Added 2026-10-31, the owner's request:* `card_size = "tiny"`, one row per session with the name
+  only: no outline, account, folder, state word or age. The first cell is the selected row's: `▌`,
+  or `▶` where the selection is reverse video. The next two are for attention's red `●`, kept blank
+  on other rows so the names line up. Then the state's coloured `▪`, the spinner on a working row, or
+  a dim `┆` on an interactive row; then the name, cut with `…`, and the `+N` badge at the right edge,
+  which goes before the name would keep fewer than 6 cells. The selection covers the whole row as on
+  any card. **The name is bold only for attention**, unlike the other sizes, because a list of
+  one-row cards would otherwise be all bold and the bold name would say nothing. **`tiny` has no blank
+  row between its cards, whatever `card_gap` says,** since a blank row after each line would defeat
+  it; the blank row before a group header still follows `card_gap`. Groups, folding, the viewport,
+  the hints, clicks, the wheel, the page keys, the usage block and Home work as for the other sizes.
 
 - *Added 2026-10-31, the third request:* a list that does not fit keeps one row at each end, the
   same rows wherever the selection goes, for a dim `▲ 3 more` and `▼ 5 more`, counting the hidden

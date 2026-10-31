@@ -632,6 +632,7 @@ fn a_click_on_any_row_of_a_card_selects_it_at_every_size() {
         (CardSize::Large, 4),
         (CardSize::Medium, 3),
         (CardSize::Small, 2),
+        (CardSize::Tiny, 1),
     ] {
         let ui = format!("card_size = \"{}\"", size.as_str());
         let mut app = app_with(&listing(), &ui, "");
@@ -664,7 +665,7 @@ fn a_click_on_any_row_of_a_card_selects_it_at_every_size() {
 
 #[test]
 fn a_selected_card_does_not_grow_or_move_the_list() {
-    for size in ["large", "medium", "small"] {
+    for size in ["large", "medium", "small", "tiny"] {
         let mut app = app_with(&listing(), &format!("card_size = \"{size}\""), "");
         let names = ["asks", "reviews", "builds", "other-shell"];
         // Selecting by name opens the folded group on the way.
@@ -851,7 +852,7 @@ fn shaded(cell: &ratatui::buffer::Cell, shade: Shade) -> bool {
 
 #[test]
 fn every_row_of_the_selected_card_has_the_selection_in_each_size_look_and_focus() {
-    for (size, rows) in [("large", 4), ("medium", 3), ("small", 2)] {
+    for (size, rows) in [("large", 4), ("medium", 3), ("small", 2), ("tiny", 1)] {
         for (look, theme, color, shade) in SELECTION_LOOKS {
             for terminal in [false, true] {
                 let (mut app, _t) = attached_with(&format!("card_size = \"{size}\""), "builds");
@@ -1108,7 +1109,7 @@ fn many(n: usize) -> String {
 
 #[test]
 fn the_viewport_keeps_the_selected_card_whole_and_scrolls_by_cards() {
-    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2), ("tiny", 1)] {
         let mut app = app_with(&many(40), &format!("card_size = \"{size}\""), "");
         draw(&mut app, 160, 30);
         app.handle_key(key(KeyCode::Down));
@@ -1118,13 +1119,13 @@ fn the_viewport_keeps_the_selected_card_whole_and_scrolls_by_cards() {
             let top = y_of(&lines, &name);
             assert!(top + rows <= 29, "{size}: {name} at {top}");
             let bottom = &lines[top + rows - 1];
-            if size != "small" {
+            if rows > 2 {
                 assert!(lines[top].starts_with('┏'), "{size}: {}", lines[top]);
                 assert!(bottom.starts_with('┗'), "{size}: {bottom}");
             }
             // Below the title row the list starts with a whole entry and
             // ends with one: no card without its top or bottom edge.
-            if size != "small" {
+            if rows > 2 {
                 let opens = lines.iter().filter(|l| l.starts_with(['╭', '┏'])).count();
                 let closes = lines.iter().filter(|l| l.starts_with(['╰', '┗'])).count();
                 assert_eq!(opens, closes, "{size}\n{}", lines.join("\n"));
@@ -1177,11 +1178,15 @@ fn card_size_parses_defaults_to_medium_and_refuses_the_rest() {
     assert_eq!(CardSize::Large.rows(), 4);
     assert_eq!(CardSize::Medium.rows(), 3);
     assert_eq!(CardSize::Small.rows(), 2);
+    assert_eq!(CardSize::Tiny.rows(), 1);
     let err = parse("[ui]\ncard_size = \"huge\"\n").unwrap_err();
     assert!(matches!(err, ConfigError::Invalid(_)), "{err:?}");
     let message = err.to_string();
     assert!(message.contains("[ui] card_size `huge`"), "{message}");
-    assert!(message.contains("\"medium\""), "{message}");
+    assert!(
+        message.contains("use \"large\", \"medium\", \"small\" or \"tiny\""),
+        "{message}"
+    );
 }
 
 #[test]
@@ -1364,7 +1369,7 @@ fn a_click_on_a_gap_selects_nothing_and_clicks_around_it_do() {
 #[test]
 fn the_viewport_and_the_page_keys_match_the_gap() {
     for gap in [0, 1] {
-        for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+        for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2), ("tiny", 1)] {
             let ui = format!("card_size = \"{size}\"\ncard_gap = {gap}");
             let mut app = app_with(&many(40), &ui, "");
             draw(&mut app, 160, 30);
@@ -1450,6 +1455,8 @@ fn the_fit_counts_of_the_decision_hold() {
         ("large", 0, 10, 6),
         ("medium", 0, 13, 8),
         ("small", 0, 20, 13),
+        ("tiny", 1, 35, 21),
+        ("tiny", 0, 40, 26),
     ] {
         assert_eq!(
             cards_that_fit(size, gap, 200, 50),
@@ -1462,6 +1469,416 @@ fn the_fit_counts_of_the_decision_hold() {
             "{size} gap {gap} at 120x36"
         );
     }
+}
+
+// ---- tiny cards ---------------------------------------------------------------------
+
+const TINY: &str = "card_size = \"tiny\"";
+
+const FAINT: Color = Color::Rgb(138, 138, 138);
+
+/// `builds` has three subagents.
+fn with_three_subagents(app: &mut App) {
+    let agents = (0..3)
+        .map(|k| Subagent {
+            id: format!("agent{k}"),
+            agent_type: "general-purpose".into(),
+            description: Some("a task".into()),
+            started_ms: NOW_MS,
+        })
+        .collect::<Vec<_>>();
+    app.subagents_read(HashMap::from([(
+        "bbbb2222-0000-4000-8000-000000000000".to_owned(),
+        agents,
+    )]));
+}
+
+fn render_at(app: &mut App, w: u16, h: u16, now_ms: i64) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal
+        .draw(|f| ui::draw_at(f, app, Instant::now(), now_ms))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn tiny_cards_are_one_row_with_a_glyph_and_the_name_and_nothing_else() {
+    let mut app = app_with(&listing(), TINY, "");
+    with_three_subagents(&mut app);
+    let buf = render(&mut app, 160, 40);
+    let lines = bar_of(&text_of(&buf), 28);
+    let at = |name: &str| y_of(&lines, name);
+    assert_eq!(lines[at("reviews")].trim_end(), "   ▪ reviews");
+    assert_eq!(lines[at("asks")].trim_end(), " ● ▪ asks");
+    assert_eq!(lines[at("other-shell")].trim_end(), "   ┆ other-shell");
+    let builds = &lines[at("builds")];
+    assert!(builds.ends_with("+3"), "the badge at the edge: {builds}");
+    assert_eq!(builds.chars().nth(5), Some('b'), "names line up: {builds}");
+    // No outline, account, folder, state word, age or child line.
+    let all = lines[1..].join("\n");
+    for absent in [
+        "╭", "┏", "╰", "┗", "main", "web", "api", "…/", "done", "working", "blocked", "now",
+        "a task",
+    ] {
+        assert!(!all.contains(absent), "{absent:?} in\n{all}");
+    }
+    // The state's colour on the glyph, the marker red, the name in text.
+    let (asks, builds, reviews) = (at("asks") as u16, at("builds") as u16, at("reviews") as u16);
+    assert_eq!(buf[(3, asks)].fg, NEUTRAL_AMBER);
+    assert_eq!(buf[(1, asks)].fg, NEUTRAL_RED);
+    assert_eq!(buf[(3, builds)].fg, NEUTRAL_BLUE);
+    // Only attention is bold.
+    assert!(buf[(5, asks)].modifier.contains(Modifier::BOLD));
+    assert!(!buf[(5, builds)].modifier.contains(Modifier::BOLD));
+    assert!(!buf[(5, reviews)].modifier.contains(Modifier::BOLD));
+    // Interactive rows are dim, glyph and name.
+    let shell = at("other-shell") as u16;
+    assert_eq!(buf[(3, shell)].fg, FAINT);
+    assert_eq!(buf[(5, shell)].fg, FAINT);
+    // The spinner moves on a working row, and only there.
+    let later = render_at(&mut app, 160, 40, NOW_MS + 200);
+    assert_ne!(buf[(3, builds)].symbol(), later[(3, builds)].symbol());
+    assert_ne!(buf[(3, builds)].symbol(), "▪");
+    assert_eq!(later[(3, reviews)].symbol(), "▪");
+}
+
+#[test]
+fn a_tiny_row_is_recognisable_in_every_look() {
+    for (look, theme, color, shade) in SELECTION_LOOKS {
+        let mut app = app_with(&listing(), TINY, "");
+        with_three_subagents(&mut app);
+        app.set_theme(theme);
+        app.color = color;
+
+        // Nothing chosen: no row has the selection or a marker.
+        let buf = render(&mut app, 160, 40);
+        let lines = bar_of(&text_of(&buf), 28);
+        let (asks, shell) = (y_of(&lines, "asks"), y_of(&lines, "other-shell"));
+        let reviews = y_of(&lines, "reviews");
+        for y in [asks, shell, reviews] {
+            assert!(lines[y].starts_with(' '), "{look}: {}", lines[y]);
+            assert!(!shaded(&buf[(14, y as u16)], shade), "{look}: {}", lines[y]);
+        }
+        // Attention needs no colour (doc/0007).
+        assert!(
+            lines[asks].starts_with(" ● ▪ asks"),
+            "{look}: {}",
+            lines[asks]
+        );
+        let name = &buf[(5, asks as u16)];
+        assert!(name.modifier.contains(Modifier::BOLD), "{look}");
+        // Dim needs none either, and the glyph says it without dimming.
+        assert!(
+            lines[shell].starts_with("   ┆ "),
+            "{look}: {}",
+            lines[shell]
+        );
+        let (dim, plain) = (&buf[(5, shell as u16)], &buf[(5, reviews as u16)]);
+        assert!(
+            dim.fg != plain.fg || dim.modifier.contains(Modifier::DIM),
+            "{look}"
+        );
+        // Only colour tells these two apart, so without it they are plain.
+        let (a, r) = (&buf[(3, asks as u16)], &buf[(3, reviews as u16)]);
+        if color {
+            assert_ne!(a.fg, r.fg, "{look}");
+        } else {
+            assert_eq!((a.fg, r.fg), (Color::Reset, Color::Reset), "{look}");
+        }
+
+        // Selected and working, with a badge: the whole row, and a marker.
+        let want = match shade {
+            Shade::Painted(_) => '▌',
+            Shade::Reversed => '▶',
+        };
+        common::select_name(&mut app, "builds");
+        let buf = render(&mut app, 160, 40);
+        let lines = bar_of(&text_of(&buf), 28);
+        let y = y_of(&lines, "builds");
+        assert_eq!(lines[y].chars().next(), Some(want), "{look}: {}", lines[y]);
+        assert!(lines[y].ends_with("+3"), "{look}: {}", lines[y]);
+        assert_ne!(lines[y].chars().nth(3), Some('▪'), "{look}: the spinner");
+        for x in 0..28 {
+            assert!(shaded(&buf[(x, y as u16)], shade), "{look}: {x}");
+        }
+        for y in [y - 1, y + 1] {
+            assert!(!shaded(&buf[(14, y as u16)], shade), "{look}: row {y}");
+        }
+
+        // Selected with attention.
+        common::select_name(&mut app, "asks");
+        let buf = render(&mut app, 160, 40);
+        let lines = bar_of(&text_of(&buf), 28);
+        let y = y_of(&lines, "asks");
+        let start: String = lines[y].chars().take(10).collect();
+        assert_eq!(start, format!("{want}● ▪ asks "), "{look}");
+        assert!(
+            buf[(5, y as u16)].modifier.contains(Modifier::BOLD),
+            "{look}"
+        );
+        assert!(shaded(&buf[(27, y as u16)], shade), "{look}");
+
+        // Selected and interactive.
+        common::select_name(&mut app, "other-shell");
+        let buf = render(&mut app, 160, 40);
+        let lines = bar_of(&text_of(&buf), 28);
+        let y = y_of(&lines, "other-shell");
+        assert!(
+            lines[y].starts_with(&format!("{want}  ┆ other-shell")),
+            "{look}: {}",
+            lines[y]
+        );
+        assert!(shaded(&buf[(27, y as u16)], shade), "{look}");
+    }
+}
+
+#[test]
+fn tiny_fits_long_names_at_every_width_and_gives_way_below_the_size_limit() {
+    let name = "a-very-long-session-name-that-goes-on-for-a-while";
+    let wide = "日本語のとても長いセッションの名前をここに書く";
+    for (w, bar_w) in [(100, 20usize), (160, 28), (250, 40), (250, 60)] {
+        for (session, cut) in [(name, bar_w < 60), (wide, bar_w < 60)] {
+            let long = row("bbbb2222", session, "billing-ui", BUSY, "working");
+            let ui = format!("{TINY}\nlist_width = {bar_w}");
+            let mut app = app_with(&format!("[{long}]"), &ui, "");
+            let lines = bar_of(&draw(&mut app, w, 30), bar_w);
+            let plain = lines[2].clone();
+            assert_eq!(plain.contains('…'), cut, "{bar_w}: {plain}");
+            with_three_subagents(&mut app);
+            let lines = bar_of(&draw(&mut app, w, 30), bar_w);
+            let badged = &lines[2];
+            assert_eq!(badged.contains('…'), cut, "{bar_w}: {badged}");
+            if session == name {
+                assert_eq!(badged.chars().count(), bar_w, "{badged}");
+                assert!(badged.ends_with("+3"), "{bar_w}: {badged}");
+                if cut {
+                    assert!(plain.ends_with('…'), "{bar_w}: {plain}");
+                }
+            } else {
+                assert!(badged.trim_end().ends_with("+3"), "{bar_w}: {badged}");
+            }
+        }
+    }
+    // Below 100 × 24 the workspace gives way, and the size means nothing.
+    for (w, h) in [(80, 24), (99, 40), (120, 23)] {
+        let draw_with = |ui: &str| {
+            let mut app = app_with(&listing(), ui, "");
+            common::select_name(&mut app, "builds");
+            draw(&mut app, w, h)
+        };
+        let text = draw_with(TINY);
+        assert_eq!(text, draw_with(""), "{w}x{h}");
+        assert!(
+            !text.contains('┃') && !text.contains("◆ tower  by"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn tiny_has_no_gap_between_cards_and_the_gap_before_headers_follows_card_gap() {
+    let rows = [
+        row("cccc3333", "reviews", "web", IDLE, "done"),
+        row("ffff6666", "another", "web", IDLE, "done"),
+        row("bbbb2222", "builds", "billing-ui", BUSY, "working"),
+        row("bbbb3333", "compiles", "billing-ui", BUSY, "working"),
+    ];
+    let text = format!("[{}]", rows.join(","));
+    for (setting, gap) in [("", 1), ("card_gap = 1", 1), ("card_gap = 0", 0)] {
+        let mut app = app_with(&text, &format!("{TINY}\n{setting}"), "");
+        let lines = bar(&mut app, 40);
+        let first = y_of(&lines, "Ready for");
+        assert_eq!(first, 1, "no gap at the list's top: {lines:#?}");
+        let working = y_of(&lines, "Working");
+        assert_eq!(working, first + 3 + gap, "{setting}: {lines:#?}");
+        let is_card = |y: usize| lines[y].contains("reviews") || lines[y].contains("another");
+        assert!(is_card(first + 1) && is_card(first + 2), "{lines:#?}");
+        if gap == 1 {
+            assert!(lines[first + 3].trim().is_empty(), "{lines:#?}");
+        }
+        // A header stays with its first card, and the next one follows at once.
+        let mut below = [y_of(&lines, "builds"), y_of(&lines, "compiles")];
+        below.sort_unstable();
+        assert_eq!(below, [working + 1, working + 2], "{lines:#?}");
+        // A click on the gap before a header is nobody's.
+        if gap == 1 {
+            app.handle_mouse(mouse(DOWN, 3, working as u16 - 1));
+            assert!(app.pane_home(), "{setting}");
+        }
+    }
+    // The other sizes keep following it between their cards.
+    let lines = bar(&mut app_with(&text, "card_size = \"small\"", ""), 40);
+    assert!(lines[4].trim().is_empty(), "{lines:#?}");
+}
+
+#[test]
+fn every_row_of_a_scrolled_tiny_list_can_be_clicked_anywhere() {
+    let mut app = app_with(&sixty(), TINY, "");
+    draw(&mut app, 200, 50);
+    common::select_name(&mut app, "many-30");
+    let name_on = |line: &str| {
+        line.split_whitespace()
+            .find(|w| w.starts_with("many-"))
+            .map(str::to_owned)
+    };
+    let lines = bar_of(&draw(&mut app, 200, 50), 36);
+    let shown: Vec<(usize, String)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(y, l)| name_on(l).map(|name| (y, name)))
+        .collect();
+    assert!(shown.len() > 30, "{lines:#?}");
+    for (y, name) in &shown {
+        for x in [0, 1, 3, 17, 35] {
+            app.handle_mouse(mouse(DOWN, x, *y as u16));
+            assert_eq!(selected(&app).as_ref(), Some(name), "{x},{y}");
+        }
+        let after = bar_of(&draw(&mut app, 200, 50), 36);
+        assert_eq!(y_of(&after, name), *y, "the list stays under the mouse");
+    }
+    // The column beside the bar is the pane's.
+    let chosen = app.selected_entry();
+    app.handle_mouse(mouse(DOWN, 36, shown[0].0 as u16));
+    assert_eq!(app.selected_entry(), chosen);
+    // The wheel moves a row at a time, and the selection stays on the screen.
+    app.handle_key(ch('g'));
+    draw(&mut app, 200, 50);
+    app.handle_key(key(KeyCode::Down));
+    let before = app.selected_entry().unwrap();
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 10));
+    assert_eq!(app.selected_entry(), Some(before + 1));
+    for _ in 0..70 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 10));
+        let lines = bar_of(&draw(&mut app, 200, 50), 36);
+        if let Some(name) = selected(&app) {
+            let y = y_of(&lines, &name);
+            assert!((1..48).contains(&y), "{name} at {y}");
+        }
+    }
+}
+
+#[test]
+fn a_tiny_list_says_what_is_hidden_and_a_hint_moves_a_page() {
+    let mut app = app_with(&many(60), TINY, "");
+    let lines = bar(&mut app, 30);
+    assert!(
+        lines[1].trim().is_empty(),
+        "nothing above yet: {}",
+        lines[1]
+    );
+    let hidden = |line: &str| -> usize {
+        line.split_whitespace()
+            .find_map(|w| w.parse().ok())
+            .unwrap_or_else(|| panic!("no count in {line}"))
+    };
+    let count = |lines: &[String]| lines.iter().filter(|l| l.contains("row-")).count();
+    assert!(
+        lines[28].contains("▼ ") && lines[28].contains(" more"),
+        "{lines:#?}"
+    );
+    assert_eq!(hidden(&lines[28]) + count(&lines), 60, "{lines:#?}");
+    // A header and the rows of the list's height less the hints.
+    assert_eq!(count(&lines), 25, "{lines:#?}");
+
+    app.handle_key(key(KeyCode::Home));
+    bar(&mut app, 30);
+    let from = app.selected_entry().unwrap();
+    app.handle_mouse(mouse(DOWN, 5, 28));
+    assert!(app.selected_entry().unwrap() >= from + 20, "a page");
+
+    // In the middle: both, on the same rows, and every row between is a card.
+    common::select_name(&mut app, "row-30");
+    let lines = bar(&mut app, 30);
+    assert!(
+        lines[1].contains('▲') && lines[28].contains('▼'),
+        "{lines:#?}"
+    );
+    assert_eq!(hidden(&lines[1]) + count(&lines) + hidden(&lines[28]), 60);
+    assert!(
+        lines[2..28].iter().all(|l| l.contains("row-")),
+        "{lines:#?}"
+    );
+
+    app.handle_key(key(KeyCode::End));
+    let lines = bar(&mut app, 30);
+    assert!(lines[1].contains('▲'), "{lines:#?}");
+    assert!(lines[28].trim().is_empty(), "nothing below: {}", lines[28]);
+    assert!(lines[27].contains("row-59"), "{lines:#?}");
+    assert_eq!(hidden(&lines[1]) + count(&lines), 60);
+}
+
+#[test]
+fn tiny_starts_on_home_chooses_with_the_first_move_and_goes_back() {
+    let unmarked = |lines: &[String]| {
+        lines[1..]
+            .iter()
+            .all(|l| !l.starts_with('▌') && !l.starts_with('▶'))
+    };
+    let mut app = app_with(&listing(), TINY, "");
+    let lines = bar(&mut app, 40);
+    assert!(app.pane_home());
+    assert!(unmarked(&lines), "{lines:#?}");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(selected(&app).as_deref(), Some("asks"));
+    let lines = bar(&mut app, 40);
+    assert!(lines[y_of(&lines, "asks")].starts_with('▌'), "{lines:#?}");
+    let t = Instant::now();
+    assert!(!opened(&app.pane_tick(t)));
+    assert!(opened(&app.pane_tick(t + ATTACH_DEBOUNCE)));
+    app.handle_key(ch('h'));
+    assert!(app.pane_home());
+    assert!(unmarked(&bar(&mut app, 40)));
+}
+
+#[test]
+fn the_settings_window_offers_tiny_and_saves_it_and_its_help_says_what_it_does() {
+    use settings_common::{app_for, env, file, line_with, open, press, screen, select};
+    use watchtower::config_edit::{SettingKey, SettingValue};
+
+    let env = env(Some(
+        "[ui]\nstyle = \"workspace\"\n\n[[accounts]]\nname = \"main\"\ncommand = \"claude\"\n",
+    ));
+    let mut app = app_for(&env);
+    open(&mut app);
+    select(&mut app, "card size");
+    let help = screen(&mut app, 160, 40).join(" ");
+    assert!(help.contains("tiny (1 row"), "{help}");
+    // In the pick list, with its line.
+    press(&mut app, settings_common::key(KeyCode::Enter));
+    let shown = screen(&mut app, 160, 40);
+    line_with(&shown, "1 row: the name only");
+    press(&mut app, settings_common::key(KeyCode::Esc));
+    // The cycle reaches it, after small.
+    let value = |app: &App| {
+        app.settings()
+            .unwrap()
+            .session
+            .value(SettingKey::UiCardSize)
+    };
+    press(&mut app, settings_common::key(KeyCode::Right));
+    press(&mut app, settings_common::key(KeyCode::Right));
+    assert_eq!(value(&app), SettingValue::Text("tiny".to_owned()));
+    let effects = app.handle_key(settings_common::ctrl('s'));
+    let [Effect::SaveConfig(job)] = effects.as_slice() else {
+        panic!("{effects:?}");
+    };
+    let result = job.run();
+    app.config_saved(result);
+    assert!(
+        file(&env).contains("card_size = \"tiny\""),
+        "{}",
+        file(&env)
+    );
+    assert_eq!(app.config().ui_card_size, CardSize::Tiny, "applied at once");
+
+    // Both helps say it has no gap between its cards.
+    let help = SettingKey::UiCardSize.help();
+    assert!(help.contains("no gap between cards"), "{help}");
+    assert!(
+        SettingKey::UiCardGap
+            .help()
+            .contains("before each group only")
+    );
 }
 
 // ---- the footer ---------------------------------------------------------------------
@@ -1982,7 +2399,7 @@ fn the_usage_block_drops_the_week_before_cutting_anything() {
 #[test]
 fn cards_never_overlap_the_usage_block_and_clicks_and_pages_use_the_smaller_list() {
     let accounts = format!("{TWO_ACCOUNTS}[usage]\nshow = true\n");
-    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2), ("tiny", 1)] {
         let mut app = app_with(&many(40), &format!("card_size = \"{size}\""), &accounts);
         usage_in(&mut app, "main", Ok(plan(24.0, 12.0)), 0);
         usage_in(&mut app, "alt", Ok(plan(5.0, 30.0)), 0);
@@ -2182,7 +2599,7 @@ fn sixty() -> String {
 
 #[test]
 fn sixty_sessions_stay_usable_at_every_size() {
-    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2), ("tiny", 1)] {
         let at = |what: &str| format!("{size}: {what}");
         let mut app = app_with(&sixty(), &format!("card_size = \"{size}\""), "");
         draw(&mut app, 200, 50);
@@ -2254,7 +2671,7 @@ fn sixty_sessions_stay_usable_at_every_size() {
 
 #[test]
 fn a_fast_wheel_attaches_once_after_it_settles() {
-    for size in ["large", "medium", "small"] {
+    for size in ["large", "medium", "small", "tiny"] {
         let mut app = app_with(&sixty(), &format!("card_size = \"{size}\""), "");
         draw(&mut app, 200, 50);
         let mut t = Instant::now();
@@ -2643,6 +3060,8 @@ fn the_other_styles_ignore_the_card_size_and_home() {
         let plain = draw_style(style, "");
         let small = draw_style(style, "card_size = \"small\"");
         assert_eq!(plain, small, "{style:?}");
+        let tiny = draw_style(style, "card_size = \"tiny\"");
+        assert_eq!(plain, tiny, "{style:?}");
         assert!(!plain.contains("Home"), "{style:?}");
     }
 }

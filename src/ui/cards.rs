@@ -3,7 +3,7 @@
 //! has the state's colour; the selected card's is heavy, and the whole card
 //! sits on the selection's background. Cards show the account, not git; a
 //! card's subagents are the `+N` badge on its title. `[ui] card_gap` keeps
-//! cards and groups apart.
+//! cards and groups apart; `tiny` cards take it before groups only.
 //!
 //! Tells the app which entry each screen row shows, for clicks; a gap shows
 //! none. The viewport moves by whole entries, and a card that does not fit is
@@ -132,7 +132,7 @@ struct Card<'a> {
     lit: bool,
     dim: bool,
     busy: bool,
-    /// Medium and large; small has an edge instead.
+    /// Medium and large; small has an edge instead, and tiny neither.
     outlined: bool,
     color: Color,
     spin: &'static str,
@@ -223,22 +223,27 @@ impl Card<'_> {
         }
     }
 
-    /// What starts the title: the attention marker (doc/0007), then the
-    /// spinner or a glyph, each with a space after it. An outline already
-    /// has the state's colour, so only `small`'s glyph repeats it.
-    fn lead(&self) -> Lb {
+    /// The spinner or a glyph. An outline already has the state's colour, so
+    /// only the cards without one repeat it here.
+    fn glyph(&self) -> (&'static str, Style) {
         let th = self.th;
-        let mut l = Lb::new();
-        if self.lit {
-            l.push(format!("{MARKER} "), th.attention());
-        }
-        let (glyph, style) = if self.busy {
+        if self.busy {
             (self.spin, th.bold(th.group_color(Group::Working)))
         } else if self.outlined && !self.selected {
             ("▪", th.faint())
         } else {
             ("▪", self.edge())
-        };
+        }
+    }
+
+    /// What starts the title: the attention marker (doc/0007), then
+    /// [`Card::glyph`], each with a space after it.
+    fn lead(&self) -> Lb {
+        let mut l = Lb::new();
+        if self.lit {
+            l.push(format!("{MARKER} "), self.th.attention());
+        }
+        let (glyph, style) = self.glyph();
         l.push(format!("{glyph} "), style);
         l
     }
@@ -378,11 +383,15 @@ impl Card<'_> {
         vec![self.top(), self.middle(left, right), self.bottom(true)]
     }
 
-    /// `small`'s left edge. Where the selection is reverse video the selected
-    /// card's is `▶`, as a selected row's, since a full block would not show.
+    /// Whether the selection is reverse video here, where a block on the
+    /// selected card would not show and it takes a `▶`, as a selected row does.
+    fn reversed(&self) -> bool {
+        !self.th.color || self.th.p.reverse
+    }
+
+    /// `small`'s left edge.
     fn small_edge(&self) -> (&'static str, Style) {
-        let reversed = !self.th.color || self.th.p.reverse;
-        let glyph = match (self.selected, reversed, self.dim) {
+        let glyph = match (self.selected, self.reversed(), self.dim) {
             (true, false, _) => "█",
             (true, true, _) => "▶",
             (false, _, true) => "┆",
@@ -442,11 +451,58 @@ impl Card<'_> {
         vec![top.line(), below.line()]
     }
 
+    /// `tiny`: one row, `▌● ▪ name      +2`. The first cell is the selected
+    /// row's, the next two the attention marker's, so the names line up
+    /// whatever the rows say. The name is bold only for attention (doc/0007).
+    fn tiny(&self) -> Vec<Line<'static>> {
+        let th = self.th;
+        let t = row_text(self.app, self.i, Level::Full);
+        let (edge, edge_style) = match (self.selected, self.reversed()) {
+            (false, _) => (" ", self.text()),
+            (true, false) => ("▌", th.fg(th.p.mark)),
+            (true, true) => ("▶", self.on_card()),
+        };
+        let mut l = Lb::new();
+        l.push(edge, edge_style);
+        if self.lit {
+            l.push(format!("{MARKER} "), th.attention());
+        } else {
+            l.push("  ", self.text());
+        }
+        let (glyph, style) = if self.dim {
+            ("┆", self.edge())
+        } else {
+            self.glyph()
+        };
+        l.push(format!("{glyph} "), style);
+        let room = self.width.saturating_sub(l.w);
+        let badge_w = t.badge.as_ref().map_or(0, |b| b.width() + 1);
+        let (badge, room) = match &t.badge {
+            Some(b) if room >= badge_w + NAME_MIN => (Some(b.as_str()), room - badge_w),
+            _ => (None, room),
+        };
+        let name = if self.lit {
+            self.text().add_modifier(Modifier::BOLD)
+        } else {
+            self.text()
+        };
+        l.push(shorten(&t.name, room.max(1)), name);
+        l.pad_to(
+            self.width - badge.map_or(0, UnicodeWidthStr::width),
+            self.text(),
+        );
+        if let Some(badge) = badge {
+            l.push(badge.to_owned(), self.fact());
+        }
+        vec![l.line()]
+    }
+
     fn lines(&self, size: CardSize) -> Vec<Line<'static>> {
         match size {
             CardSize::Large => self.large(),
             CardSize::Medium => self.medium(),
             CardSize::Small => self.small(),
+            CardSize::Tiny => self.tiny(),
         }
     }
 }
@@ -598,10 +654,12 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
         Entry::Row(_) => size.rows(),
     };
     // A blank row between cards and before each group header; a header stays
-    // with its first card, and the list's top needs none.
+    // with its first card, and the list's top needs none. `tiny` keeps its
+    // cards together, as a blank row after each line would defeat it.
+    let between_cards = if size == CardSize::Tiny { 0 } else { gap };
     let gap_after = |k: usize| match entries.get(k + 1) {
         Some(Entry::Header { .. }) => gap,
-        Some(Entry::Row(_)) if matches!(entries[k], Entry::Row(_)) => gap,
+        Some(Entry::Row(_)) if matches!(entries[k], Entry::Row(_)) => between_cards,
         _ => 0,
     };
     let heights: Vec<usize> = (0..entries.len())
@@ -714,7 +772,7 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
                     lit: app.is_highlighted(m),
                     dim,
                     busy: !dim && groups::spins(&m.session),
-                    outlined: size != CardSize::Small,
+                    outlined: matches!(size, CardSize::Large | CardSize::Medium),
                     color: th.group_color(groups::classify(&m.session)),
                     spin,
                     age: age_column(app, m, now_ms),

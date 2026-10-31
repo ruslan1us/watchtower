@@ -16,9 +16,11 @@ Code's fullscreen view it relies on is a research preview
   A stopped session shows `Enter wakes it here`, and only `Enter` does.
 - Sessions are cards, outlined in their state's colour; the selected one has a heavy outline and
   is highlighted whole, and `●` marks attention. `[ui] card_size` (also in Settings) is `large`
-  (4 rows), `medium` (3, the default) or `small` (2, a coloured edge and no outline); `[ui]
-  card_gap` (0 or 1, default 1) is the blank row between cards and before each group. Cards show
-  the account and a `+N` subagent badge; git stays in the pane's title. A click on a card selects
+  (4 rows), `medium` (3, the default), `small` (2, a coloured edge and no outline) or `tiny` (1, a
+  state glyph and the name, with no outline, account, folder, state or age); `[ui] card_gap` (0 or
+  1, default 1) is the blank row between cards and before each group. `tiny` has no blank row
+  between its cards whatever `card_gap` says, and takes it before each group only. Cards show the
+  account, except `tiny`, and a `+N` subagent badge; git stays in the pane's title. A click on a card selects
   it, a click on a group folds or unfolds it, and the wheel moves through the list.
 - `o`, start-and-attach in the new-session dialog and renaming a running session open it in the
   pane with the keys; `Ctrl+Z` or `F12` returns. A session just started opens when it is listed.

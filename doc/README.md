@@ -72,7 +72,7 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 | 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted (claude.ai synced skills added 2026-10-28) |
 | 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted (per account on the workspace's Home and in its bar by 0045) |
 | 0044 | [The orchestrator starts and wakes sessions when asked](0044-orchestrator-starts-and-wakes-sessions.md) | Accepted |
-| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints, the pane's selection, the shell's history and zoom added 2026-10-31; tower's own title by 0047; preselected in the welcome window by 0048) |
+| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints, the pane's selection, the shell's history, zoom and `tiny` cards added 2026-10-31; tower's own title by 0047; preselected in the welcome window by 0048) |
 | 0046 | [Colour themes from published palettes](0046-more-colour-themes.md) | Accepted |
 | 0047 | [Attention in the tab title, pinned sessions, restart after an update](0047-tab-title-pinning-and-restart.md) | Accepted |
 | 0048 | [First start: the welcome window and `tower setup`](0048-first-run-welcome.md) | Accepted |

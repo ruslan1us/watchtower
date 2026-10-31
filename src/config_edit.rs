@@ -281,11 +281,12 @@ impl SettingKey {
             }
             SettingKey::UiCardSize => {
                 "The workspace style's cards: large (4 rows), medium (3 rows, name, state and \
-                 folder, account and age) or small (2 rows without an outline)."
+                 folder, account and age), small (2 rows without an outline) or tiny (1 row, the \
+                 name only, and no gap between cards, whatever the gap is set to)."
             }
             SettingKey::UiCardGap => {
                 "The workspace style's blank rows between cards and before each group: 1 keeps \
-                 them apart, 0 fits more cards."
+                 them apart, 0 fits more cards. Tiny cards take it before each group only."
             }
             SettingKey::DefaultAccount => {
                 "The account new sessions and the orchestrator start under."

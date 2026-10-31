@@ -1141,6 +1141,7 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
     for (name, size) in [
         ("list-workspace-cards-large", CardSize::Large),
         ("list-workspace-cards-small", CardSize::Small),
+        ("list-workspace-cards-tiny", CardSize::Tiny),
     ] {
         out.push((
             name,
@@ -3126,6 +3127,16 @@ fn the_workspace_starts_on_home_and_its_cards_keep_their_shape() {
             .expect("marker");
         assert!(rows[top + 1].starts_with('█'), "{}", f.text());
         assert!(!rows[top + 2].starts_with('█'), "{}", f.text());
+        let f = frame("list-workspace-cards-tiny", "workspace", w, h);
+        let rows = rows_of(f);
+        let top = rows[1..]
+            .iter()
+            .position(|r| r.starts_with('▌'))
+            .map(|k| k + 1)
+            .expect("marker");
+        assert!(rows[top].contains('…'), "{}", f.text());
+        assert!(!rows[top + 1].starts_with('▌'), "{}", f.text());
+        assert!(!rows.iter().any(|r| r.starts_with('╭')), "{}", f.text());
     }
 }
 

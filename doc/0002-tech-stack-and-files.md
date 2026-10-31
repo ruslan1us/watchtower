@@ -97,8 +97,8 @@ in tower's own shell never reaches an account's command (a wrapper such as
 `minimal`; any other value is a config error naming both
 ([0020](0020-visual-styles.md)).
 *Amended by [0045](0045-workspace-style.md):* `[ui] style` also takes `workspace`, with `[ui] mouse` (default `true`)
-and `[ui] list_width` (default 0, automatic; 20 to 60 columns), and `[ui] card_size` (`large`, `medium`, the default, or
-`small`) and `[ui] card_gap` (0 or 1, default 1), used by that style only.
+and `[ui] list_width` (default 0, automatic; 20 to 60 columns), and `[ui] card_size` (`large`, `medium`, the default, `small`
+or `tiny`) and `[ui] card_gap` (0 or 1, default 1), used by that style only.
 *Amended by [0047](0047-tab-title-pinning-and-restart.md):* `[ui] tab_title` (default `true`) in every style.
 
 `[ui] theme` picks the dashboard style's colours: `neutral` (default),

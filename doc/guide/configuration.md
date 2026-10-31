@@ -37,7 +37,7 @@ replaces a file that exists, so the welcome window then does not open.
 
 Press `c` in tower to change settings: the Settings window
 ([0024](../0024-settings-window.md)) edits the style, theme and colour depth
-(previewed as you browse), the workspace's card size and gap, the new-session defaults, the project folders, the hand-off prompt and guard,
+(previewed as you browse), the workspace's card size (`large`, `medium`, `small` or `tiny`, the last with no gap between its cards) and gap, the new-session defaults, the project folders, the hand-off prompt and guard,
 the poll interval, the background logs follow, subagent tracking and the plan usage display; `Ctrl+S` saves, `e` opens the file in `$VISUAL` / `$EDITOR`.
 Accounts are shown read-only there; edit them in the file and restart tower. The window
 saves through [0022](../0022-tower-writes-its-own-config.md): it writes only the keys you change
