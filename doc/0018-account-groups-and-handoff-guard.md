@@ -88,7 +88,8 @@ around limits.
   session between them by mistake. Setting `allow_cross_group_handoff = true`
   is an explicit, visible choice in the user's own config.
 - Groups do not separate data on disk. Config dirs that share history through
-  symlinks still mix those accounts' transcripts and memory; the README says so.
+  symlinks still mix those accounts' transcripts and memory; the user guide says so
+  ([Accounts and terms](guide/accounts-and-terms.md)).
 - Tower cannot know which terms an account is under; the group is the user's
   own label.
 - An unknown owner blocks hand-offs in a multi-group setup until it is learned.

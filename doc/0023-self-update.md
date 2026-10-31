@@ -59,8 +59,8 @@ through the `claude` CLI and local files ([0001](0001-thin-wrapper-over-claude-c
 
 ## Consequences
 
-- One command updates any host that has `curl`, with the same checksum check the README
-  describes for a manual install, plus a check that the binary actually runs.
+- One command updates any host that has `curl`, with the same checksum check the user guide
+  ([Getting started](guide/getting-started.md)) describes for a manual install, plus a check that the binary actually runs.
 - Tower now has network behaviour, but only on an explicit command. Running `tower`,
   `tower status` or the TUI still makes no network call.
 - `curl` becomes a soft requirement for updates only. TLS, proxies (`https_proxy`) and CA

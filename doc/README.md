@@ -13,6 +13,16 @@ reconfigures agents itself.
 
 This directory records the design decisions behind it, one file per decision.
 
+## User guides
+
+How to install and use tower is in [`guide/`](guide/getting-started.md), linked from the
+[main README](../README.md): [getting started](guide/getting-started.md),
+[keys](guide/keys.md), [configuration](guide/configuration.md),
+[workspace style](guide/workspace-style.md), [working with sessions](guide/sessions.md),
+[the orchestrator and the `tower` commands](guide/orchestrator.md),
+[plan usage](guide/plan-usage.md), [accounts and terms](guide/accounts-and-terms.md),
+[how it works](guide/how-it-works.md) and [development](guide/development.md).
+
 ## Index
 
 | No. | Decision | Status |
