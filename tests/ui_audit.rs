@@ -1626,12 +1626,25 @@ const SIZES: [(u16, u16); 9] = [
 ];
 
 /// The looks: name, style, theme, colour.
-const LOOKS: [(&str, UiStyle, UiTheme, bool); 5] = [
+const LOOKS: [(&str, UiStyle, UiTheme, bool); 7] = [
     ("dash-neutral", UiStyle::Dashboard, UiTheme::Neutral, true),
     (
         "dash-light",
         UiStyle::Dashboard,
         UiTheme::NeutralLight,
+        true,
+    ),
+    // A representative dark and light published palette (doc/0046).
+    (
+        "dash-mocha",
+        UiStyle::Dashboard,
+        UiTheme::CatppuccinMocha,
+        true,
+    ),
+    (
+        "dash-latte",
+        UiStyle::Dashboard,
+        UiTheme::CatppuccinLatte,
         true,
     ),
     ("dash-nocolor", UiStyle::Dashboard, UiTheme::Neutral, false),
@@ -2880,8 +2893,9 @@ fn the_workspace_says_what_is_hidden_and_keeps_its_usage_block() {
 }
 
 #[test]
-fn the_light_theme_draws_the_same_text_as_neutral() {
-    for f in frames().iter().filter(|f| f.look == "dash-light") {
+fn the_other_themes_draw_the_same_text_as_neutral() {
+    let themed = |f: &&Frame| matches!(f.look, "dash-light" | "dash-mocha" | "dash-latte");
+    for f in frames().iter().filter(themed) {
         let neutral = frame(f.scenario, "dash-neutral", f.w, f.h);
         assert_eq!(f.text(), neutral.text(), "{} {}x{}", f.scenario, f.w, f.h);
     }

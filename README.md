@@ -275,6 +275,16 @@ does not parse is not applied; the status line shows the error until it is fixed
   on dark and light backgrounds alike. The minimal style keeps its own look, and
   `NO_COLOR` turns colour off under every theme.
 
+  Ten published palettes are mapped to tower's roles
+  ([0046](doc/0046-more-colour-themes.md), with their sources, licences and credit):
+  `"catppuccin-mocha"`, `"dracula"`, `"gruvbox-dark"`, `"kanagawa"`, `"nord"`,
+  `"one-dark"`, `"rose-pine"` for a dark background, and `"catppuccin-latte"`,
+  `"gruvbox-light"`, `"one-light"` for a light one. Tower never paints the background:
+  for the palette's own look, set your terminal's background to the palette's. On plain
+  black under a dark palette, or white under a light one, they stay readable; a dark
+  palette on a light terminal is not. A few values are deeper or lighter than published
+  to stay readable, most in `"catppuccin-latte"`.
+
   ```toml
   [ui]
   theme = "neutral-light"

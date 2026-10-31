@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md) · more theme names added by [0046](0046-more-colour-themes.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
@@ -104,7 +104,10 @@ listing them. The minimal style ignores it, and `NO_COLOR` overrides it
 ([0021](0021-dashboard-themes.md)). *Amended by
 [0038](0038-light-and-16-colour-themes.md):* the config listing above also
 takes the themes `neutral-light`, `warm-light` and `ansi16`, and `[ui]
-color_depth` (`auto`, `truecolor`, `256` or `16`).
+color_depth` (`auto`, `truecolor`, `256` or `16`). *Amended by
+[0046](0046-more-colour-themes.md):* also `catppuccin-mocha`, `dracula`,
+`gruvbox-dark`, `kanagawa`, `nord`, `one-dark`, `rose-pine`, `catppuccin-latte`,
+`gruvbox-light` and `one-light`.
 `group` is an optional string per account; accounts without it share one
 implicit group. A hand-off offers only accounts in the owner's group unless
 the top-level `allow_cross_group_handoff` (default `false`) is `true`

@@ -533,19 +533,33 @@ fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
         ("neutral-light", UiTheme::NeutralLight),
         ("warm-light", UiTheme::WarmLight),
         ("ansi16", UiTheme::Ansi16),
+        ("catppuccin-mocha", UiTheme::CatppuccinMocha),
+        ("dracula", UiTheme::Dracula),
+        ("gruvbox-dark", UiTheme::GruvboxDark),
+        ("kanagawa", UiTheme::Kanagawa),
+        ("nord", UiTheme::Nord),
+        ("one-dark", UiTheme::OneDark),
+        ("rose-pine", UiTheme::RosePine),
+        ("catppuccin-latte", UiTheme::CatppuccinLatte),
+        ("gruvbox-light", UiTheme::GruvboxLight),
+        ("one-light", UiTheme::OneLight),
     ] {
         let c = parse(&format!("[ui]\ntheme = \"{name}\"\n")).unwrap();
         assert_eq!(c.ui_theme, theme, "{name}");
         assert_eq!(c.ui_style, UiStyle::Dashboard, "{name}");
         assert_eq!(theme.as_str(), name);
     }
-    assert_eq!(UiTheme::ALL.len(), 7);
+    assert_eq!(UiTheme::ALL.len(), 17);
     for bad in [
         "tokyo_night",
         "Neutral",
         "light",
         "neutral_light",
         "ansi",
+        "catppuccin",
+        "catppuccin_mocha",
+        "gruvbox",
+        "rosé-pine",
         "",
     ] {
         let err = parse(&format!("[ui]\ntheme = \"{bad}\"\n")).unwrap_err();
@@ -555,7 +569,9 @@ fn ui_theme_defaults_to_neutral_and_rejects_unknown_values() {
         assert!(
             text.contains(
                 "\"neutral\", \"warm\", \"terminal\", \"tokyo-night\", \"neutral-light\", \
-                 \"warm-light\" or \"ansi16\""
+                 \"warm-light\", \"ansi16\", \"catppuccin-mocha\", \"dracula\", \
+                 \"gruvbox-dark\", \"kanagawa\", \"nord\", \"one-dark\", \"rose-pine\", \
+                 \"catppuccin-latte\", \"gruvbox-light\" or \"one-light\""
             ),
             "{text}"
         );

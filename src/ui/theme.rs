@@ -9,6 +9,10 @@
 //! doc/0038 adds the light-background palettes, `ansi16` (the 16 named
 //! colours plus attributes) and [`reduce_buffer`], which brings a drawn
 //! frame within the terminal's colour depth.
+//!
+//! doc/0046 adds palettes published by other projects, with each source and
+//! licence. Colour values only; a value that had to move to reach a contrast
+//! target is listed there, next to the one published.
 
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
@@ -21,6 +25,11 @@ use crate::groups::{Group, GroupKey};
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
+}
+
+/// A colour written as its published hex value: `hex(0x1e1e2e)`.
+const fn hex(v: u32) -> Color {
+    Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
 /// How account chips are painted.
@@ -373,6 +382,471 @@ pub static ANSI16: Palette = Palette {
     ansi16: true,
 };
 
+/// A published palette (doc/0046) in tower's roles: its own colours mapped by
+/// meaning, state pills in the palette's background colour, the detail panel's
+/// border in the subject's state colour.
+struct Published {
+    /// The background it was made for, which tower does not paint: the text
+    /// on the state pills.
+    bg: Color,
+    tint_base: Color,
+    tint: f32,
+    text: Color,
+    muted: Color,
+    faint: Color,
+    line: Color,
+    surface: Color,
+    sel: Color,
+    sel_fg: Color,
+    red: Color,
+    amber: Color,
+    green: Color,
+    blue: Color,
+    grey: Color,
+    teal: Color,
+    orange: Color,
+    logo: Color,
+    title: Color,
+    key: Color,
+    key_hot: Color,
+    mark: Color,
+    project: Color,
+    logs_border: Color,
+    accounts: [Color; 4],
+}
+
+const fn published(p: Published) -> Palette {
+    Palette {
+        pill_text: p.bg,
+        tint_base: p.tint_base,
+        text: p.text,
+        muted: p.muted,
+        faint: p.faint,
+        line: p.line,
+        surface: p.surface,
+        sel: p.sel,
+        sel_fg: Some(p.sel_fg),
+        red: p.red,
+        amber: p.amber,
+        green: p.green,
+        blue: p.blue,
+        grey: p.grey,
+        teal: p.teal,
+        orange: p.orange,
+        logo: p.logo,
+        title: p.title,
+        key: p.key,
+        key_hot: p.key_hot,
+        mark: p.mark,
+        project: p.project,
+        logs_border: p.logs_border,
+        detail_border_group: true,
+        accounts: p.accounts,
+        chip: Chip::Tint(p.tint),
+        reverse: false,
+        ansi16: false,
+    }
+}
+
+/// Catppuccin Mocha: every value as published.
+pub static CATPPUCCIN_MOCHA: Palette = {
+    const BASE: Color = hex(0x1e1e2e);
+    const SURFACE0: Color = hex(0x313244);
+    const OVERLAY2: Color = hex(0x9399b2);
+    const YELLOW: Color = hex(0xf9e2af);
+    const MAUVE: Color = hex(0xcba6f7);
+    const PEACH: Color = hex(0xfab387);
+    const LAVENDER: Color = hex(0xb4befe);
+    const TEXT: Color = hex(0xcdd6f4);
+    published(Published {
+        bg: BASE,
+        tint_base: BASE,
+        tint: 0.2,
+        text: TEXT,
+        muted: hex(0xbac2de),
+        faint: OVERLAY2,
+        line: hex(0x6c7086),
+        surface: SURFACE0,
+        sel: SURFACE0,
+        sel_fg: TEXT,
+        red: hex(0xf38ba8),
+        amber: YELLOW,
+        green: hex(0xa6e3a1),
+        blue: hex(0x89b4fa),
+        grey: OVERLAY2,
+        teal: MAUVE,
+        orange: PEACH,
+        logo: MAUVE,
+        title: LAVENDER,
+        key: LAVENDER,
+        key_hot: YELLOW,
+        mark: LAVENDER,
+        project: LAVENDER,
+        logs_border: LAVENDER,
+        accounts: [hex(0x74c7ec), hex(0xf5c2e7), hex(0x94e2d5), PEACH],
+    })
+};
+
+/// Dracula: no blue, so Working is its cyan; its comment colour is lines, and
+/// the other greys are its foreground over that comment colour.
+pub static DRACULA: Palette = {
+    const BG: Color = hex(0x282a36);
+    const FG: Color = hex(0xf8f8f2);
+    const GREY: Color = hex(0x8491b6);
+    const CYAN: Color = hex(0x8be9fd);
+    const GREEN: Color = hex(0x50fa7b);
+    const ORANGE: Color = hex(0xffb86c);
+    const PINK: Color = hex(0xff79c6);
+    const PURPLE: Color = hex(0xbd93f9);
+    const YELLOW: Color = hex(0xf1fa8c);
+    published(Published {
+        bg: BG,
+        tint_base: BG,
+        tint: 0.1,
+        text: FG,
+        muted: hex(0xb0b8cd),
+        faint: GREY,
+        line: hex(0x6272a4),
+        surface: hex(0x44475a),
+        // Its selection colour a little towards the background, for the red
+        // and the grey outline on a selected card.
+        sel: hex(0x404355),
+        sel_fg: FG,
+        red: hex(0xff5555),
+        amber: YELLOW,
+        green: GREEN,
+        blue: CYAN,
+        grey: GREY,
+        teal: PURPLE,
+        orange: ORANGE,
+        logo: PINK,
+        title: PURPLE,
+        key: PINK,
+        key_hot: YELLOW,
+        mark: YELLOW,
+        project: PURPLE,
+        logs_border: PURPLE,
+        accounts: [CYAN, PINK, GREEN, ORANGE],
+    })
+};
+
+/// Gruvbox dark, medium contrast: its blue sits next to its grey, so Working
+/// is its purple. Its red moves a little to reach 4.5:1.
+pub static GRUVBOX_DARK: Palette = {
+    const BG1: Color = hex(0x3c3836);
+    const FG4: Color = hex(0xa89984);
+    const YELLOW: Color = hex(0xfabd2f);
+    const BLUE: Color = hex(0x83a598);
+    const PURPLE: Color = hex(0xd3869b);
+    const AQUA: Color = hex(0x8ec07c);
+    const ORANGE: Color = hex(0xfe8019);
+    published(Published {
+        bg: hex(0x282828),
+        tint_base: hex(0x1d2021),
+        tint: 0.15,
+        text: hex(0xebdbb2),
+        muted: hex(0xd5c4a1),
+        faint: FG4,
+        line: hex(0x7c6f64),
+        surface: BG1,
+        sel: BG1,
+        sel_fg: hex(0xfbf1c7),
+        red: hex(0xfe513c),
+        amber: YELLOW,
+        green: hex(0xb8bb26),
+        blue: PURPLE,
+        grey: FG4,
+        teal: AQUA,
+        orange: ORANGE,
+        logo: ORANGE,
+        title: YELLOW,
+        key: ORANGE,
+        key_hot: YELLOW,
+        mark: ORANGE,
+        project: AQUA,
+        logs_border: BLUE,
+        accounts: [BLUE, PURPLE, AQUA, YELLOW],
+    })
+};
+
+/// Kanagawa, the wave variant: red is its peach red, as its error reds are too
+/// dark on its background; the grey is its fuji grey lifted to 4.5:1.
+pub static KANAGAWA: Palette = {
+    const FUJI_WHITE: Color = hex(0xdcd7ba);
+    const CARP: Color = hex(0xe6c384);
+    const CRYSTAL: Color = hex(0x7e9cd8);
+    const SPRING_BLUE: Color = hex(0x7fb4ca);
+    const AQUA: Color = hex(0x7aa89f);
+    const SURIMI: Color = hex(0xffa066);
+    published(Published {
+        bg: hex(0x1f1f28),
+        tint_base: hex(0x16161d),
+        tint: 0.15,
+        text: FUJI_WHITE,
+        muted: hex(0xc8c093),
+        faint: hex(0x938aa9),
+        line: hex(0x727169),
+        surface: hex(0x363646),
+        sel: hex(0x223249),
+        sel_fg: FUJI_WHITE,
+        red: hex(0xff5d62),
+        amber: CARP,
+        green: hex(0x98bb6c),
+        blue: CRYSTAL,
+        grey: hex(0x88877f),
+        teal: AQUA,
+        orange: SURIMI,
+        logo: CRYSTAL,
+        title: CRYSTAL,
+        key: SPRING_BLUE,
+        key_hot: CARP,
+        mark: CARP,
+        project: SPRING_BLUE,
+        logs_border: CRYSTAL,
+        accounts: [SPRING_BLUE, hex(0xd27e99), AQUA, SURIMI],
+    })
+};
+
+/// Nord: the frost and snow colours as published; its red, orange and purple
+/// are lifted, and the greys are its snow over its polar night, as nord3 is
+/// 1.7:1 on nord0. The look stays, but its red reads as salmon.
+pub static NORD: Palette = {
+    const NORD0: Color = hex(0x2e3440);
+    const GREY: Color = hex(0x979da9);
+    const FROST: Color = hex(0x88c0d0);
+    const FROST_BLUE: Color = hex(0x81a1c1);
+    const PURPLE: Color = hex(0xc19bba);
+    const YELLOW: Color = hex(0xebcb8b);
+    const SNOW: Color = hex(0xeceff4);
+    published(Published {
+        bg: NORD0,
+        tint_base: NORD0,
+        tint: 0.05,
+        text: hex(0xe5e9f0),
+        muted: hex(0xd8dee9),
+        faint: GREY,
+        line: hex(0x797f8a),
+        surface: hex(0x3b4252),
+        sel: hex(0x434c5e),
+        sel_fg: SNOW,
+        red: hex(0xe28088),
+        amber: YELLOW,
+        green: hex(0xa3be8c),
+        blue: FROST,
+        grey: GREY,
+        teal: PURPLE,
+        orange: hex(0xe79c84),
+        logo: FROST,
+        title: FROST,
+        key: FROST,
+        key_hot: YELLOW,
+        mark: SNOW,
+        project: FROST_BLUE,
+        logs_border: FROST_BLUE,
+        accounts: [FROST, PURPLE, hex(0x8fbcbb), YELLOW],
+    })
+};
+
+/// One Dark: its text moves to reach 7:1 for secondary text and a step above it
+/// for text, its red a little to reach 4.5:1, its two comment greys more; the
+/// selected row's text is lighter, for the bar.
+pub static ONE_DARK: Palette = {
+    const BG: Color = hex(0x282c34);
+    const SECONDARY: Color = hex(0xb1b8c5);
+    const GREY: Color = hex(0x8c93a1);
+    const VISUAL: Color = hex(0x3e4452);
+    const YELLOW: Color = hex(0xe5c07b);
+    const GREEN: Color = hex(0x98c379);
+    const BLUE: Color = hex(0x61afef);
+    const PURPLE: Color = hex(0xc678dd);
+    const DARK_YELLOW: Color = hex(0xd19a66);
+    published(Published {
+        bg: BG,
+        tint_base: BG,
+        tint: 0.1,
+        text: hex(0xb9c0cd),
+        muted: SECONDARY,
+        faint: GREY,
+        line: hex(0x6e7583),
+        surface: VISUAL,
+        sel: VISUAL,
+        sel_fg: hex(0xe6e9ef),
+        red: hex(0xe36f78),
+        amber: YELLOW,
+        green: GREEN,
+        blue: BLUE,
+        grey: GREY,
+        teal: PURPLE,
+        orange: DARK_YELLOW,
+        logo: BLUE,
+        title: BLUE,
+        key: BLUE,
+        key_hot: YELLOW,
+        mark: YELLOW,
+        project: PURPLE,
+        logs_border: BLUE,
+        accounts: [hex(0x56b6c2), BLUE, GREEN, DARK_YELLOW],
+    })
+};
+
+/// Rosé Pine: no green, so Ready for review is its foam and Working its iris;
+/// secondary text is its text over its base.
+pub static ROSE_PINE: Palette = {
+    const BASE: Color = hex(0x191724);
+    const TEXT: Color = hex(0xe0def4);
+    const SUBTLE: Color = hex(0x908caa);
+    const GOLD: Color = hex(0xf6c177);
+    const ROSE: Color = hex(0xebbcba);
+    const FOAM: Color = hex(0x9ccfd8);
+    const IRIS: Color = hex(0xc4a7e7);
+    published(Published {
+        bg: BASE,
+        tint_base: BASE,
+        tint: 0.2,
+        text: TEXT,
+        muted: hex(0xa4a2b6),
+        faint: SUBTLE,
+        line: hex(0x6e6a86),
+        surface: hex(0x26233a),
+        sel: hex(0x403d52),
+        sel_fg: TEXT,
+        red: hex(0xeb6f92),
+        amber: GOLD,
+        green: FOAM,
+        blue: IRIS,
+        grey: SUBTLE,
+        teal: hex(0x95b1ac),
+        orange: ROSE,
+        logo: ROSE,
+        title: IRIS,
+        key: IRIS,
+        key_hot: GOLD,
+        mark: ROSE,
+        project: FOAM,
+        logs_border: IRIS,
+        accounts: [FOAM, IRIS, ROSE, GOLD],
+    })
+};
+
+/// Catppuccin Latte: red, mauve and the greys as published, its text secondary
+/// with a darker step above it; yellow, green and peach are much deeper, as no
+/// light background keeps them at 4.5:1. At the limit of what doc/0046 lets a
+/// palette move.
+pub static CATPPUCCIN_LATTE: Palette = {
+    const BASE: Color = hex(0xeff1f5);
+    const TEXT: Color = hex(0x4c4f69);
+    const SUBTEXT1: Color = hex(0x5c5f77);
+    const YELLOW: Color = hex(0x9b5f02);
+    const GREEN: Color = hex(0x217f02);
+    const BLUE: Color = hex(0x1b63f1);
+    const MAUVE: Color = hex(0x8839ef);
+    const PEACH: Color = hex(0xbd4700);
+    published(Published {
+        bg: BASE,
+        tint_base: hex(0xffffff),
+        tint: 0.05,
+        text: hex(0x3f425c),
+        muted: TEXT,
+        faint: SUBTEXT1,
+        line: hex(0x7c7f93),
+        surface: hex(0xdce0e8),
+        sel: hex(0xccd0da),
+        sel_fg: hex(0x2a2c3e),
+        red: hex(0xd20f39),
+        amber: YELLOW,
+        green: GREEN,
+        blue: BLUE,
+        grey: SUBTEXT1,
+        teal: MAUVE,
+        orange: PEACH,
+        logo: MAUVE,
+        title: MAUVE,
+        key: BLUE,
+        key_hot: YELLOW,
+        mark: TEXT,
+        project: BLUE,
+        logs_border: BLUE,
+        accounts: [hex(0x037a81), MAUVE, GREEN, PEACH],
+    })
+};
+
+/// Gruvbox light, medium contrast, in its faded accents: Ready for review is
+/// its aqua, as its green is next to its yellow; the yellow is deeper.
+pub static GRUVBOX_LIGHT: Palette = {
+    const BG1: Color = hex(0xebdbb2);
+    const FG3: Color = hex(0x665c54);
+    const YELLOW: Color = hex(0x996102);
+    const BLUE: Color = hex(0x076678);
+    const PURPLE: Color = hex(0x8f3f71);
+    const AQUA: Color = hex(0x407956);
+    const ORANGE: Color = hex(0xaf3a03);
+    published(Published {
+        bg: hex(0xfbf1c7),
+        tint_base: hex(0xffffff),
+        tint: 0.08,
+        text: hex(0x3c3836),
+        muted: hex(0x504945),
+        faint: FG3,
+        line: hex(0x928374),
+        surface: BG1,
+        sel: BG1,
+        sel_fg: hex(0x282828),
+        red: hex(0x9d0006),
+        amber: YELLOW,
+        green: AQUA,
+        blue: BLUE,
+        grey: FG3,
+        teal: PURPLE,
+        orange: ORANGE,
+        logo: ORANGE,
+        title: ORANGE,
+        key: BLUE,
+        key_hot: YELLOW,
+        mark: PURPLE,
+        project: AQUA,
+        logs_border: BLUE,
+        accounts: [BLUE, PURPLE, AQUA, YELLOW],
+    })
+};
+
+/// One Light: its accents move to reach 4.5:1 and its red a little further, so
+/// that it stays apart from the green in deuteranopia.
+pub static ONE_LIGHT: Palette = {
+    const TEXT: Color = hex(0x383a42);
+    const MONO2: Color = hex(0x696c77);
+    const YELLOW: Color = hex(0xa86201);
+    const GREEN: Color = hex(0x318332);
+    const BLUE: Color = hex(0x356ce5);
+    const PURPLE: Color = hex(0xa626a4);
+    published(Published {
+        bg: hex(0xfafafa),
+        tint_base: hex(0xffffff),
+        tint: 0.04,
+        text: TEXT,
+        muted: hex(0x4c4e57),
+        faint: MONO2,
+        line: hex(0x909096),
+        surface: hex(0xe8e8e9),
+        sel: hex(0xe5e5e6),
+        sel_fg: TEXT,
+        red: hex(0xb30f3c),
+        amber: YELLOW,
+        green: GREEN,
+        blue: BLUE,
+        grey: MONO2,
+        teal: PURPLE,
+        orange: hex(0xce4136),
+        logo: BLUE,
+        title: BLUE,
+        key: BLUE,
+        key_hot: YELLOW,
+        mark: PURPLE,
+        project: PURPLE,
+        logs_border: BLUE,
+        accounts: [hex(0x037aae), PURPLE, GREEN, YELLOW],
+    })
+};
+
 /// The palette of `theme`.
 pub fn palette(theme: UiTheme) -> &'static Palette {
     match theme {
@@ -383,6 +857,16 @@ pub fn palette(theme: UiTheme) -> &'static Palette {
         UiTheme::NeutralLight => &NEUTRAL_LIGHT,
         UiTheme::WarmLight => &WARM_LIGHT,
         UiTheme::Ansi16 => &ANSI16,
+        UiTheme::CatppuccinMocha => &CATPPUCCIN_MOCHA,
+        UiTheme::Dracula => &DRACULA,
+        UiTheme::GruvboxDark => &GRUVBOX_DARK,
+        UiTheme::Kanagawa => &KANAGAWA,
+        UiTheme::Nord => &NORD,
+        UiTheme::OneDark => &ONE_DARK,
+        UiTheme::RosePine => &ROSE_PINE,
+        UiTheme::CatppuccinLatte => &CATPPUCCIN_LATTE,
+        UiTheme::GruvboxLight => &GRUVBOX_LIGHT,
+        UiTheme::OneLight => &ONE_LIGHT,
     }
 }
 
@@ -1284,6 +1768,17 @@ mod tests {
                 "{t:?}"
             );
             assert_eq!(p.ansi16, t == UiTheme::Ansi16, "{t:?}");
+            assert_eq!(
+                t.shown_at(ColorDepth::Ansi16),
+                if p.reverse { t } else { UiTheme::Ansi16 },
+                "{t:?} at 16 colours"
+            );
+        }
+        // No two names share a palette.
+        for (i, a) in UiTheme::ALL.iter().enumerate() {
+            for b in &UiTheme::ALL[i + 1..] {
+                assert!(!std::ptr::eq(palette(*a), palette(*b)), "{a:?} {b:?}");
+            }
         }
         assert!(std::ptr::eq(palette(UiTheme::default()), &NEUTRAL));
         assert!(std::ptr::eq(palette(UiTheme::NeutralLight), &NEUTRAL_LIGHT));
@@ -1423,6 +1918,298 @@ mod tests {
             // The bar's `▌` and `▶`, glyphs: warm-light's clay on its sand
             // bar comes to 4.1 at 256 colours (5.1 in truecolor).
             check("selection mark", p.mark, p.sel, 4.0);
+        }
+    }
+
+    /// The background each published palette (doc/0046) was made for, which
+    /// tower does not paint, and the plain one a terminal is likelier to have.
+    static PUBLISHED: [(&str, &Palette, Color, Color); 10] = [
+        ("catppuccin-mocha", &CATPPUCCIN_MOCHA, hex(0x1e1e2e), BLACK),
+        ("dracula", &DRACULA, hex(0x282a36), BLACK),
+        ("gruvbox-dark", &GRUVBOX_DARK, hex(0x282828), BLACK),
+        ("kanagawa", &KANAGAWA, hex(0x1f1f28), BLACK),
+        ("nord", &NORD, hex(0x2e3440), BLACK),
+        ("one-dark", &ONE_DARK, hex(0x282c34), BLACK),
+        ("rose-pine", &ROSE_PINE, hex(0x191724), BLACK),
+        ("catppuccin-latte", &CATPPUCCIN_LATTE, hex(0xeff1f5), WHITE),
+        ("gruvbox-light", &GRUVBOX_LIGHT, hex(0xfbf1c7), WHITE),
+        ("one-light", &ONE_LIGHT, hex(0xfafafa), WHITE),
+    ];
+
+    /// What a role of a published palette is drawn on: the terminal's own
+    /// background, or one tower paints.
+    #[derive(Clone, Copy)]
+    enum On {
+        Terminal,
+        Painted(Color),
+    }
+
+    /// Every role of `p` with doc/0046's target: text and secondary 7:1, dim
+    /// and accents 4.5:1, lines 3:1, text on the bar 7:1, pills and chips 4.5:1,
+    /// the bar's `▌` / `▶` 4.5:1. The state colours also stand on the bar, as a
+    /// selected card's outline and its `●`: 3:1, for graphics.
+    fn published_roles(p: &'static Palette) -> Vec<(String, Color, On, f64)> {
+        let th = Theme { color: true, p };
+        let sel_fg = p.sel_fg.expect("a published palette sets the bar's text");
+        let mut out: Vec<(String, Color, On, f64)> = vec![
+            ("text".to_owned(), p.text, On::Terminal, 7.0),
+            ("secondary".to_owned(), p.muted, On::Terminal, 7.0),
+            ("dim".to_owned(), p.faint, On::Terminal, 4.5),
+            ("lines".to_owned(), p.line, On::Terminal, 3.0),
+            ("logs border".to_owned(), p.logs_border, On::Terminal, 3.0),
+            ("selection".to_owned(), sel_fg, On::Painted(p.sel), 7.0),
+            ("mark".to_owned(), p.mark, On::Painted(p.sel), 4.5),
+            (
+                "Interactive pill".to_owned(),
+                p.text,
+                On::Painted(p.surface),
+                4.5,
+            ),
+        ];
+        for g in Group::ALL {
+            if g == Group::Interactive {
+                continue;
+            }
+            let c = th.group_color(g);
+            out.push((g.title().to_owned(), c, On::Terminal, 4.5));
+            let pill = format!("{} pill", g.title());
+            out.push((pill, p.pill_text, On::Painted(c), 4.5));
+            let bar = format!("{} on the bar", g.title());
+            out.push((bar, c, On::Painted(p.sel), 3.0));
+        }
+        for k in 0..p.accounts.len() {
+            let c = th.account_color(k);
+            let st = th.chip(c);
+            out.push((format!("account {k}"), c, On::Terminal, 4.5));
+            let bg = st.bg.expect("a published palette tints its chips");
+            out.push((format!("chip {k}"), c, On::Painted(bg), 4.5));
+        }
+        for (what, c) in [
+            ("logo", p.logo),
+            ("title", p.title),
+            ("keys", p.key),
+            ("Ctrl+Z", p.key_hot),
+            ("project", p.project),
+        ] {
+            out.push((what.to_owned(), c, On::Terminal, 4.5));
+        }
+        out
+    }
+
+    /// doc/0046's targets on each palette's own background and on plain black
+    /// or white, which only adds contrast, and in the windows' styles.
+    #[test]
+    fn published_themes_meet_the_targets_on_their_background_and_a_plain_one() {
+        for (name, p, own, plain) in PUBLISHED {
+            for (what, c, on, min) in published_roles(p) {
+                let (r, r_plain) = match on {
+                    On::Terminal => (contrast(c, own), contrast(c, plain)),
+                    On::Painted(b) => (contrast(c, b), contrast(c, b)),
+                };
+                assert!(r >= min, "{name} {what}: {r:.2} < {min}");
+                assert!(r_plain >= r, "{name} {what}: {r_plain:.2} on plain, {r:.2}");
+            }
+            let look = Look::Themed(Theme { color: true, p });
+            for (what, st) in [
+                ("selected item", look.selected_item()),
+                ("focused choice", look.choice(true)),
+                ("prompt", look.prompt()),
+            ] {
+                let r = contrast(st.fg.unwrap(), st.bg.unwrap());
+                assert!(r >= 7.0, "{name} {what}: {r:.2}");
+            }
+            for (what, st, min) in [
+                ("label", look.field_label(false), 7.0),
+                ("focused label", look.field_label(true), 4.5),
+                ("hint", look.hint(), 4.5),
+                ("error", look.error(), 4.5),
+                ("warning", look.warning(), 4.5),
+                ("success", look.success(), 4.5),
+                ("unsaved", look.modified(), 4.5),
+            ] {
+                let r = contrast(st.fg.unwrap(), own);
+                assert!(r >= min, "{name} {what}: {r:.2} < {min}");
+            }
+            assert!(!p.reverse && !p.ansi16, "{name}");
+        }
+    }
+
+    /// Prints doc/0046's tables: `cargo test contrast_table -- --nocapture`.
+    /// The weakest role of each column, in truecolor (asserted above) and at
+    /// 256 colours (asserted below).
+    #[test]
+    fn contrast_table() {
+        for (depth, q) in [
+            ("truecolor", (|c| c) as fn(Color) -> Color),
+            ("256", at_256 as fn(Color) -> Color),
+        ] {
+            println!("{depth}:");
+            for (name, p, own, plain) in PUBLISHED {
+                let roles = published_roles(p);
+                let ratio = |c: Color, on: On| match on {
+                    On::Terminal => contrast(q(c), own),
+                    On::Painted(b) => contrast(q(c), q(b)),
+                };
+                let weakest = |column: &[&str]| {
+                    roles
+                        .iter()
+                        .filter(|(what, ..)| column.iter().any(|c| what.contains(c)))
+                        .map(|(_, c, on, _)| ratio(*c, *on))
+                        .fold(f64::MAX, f64::min)
+                };
+                let accent = [p.amber, p.blue, p.green, p.grey, p.teal, p.orange, p.red]
+                    .into_iter()
+                    .map(|c| ratio(c, On::Terminal))
+                    .fold(f64::MAX, f64::min);
+                let five = [p.amber, p.blue, p.green, p.grey, p.red];
+                let mut apart_min = f64::MAX;
+                let mut protan_min = f64::MAX;
+                let mut deutan_min = f64::MAX;
+                for (i, a) in five.iter().enumerate() {
+                    for b in &five[i + 1..] {
+                        apart_min = apart_min.min(apart(q(*a), q(*b), None));
+                        protan_min = protan_min.min(apart(q(*a), q(*b), Some(&PROTAN)));
+                        deutan_min = deutan_min.min(apart(q(*a), q(*b), Some(&DEUTAN)));
+                    }
+                }
+                println!(
+                    "| {name} | {:.2} | {:.2} | {:.2} | {:.2} | {accent:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {apart_min:.1} | {protan_min:.1} | {deutan_min:.1} |",
+                    ratio(p.text, On::Terminal),
+                    ratio(p.muted, On::Terminal),
+                    ratio(p.faint, On::Terminal),
+                    ratio(p.line, On::Terminal),
+                    ratio(p.red, On::Terminal),
+                    weakest(&["selection"]),
+                    weakest(&["mark"]),
+                    weakest(&[" pill"]),
+                    weakest(&["chip"]),
+                    weakest(&["on the bar"]),
+                    contrast(q(p.text), plain),
+                );
+            }
+        }
+    }
+
+    /// `c` in OKLab, scaled so that 1 is about one just noticeable step.
+    fn oklab(c: [f64; 3]) -> [f64; 3] {
+        let l = (0.412_221_47 * c[0] + 0.536_332_54 * c[1] + 0.051_445_99 * c[2]).cbrt();
+        let m = (0.211_903_5 * c[0] + 0.680_699_55 * c[1] + 0.107_396_96 * c[2]).cbrt();
+        let s = (0.088_302_46 * c[0] + 0.281_718_84 * c[1] + 0.629_978_7 * c[2]).cbrt();
+        [
+            100.0 * (0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_05 * s),
+            100.0 * (1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s),
+            100.0 * (0.025_904_04 * l + 0.782_771_77 * m - 0.808_675_77 * s),
+        ]
+    }
+
+    /// How far apart two colours look, through a colour-vision matrix or none.
+    fn apart(a: Color, b: Color, vision: Option<&[[f64; 3]; 3]>) -> f64 {
+        let see = |c: Color| {
+            let Color::Rgb(r, g, b) = c else {
+                panic!("{c:?} is not RGB");
+            };
+            let l = [r, g, b].map(|v| {
+                let s = f64::from(v) / 255.0;
+                if s <= 0.040_45 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            oklab(match vision {
+                None => l,
+                Some(m) => [0, 1, 2]
+                    .map(|i| (m[i][0] * l[0] + m[i][1] * l[1] + m[i][2] * l[2]).clamp(0.0, 1.0)),
+            })
+        };
+        let (x, y) = (see(a), see(b));
+        (0..3).map(|i| (x[i] - y[i]).powi(2)).sum::<f64>().sqrt()
+    }
+
+    /// Protanopia and deuteranopia (Machado, Oliveira and Fernandes 2009,
+    /// severity 1).
+    const PROTAN: [[f64; 3]; 3] = [
+        [0.152_286, 1.052_583, -0.204_868],
+        [0.114_503, 0.786_281, 0.099_216],
+        [-0.003_882, -0.048_116, 1.051_998],
+    ];
+    const DEUTAN: [[f64; 3]; 3] = [
+        [0.367_322, 0.860_646, -0.227_968],
+        [0.280_085, 0.672_501, 0.047_413],
+        [-0.011_820, 0.042_940, 0.968_881],
+    ];
+
+    /// `c` as the nearest of the 256 colours.
+    fn at_256(c: Color) -> Color {
+        match reduce(c, ColorDepth::Ansi256) {
+            Color::Indexed(i) => {
+                assert!(i >= 16, "{c:?} took a terminal colour {i}");
+                let (r, g, b) = rgb_of_index(i);
+                Color::Rgb(r, g, b)
+            }
+            other => panic!("{c:?} became {other:?}"),
+        }
+    }
+
+    /// The five states a user tells apart on a card's outline (doc/0046): at
+    /// least 9 apart, 6 at 256 colours. Under protanopia and deuteranopia no
+    /// pair collapses (2) and Failed stays off Ready for review (3); words and
+    /// glyphs carry the state either way. The two other groups stay off the
+    /// five (5).
+    #[test]
+    fn published_states_stay_distinct() {
+        for (name, p, ..) in PUBLISHED {
+            let five = [
+                ("Needs me", p.amber),
+                ("Working", p.blue),
+                ("Ready", p.green),
+                ("Failed", p.red),
+                ("Stopped", p.grey),
+            ];
+            for (i, (an, a)) in five.iter().enumerate() {
+                for (bn, b) in &five[i + 1..] {
+                    let d = apart(*a, *b, None);
+                    assert!(d >= 9.0, "{name} {an}/{bn}: {d:.1}");
+                    let d = apart(at_256(*a), at_256(*b), None);
+                    assert!(d >= 6.0, "{name} at 256 {an}/{bn}: {d:.1}");
+                    for (vision, m) in [("protan", &PROTAN), ("deutan", &DEUTAN)] {
+                        let d = apart(*a, *b, Some(m));
+                        assert!(d >= 2.0, "{name} {an}/{bn} {vision}: {d:.1}");
+                    }
+                }
+                for (bn, b) in [("Orchestrator", p.teal), ("Other", p.orange)] {
+                    let d = apart(*a, b, None);
+                    assert!(d >= 5.0, "{name} {an}/{bn}: {d:.1}");
+                }
+            }
+            for (vision, m) in [("protan", &PROTAN), ("deutan", &DEUTAN)] {
+                let d = apart(p.red, p.green, Some(m));
+                assert!(d >= 3.0, "{name} Failed/Ready {vision}: {d:.1}");
+            }
+        }
+    }
+
+    /// doc/0046's floors at 256 colours, which are opt-in: the cube has few
+    /// values near these mid-tones, and truecolor keeps the published values
+    /// rather than bending them towards it. Only what tower paints is reduced;
+    /// the terminal's background stays what it is.
+    #[test]
+    fn the_256_colour_approximation_of_the_published_themes() {
+        for (name, p, own, _) in PUBLISHED {
+            for (what, c, on, min) in published_roles(p) {
+                let r = match on {
+                    On::Terminal => contrast(at_256(c), own),
+                    On::Painted(b) => contrast(at_256(c), at_256(b)),
+                };
+                let floor = if min >= 7.0 {
+                    6.0
+                } else if min >= 4.5 {
+                    3.5
+                } else {
+                    2.5
+                };
+                assert!(r >= floor, "{name} at 256 {what}: {r:.2} < {floor}");
+            }
         }
     }
 

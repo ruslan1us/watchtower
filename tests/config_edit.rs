@@ -349,7 +349,17 @@ fn offered_values_and_field_checks() {
             "tokyo-night",
             "neutral-light",
             "warm-light",
-            "ansi16"
+            "ansi16",
+            "catppuccin-mocha",
+            "dracula",
+            "gruvbox-dark",
+            "kanagawa",
+            "nord",
+            "one-dark",
+            "rose-pine",
+            "catppuccin-latte",
+            "gruvbox-light",
+            "one-light"
         ]
     );
     assert_eq!(

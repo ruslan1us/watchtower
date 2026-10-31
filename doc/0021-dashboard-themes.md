@@ -1,6 +1,6 @@
 # 0021. Dashboard colour themes
 
-- Status: Accepted · 2026-10-19 · light themes, `ansi16` and the colour depth added by [0038](0038-light-and-16-colour-themes.md) · the workspace's selected card is painted whole, an exception recorded in [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-19 · light themes, `ansi16` and the colour depth added by [0038](0038-light-and-16-colour-themes.md) · the workspace's selected card is painted whole, an exception recorded in [0045](0045-workspace-style.md) · published palettes added by [0046](0046-more-colour-themes.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0007](0007-visual-only-attention.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md)
 - Supersedes: the "Colour" section of [0020](0020-visual-styles.md)
 
@@ -58,6 +58,11 @@ that lists the valid names.
 `neutral-light` and `warm-light` for light backgrounds, and `ansi16` (the 16
 named colours plus attributes, for dark and light backgrounds), which the
 truecolor themes give way to on a 16-colour terminal (`[ui] color_depth`).
+
+*Amended by [0046](0046-more-colour-themes.md):* also ten published palettes:
+`catppuccin-mocha`, `dracula`, `gruvbox-dark`, `kanagawa`, `nord`, `one-dark`,
+`rose-pine` for dark backgrounds, `catppuccin-latte`, `gruvbox-light`, `one-light`
+for light ones, each with its own background as its contrast reference.
 
 **Contrast targets** for `neutral` and `warm`, on black: text and
 secondary ≥ 7:1, dim ≥ 4.5:1, lines ≥ 3:1, state accents ≥ 4.5:1, and any

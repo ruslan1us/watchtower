@@ -1,9 +1,10 @@
-//! The light themes, `ansi16` and the colour depth (doc/0038), rendered
-//! with ratatui's `TestBackend`: every new theme draws the dashboard and
-//! the main windows at a narrow and a wide size; `ansi16` draws no RGB or
-//! indexed colour anywhere; a truecolor theme gives way to `ansi16` on a
-//! 16-colour terminal and takes the nearest of 256 colours on a
-//! 256-colour one; the Settings window cycles and saves the new values.
+//! The light themes, `ansi16` and the colour depth (doc/0038) and the
+//! published palettes (doc/0046), rendered with ratatui's `TestBackend`: every
+//! new theme draws the dashboard and the main windows at a narrow and a wide
+//! size; `ansi16` draws no RGB or indexed colour anywhere; a truecolor theme
+//! gives way to `ansi16` on a 16-colour terminal and takes the nearest of 256
+//! colours on a 256-colour one; the Settings window cycles and saves the new
+//! values, and its pick list fits and scrolls.
 
 mod common;
 mod settings_common;
@@ -21,7 +22,34 @@ use watchtower::config_edit::{SettingKey, SettingValue};
 use watchtower::logview;
 use watchtower::sidecar::{AccountSource, Sidecar};
 
-const NEW_THEMES: [UiTheme; 3] = [UiTheme::NeutralLight, UiTheme::WarmLight, UiTheme::Ansi16];
+const PUBLISHED: [UiTheme; 10] = [
+    UiTheme::CatppuccinMocha,
+    UiTheme::Dracula,
+    UiTheme::GruvboxDark,
+    UiTheme::Kanagawa,
+    UiTheme::Nord,
+    UiTheme::OneDark,
+    UiTheme::RosePine,
+    UiTheme::CatppuccinLatte,
+    UiTheme::GruvboxLight,
+    UiTheme::OneLight,
+];
+
+const NEW_THEMES: [UiTheme; 13] = [
+    UiTheme::NeutralLight,
+    UiTheme::WarmLight,
+    UiTheme::Ansi16,
+    UiTheme::CatppuccinMocha,
+    UiTheme::Dracula,
+    UiTheme::GruvboxDark,
+    UiTheme::Kanagawa,
+    UiTheme::Nord,
+    UiTheme::OneDark,
+    UiTheme::RosePine,
+    UiTheme::CatppuccinLatte,
+    UiTheme::GruvboxLight,
+    UiTheme::OneLight,
+];
 
 /// Narrow (the dashboard's minimum, the strip under the list) and wide
 /// (the side panel).
@@ -359,26 +387,17 @@ fn ansi16_keeps_hues_off_text_and_on_glyphs_and_pills() {
 #[test]
 fn settings_cycles_previews_and_saves_the_new_values() {
     let (env, mut app) = settings(UiTheme::Neutral);
-    // The theme cycles through the light variants and ansi16 after the
-    // original four.
+    // The theme cycles through every theme and comes back: the light variants
+    // and ansi16 after the original four, then the published palettes.
     select(&mut app, "theme");
     let mut seen = Vec::new();
-    for _ in 0..7 {
+    for _ in 0..UiTheme::ALL.len() {
         press(&mut app, key(KeyCode::Right));
         seen.push(app.theme);
     }
-    assert_eq!(
-        seen,
-        [
-            UiTheme::Warm,
-            UiTheme::Terminal,
-            UiTheme::TokyoNight,
-            UiTheme::NeutralLight,
-            UiTheme::WarmLight,
-            UiTheme::Ansi16,
-            UiTheme::Neutral,
-        ]
-    );
+    let mut want: Vec<UiTheme> = UiTheme::ALL[1..].to_vec();
+    want.push(UiTheme::Neutral);
+    assert_eq!(seen, want);
     for _ in 0..4 {
         press(&mut app, key(KeyCode::Right));
     }
@@ -460,4 +479,236 @@ fn a_discarded_colour_depth_reverts() {
     assert_eq!(app.color_depth, ColorDepth::Auto);
     assert_eq!(app.drawn_theme(), UiTheme::Neutral);
     assert_eq!(file(&env), CONFIG);
+}
+
+/// WCAG 2 contrast of two drawn colours.
+fn contrast(a: Color, b: Color) -> f64 {
+    let lum = |c: Color| {
+        let Color::Rgb(r, g, b) = c else {
+            panic!("{c:?} is not RGB");
+        };
+        let lin = |v: u8| {
+            let s = f64::from(v) / 255.0;
+            if s <= 0.040_45 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The workspace style fills the whole selected card with the selection's
+/// background (doc/0045): in every published palette what is written on it
+/// stays readable, at 7:1, or 4.5:1 on an account chip, which keeps its own
+/// background; the outline, in the state's colour, at 3:1 (doc/0046).
+#[test]
+fn a_selected_card_stays_readable_in_every_published_palette() {
+    for theme in PUBLISHED {
+        let name = "pick-colour";
+        let mut app = dashboard(theme);
+        app.style = UiStyle::Workspace;
+        select_name(&mut app, name);
+        let buf = render(&mut app, 160, 40);
+        let l = lines(&buf);
+        // The card's top edge, in its heavy outline: the pane's title has the
+        // name too.
+        let y = l
+            .iter()
+            .position(|r| r.contains(name) && r.contains('━'))
+            .unwrap_or_else(|| panic!("{theme:?}: no {name}\n{}", l.join("\n")))
+            as u16;
+        let bar = (0..buf.area.width)
+            .map(|x| buf[(x, y)].bg)
+            .find(|c| *c != Color::Reset)
+            .unwrap_or_else(|| panic!("{theme:?}: the card is not filled"));
+        let mut written = 0;
+        for x in 0..buf.area.width {
+            let c = &buf[(x, y)];
+            if c.bg == Color::Reset || c.symbol() == " " {
+                continue;
+            }
+            let min = if c.symbol().chars().all(char::is_alphanumeric) {
+                if c.bg == bar { 7.0 } else { 4.5 }
+            } else {
+                3.0
+            };
+            let r = contrast(c.fg, c.bg);
+            assert!(r >= min, "{theme:?} {:?}: {r:.2} < {min}", c.symbol());
+            written += 1;
+        }
+        assert!(written > 0, "{theme:?}");
+    }
+}
+
+/// `theme` under its pick list at `w` x `h`: the rows, and the cursor's.
+fn pick_list(app: &mut App, w: u16, h: u16) -> (Buffer, Vec<String>, usize) {
+    let buf = render(app, w, h);
+    let l = lines(&buf);
+    let cursor = l
+        .iter()
+        .position(|r| r.contains(&format!("▌ {} ", app.theme.as_str())))
+        .unwrap_or_else(|| panic!("{:?}: no cursor\n{}", app.theme, l.join("\n")));
+    (buf, l, cursor)
+}
+
+/// Every theme is in the pick list at 80x24, its swatch whole; on a shorter
+/// screen the list stays on the screen, says what is out of sight, and the
+/// cursor can reach every theme in both directions.
+#[test]
+fn the_theme_pick_list_fits_and_scrolls_with_its_swatches() {
+    let (_env, mut app) = settings(UiTheme::Neutral);
+    select(&mut app, "theme");
+    press(&mut app, key(KeyCode::Enter));
+
+    let (buf, l, _) = pick_list(&mut app, 80, 24);
+    for theme in UiTheme::ALL {
+        let y = l
+            .iter()
+            .position(|r| r.contains(&format!(" {} ", theme.as_str())))
+            .unwrap_or_else(|| panic!("{theme:?} at 80x24\n{}", l.join("\n")));
+        let swatch: Vec<Color> = (0..buf.area.width)
+            .map(|x| buf[(x, y as u16)].bg)
+            .filter(|c| !matches!(c, Color::Reset))
+            .collect();
+        // Six colours, two columns wide.
+        assert!(swatch.len() >= 12, "{theme:?}: {swatch:?}");
+    }
+    assert!(!l.iter().any(|r| r.contains(" more")), "{}", l.join("\n"));
+
+    for h in [20, 16, 12] {
+        // Below 80x24 the window has the minimal look, without swatches
+        // (doc/0024). Down through the list, wrapping at the end: the cursor's
+        // row is always on the screen ([`pick_list`] finds it).
+        for _ in UiTheme::ALL {
+            press(&mut app, key(KeyCode::Down));
+            pick_list(&mut app, 80, h);
+        }
+        press(&mut app, key(KeyCode::End));
+        let (_, l, _) = pick_list(&mut app, 80, h);
+        assert_eq!(app.theme, UiTheme::OneLight);
+        assert!(
+            l.iter().any(|r| r.contains('↑') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        assert!(
+            !l.iter().any(|r| r.contains('↓') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        press(&mut app, key(KeyCode::Home));
+        let (_, l, _) = pick_list(&mut app, 80, h);
+        assert_eq!(app.theme, UiTheme::Neutral);
+        assert!(
+            !l.iter().any(|r| r.contains('↑') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        assert!(
+            l.iter().any(|r| r.contains('↓') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        // In the middle the list goes on both ways, and one step up moves the
+        // cursor's row by at most one: no jumps.
+        for _ in 0..8 {
+            press(&mut app, key(KeyCode::Down));
+        }
+        let (_, l, before) = pick_list(&mut app, 80, h);
+        assert!(
+            l.iter().any(|r| r.contains('↑') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        assert!(
+            l.iter().any(|r| r.contains('↓') && r.contains(" more")),
+            "{}",
+            l.join("\n")
+        );
+        press(&mut app, key(KeyCode::Up));
+        let (_, _, after) = pick_list(&mut app, 80, h);
+        assert!(before.abs_diff(after) <= 1, "{before} {after}");
+        press(&mut app, key(KeyCode::Home));
+    }
+}
+
+/// A published palette picked from the list is previewed and saved, and at 16
+/// colours gives way to `ansi16` like the others; at 256 it is drawn in the cube.
+#[test]
+fn a_published_palette_is_picked_saved_and_reduced() {
+    for theme in PUBLISHED {
+        let (env, mut app) = settings(UiTheme::Neutral);
+        select(&mut app, "theme");
+        press(&mut app, key(KeyCode::Enter));
+        for _ in 0..UiTheme::ALL.len() {
+            if app.theme == theme {
+                break;
+            }
+            press(&mut app, key(KeyCode::Down));
+        }
+        assert_eq!(app.theme, theme, "previewed");
+        press(&mut app, key(KeyCode::Enter));
+        press(&mut app, ctrl('s'));
+        let text = file(&env);
+        assert!(
+            text.contains(&format!("theme = \"{}\"", theme.as_str())),
+            "{text}"
+        );
+        assert_eq!(app.config().ui_theme, theme);
+        press(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.theme, theme);
+    }
+
+    for theme in PUBLISHED {
+        let mut app = dashboard(theme);
+        app.detected_depth = ColorDepth::Ansi16;
+        assert_eq!(app.drawn_theme(), UiTheme::Ansi16, "{theme:?}");
+        let buf = render(&mut app, 80, 24);
+        assert!(rich_cells(&buf).is_empty(), "{theme:?} at 16");
+        let note = status_text(&app);
+        assert!(note.contains(theme.as_str()), "{note}");
+        assert!(note.contains("ansi16"), "{note}");
+
+        let mut app = dashboard(theme);
+        app.color_depth = ColorDepth::Ansi256;
+        assert_eq!(app.drawn_theme(), theme, "{theme:?} stays at 256");
+        let buf = render(&mut app, 80, 24);
+        let mut indexed = 0;
+        for c in buf.content() {
+            for colour in [c.fg, c.bg] {
+                assert!(!matches!(colour, Color::Rgb(..)), "{theme:?}: {colour:?}");
+                if let Color::Indexed(i) = colour {
+                    assert!(i >= 16, "{theme:?}: index {i}");
+                    indexed += 1;
+                }
+            }
+        }
+        assert!(indexed > 0, "{theme:?}");
+    }
+}
+
+/// Every published palette has its own look, the same text as `neutral`
+/// (doc/0021: layout and text are the same in every theme).
+#[test]
+fn published_palettes_change_colours_only() {
+    let text = |theme: UiTheme| lines(&render(&mut dashboard(theme), 160, 40));
+    let colours = |theme: UiTheme| {
+        render(&mut dashboard(theme), 160, 40)
+            .content()
+            .iter()
+            .map(|c| (c.fg, c.bg))
+            .collect::<Vec<_>>()
+    };
+    let neutral = text(UiTheme::Neutral);
+    let mut seen = vec![colours(UiTheme::Neutral)];
+    for theme in PUBLISHED {
+        assert_eq!(text(theme), neutral, "{theme:?}");
+        let drawn = colours(theme);
+        assert!(!seen.contains(&drawn), "{theme:?} looks like another");
+        seen.push(drawn);
+    }
 }

@@ -19,7 +19,7 @@ This directory records the design decisions behind it, one file per decision.
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
 | 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029, `git status` by 0037, skill and command files and `plugin list` by 0042, the usage probe by 0043; a PTY client for the workspace style by 0045) |
-| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038; `[usage]` and the `usage/` folder by 0043; `[ui] mouse`, `list_width`, `card_size` and `card_gap` by 0045) |
+| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038; `[usage]` and the `usage/` folder by 0043; `[ui] mouse`, `list_width`, `card_size` and `card_gap` by 0045; more theme names by 0046) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted (input still waiting after a read re-arms crossterm's reader, 2026-10-28; the split view taken up for the workspace style only by 0045) |
@@ -38,10 +38,10 @@ This directory records the design decisions behind it, one file per decision.
 | 0018 | [Account groups and the hand-off guard](0018-account-groups-and-handoff-guard.md) | Accepted (open item on limit claims resolved for display only by 0043) |
 | 0019 | [Resume a past conversation into the background](0019-resume-past-sessions.md) | Accepted (`--settings` added by 0039) |
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21; values wrap, titles cut and a two-row key line by 0041; group separators and the status line fitted to the width, 2026-10-21; plan usage by 0043; the opt-in workspace style by 0045) |
-| 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038; the workspace's selected card painted whole by 0045) |
+| 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038; the workspace's selected card painted whole by 0045; published palettes by 0046) |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031; `[ui] color_depth` by 0038; `[usage]` by 0043; `[ui] card_size` and `card_gap` by 0045) |
 | 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026) |
-| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038; detail-panel values wrap inside a padding column, 2026-10-21; usage rows by 0043; `workspace` among the styles, `card size` and `gap between cards` by 0045) |
+| 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038; detail-panel values wrap inside a padding column, 2026-10-21; usage rows by 0043; `workspace` among the styles, `card size` and `gap between cards` by 0045; the pick list scrolls with the cursor near its middle by 0046) |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
 | 0027 | [Rename a session](0027-rename-sessions.md) | Accepted (in the workspace's pane by 0045) |
@@ -63,6 +63,7 @@ This directory records the design decisions behind it, one file per decision.
 | 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted (per account on the workspace's Home and in its bar by 0045) |
 | 0044 | [The orchestrator starts and wakes sessions when asked](0044-orchestrator-starts-and-wakes-sessions.md) | Accepted |
 | 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints added 2026-10-31) |
+| 0046 | [Colour themes from published palettes](0046-more-colour-themes.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

@@ -1007,9 +1007,19 @@ fn choice_note(key: SettingKey, value: &str) -> &'static str {
         (SettingKey::UiTheme, "warm") => "warm greys and a clay accent",
         (SettingKey::UiTheme, "terminal") => "your terminal's 16 colours",
         (SettingKey::UiTheme, "tokyo-night") => "tower 0.2's blue-grey palette",
-        (SettingKey::UiTheme, "neutral-light") => "neutral for a light background",
+        (SettingKey::UiTheme, "neutral-light") => "neutral on a light background",
         (SettingKey::UiTheme, "warm-light") => "warm for a light background",
-        (SettingKey::UiTheme, "ansi16") => "16 colours, dark or light background",
+        (SettingKey::UiTheme, "ansi16") => "16 colours, any background",
+        (SettingKey::UiTheme, "catppuccin-mocha") => "pastels on dark blue-grey",
+        (SettingKey::UiTheme, "dracula") => "vivid on dark purple-grey",
+        (SettingKey::UiTheme, "gruvbox-dark") => "retro warm on dark grey",
+        (SettingKey::UiTheme, "kanagawa") => "muted ink on dark blue",
+        (SettingKey::UiTheme, "nord") => "arctic blues on slate",
+        (SettingKey::UiTheme, "one-dark") => "Atom's colours on dark grey",
+        (SettingKey::UiTheme, "rose-pine") => "soft rose on dark violet",
+        (SettingKey::UiTheme, "catppuccin-latte") => "deep colours on pale grey",
+        (SettingKey::UiTheme, "gruvbox-light") => "retro warm on pale cream",
+        (SettingKey::UiTheme, "one-light") => "Atom's colours on near-white",
         (SettingKey::UiColorDepth, "truecolor") => "24-bit colour: themes as designed",
         (SettingKey::UiColorDepth, "256") => "nearest of 256 colours",
         (SettingKey::UiColorDepth, "16") => "truecolor themes give way to ansi16",
@@ -1022,6 +1032,12 @@ fn choice_note(key: SettingKey, value: &str) -> &'static str {
         (SettingKey::LogsFollowSecs, "off") => "no background fetches",
         _ => "",
     }
+}
+
+/// The first of `n` items shown in `rows` rows: the cursor stays near the
+/// middle while the list goes on either way, so moving it never jumps.
+fn pick_offset(cursor: usize, n: usize, rows: usize) -> usize {
+    cursor.saturating_sub(rows / 2).min(n.saturating_sub(rows))
 }
 
 /// The pick list of a choice, under its row (above it when there is no
@@ -1074,7 +1090,21 @@ fn draw_pick(
         .map(|v| shown_value(pick.key, &v));
     let default = shown_value(pick.key, &win.session.default_value(pick.key));
     let rows = usize::from(inner.height.saturating_sub(2));
-    let offset = pick.cursor.saturating_sub(rows.saturating_sub(1));
+    let offset = pick_offset(pick.cursor, pick.items.len(), rows);
+    // The rows above and under the items say when the list goes on.
+    if offset > 0 {
+        let more = format!("   ↑ {offset} more");
+        put(frame, row(inner, 0), Line::styled(more, look.hint()));
+    }
+    let under = pick.items.len().saturating_sub(offset + rows);
+    if under > 0 {
+        let more = format!("   ↓ {under} more");
+        put(
+            frame,
+            row(inner, 1 + rows as u16),
+            Line::styled(more, look.hint()),
+        );
+    }
     // The value column: the longest value (at least 12) and a gap.
     let value_w = pick
         .items

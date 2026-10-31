@@ -235,7 +235,7 @@ impl SettingKey {
             }
             SettingKey::UiTheme => {
                 "The dashboard's colours; the minimal style keeps its own, and NO_COLOR turns \
-                 colour off."
+                 colour off. Tower paints no background, so pick one made for your terminal's."
             }
             SettingKey::UiColorDepth => {
                 "The colours the terminal shows. auto reads COLORTERM and TERM; at 256 the \

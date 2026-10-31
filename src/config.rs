@@ -95,11 +95,24 @@ pub enum UiTheme {
     /// backgrounds; what truecolor themes give way to on a 16-colour
     /// terminal (doc/0038).
     Ansi16,
+    /// Published palettes mapped to tower's roles (doc/0046), for a dark
+    /// background.
+    CatppuccinMocha,
+    Dracula,
+    GruvboxDark,
+    Kanagawa,
+    Nord,
+    OneDark,
+    RosePine,
+    /// The same for a light background (doc/0046).
+    CatppuccinLatte,
+    GruvboxLight,
+    OneLight,
 }
 
 impl UiTheme {
     /// Every theme, in the order the docs list them.
-    pub const ALL: [UiTheme; 7] = [
+    pub const ALL: [UiTheme; 17] = [
         UiTheme::Neutral,
         UiTheme::Warm,
         UiTheme::Terminal,
@@ -107,10 +120,19 @@ impl UiTheme {
         UiTheme::NeutralLight,
         UiTheme::WarmLight,
         UiTheme::Ansi16,
+        UiTheme::CatppuccinMocha,
+        UiTheme::Dracula,
+        UiTheme::GruvboxDark,
+        UiTheme::Kanagawa,
+        UiTheme::Nord,
+        UiTheme::OneDark,
+        UiTheme::RosePine,
+        UiTheme::CatppuccinLatte,
+        UiTheme::GruvboxLight,
+        UiTheme::OneLight,
     ];
 
-    /// The config value: `neutral`, `warm`, `terminal`, `tokyo-night`,
-    /// `neutral-light`, `warm-light` or `ansi16`.
+    /// The config value, as in `[ui] theme`: `neutral`, `catppuccin-mocha`, ….
     pub fn as_str(self) -> &'static str {
         match self {
             UiTheme::Neutral => "neutral",
@@ -120,6 +142,16 @@ impl UiTheme {
             UiTheme::NeutralLight => "neutral-light",
             UiTheme::WarmLight => "warm-light",
             UiTheme::Ansi16 => "ansi16",
+            UiTheme::CatppuccinMocha => "catppuccin-mocha",
+            UiTheme::Dracula => "dracula",
+            UiTheme::GruvboxDark => "gruvbox-dark",
+            UiTheme::Kanagawa => "kanagawa",
+            UiTheme::Nord => "nord",
+            UiTheme::OneDark => "one-dark",
+            UiTheme::RosePine => "rose-pine",
+            UiTheme::CatppuccinLatte => "catppuccin-latte",
+            UiTheme::GruvboxLight => "gruvbox-light",
+            UiTheme::OneLight => "one-light",
         }
     }
 

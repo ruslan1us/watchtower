@@ -103,6 +103,12 @@ style = "dashboard"
 #   one without querying the terminal, so pick these yourself.
 # "ansi16": the 16 ANSI colours plus bold, dim and reverse video, readable
 #   on dark and light backgrounds (doc/0038).
+# Published palettes mapped to tower's roles (doc/0046). Tower never paints the
+# background, so give your terminal the palette's background, or plain black or
+# white; a dark palette on a light terminal is unreadable.
+#   For a dark background: "catppuccin-mocha", "dracula", "gruvbox-dark",
+#   "kanagawa", "nord", "one-dark", "rose-pine".
+#   For a light background: "catppuccin-latte", "gruvbox-light", "one-light".
 # Default: "neutral"
 theme = "neutral"
 
