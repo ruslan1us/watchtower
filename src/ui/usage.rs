@@ -85,6 +85,43 @@ pub(super) fn header_piece(
     Some(l)
 }
 
+/// The workspace bar's block (doc/0045): one row per account in `w` cells,
+/// `main  5h 24% · 7d 12%`, with the colours, stale dimming and `…` / `—` of
+/// the header. The week goes first, then a stale value's age, and only then
+/// is the name cut.
+pub(super) fn bar_row_at(
+    app: &App,
+    account: &str,
+    name_w: usize,
+    w: usize,
+    now_ms: i64,
+    th: Theme,
+) -> Lb {
+    let (_, style) = super::dashboard::account_chip(app, account, th);
+    let name = crate::attach::printable(account);
+    let lead = 1 + name_w + 1;
+    let mut piece = None;
+    for how in [HeaderUsage::Both, HeaderUsage::Session, HeaderUsage::Bare] {
+        let Some(found) = header_piece(app, account, now_ms, how, th) else {
+            break;
+        };
+        let fits = lead + found.w <= w;
+        piece = Some(found);
+        if fits {
+            break;
+        }
+    }
+    let piece = piece.unwrap_or_default();
+    let room = w.saturating_sub(piece.w + 2).clamp(1, name_w.max(1));
+    let name = super::shorten(&name, room);
+    let mut l = Lb::new();
+    l.push(format!(" {name} "), style);
+    let pad = (name_w.min(room) + 2).saturating_sub(l.w);
+    l.push(" ".repeat(pad), th.text());
+    l.append(piece);
+    l
+}
+
 /// One row of the details panel's `usage` value, with how it is drawn.
 pub(super) struct UsageRow {
     pub text: String,

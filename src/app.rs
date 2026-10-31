@@ -74,7 +74,7 @@ use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob
 mod workspace;
 
 pub use workspace::{
-    ATTACH_DEBOUNCE, PaneFocus, PaneOpen, RELEASE_AFTER, WANTED_PATIENCE, coalesces,
+    ATTACH_DEBOUNCE, PaneFocus, PaneOpen, PaneShellOpen, RELEASE_AFTER, WANTED_PATIENCE, coalesces,
 };
 
 /// How long a transient status message stays visible.
@@ -245,6 +245,15 @@ pub enum Effect {
     /// ([`crate::embed::Embed::open`]), then call [`App::pane_opened`] or
     /// [`App::pane_start_failed`] (doc/0045).
     PaneOpen(PaneOpen),
+    /// Start the workspace's shell in its PTY, closing the one there is, then
+    /// call [`App::pane_opened`] or [`App::pane_start_failed`] (doc/0045).
+    PaneShellOpen(PaneShellOpen),
+    /// Close the workspace's shell (doc/0045).
+    PaneShellClose,
+    /// Resize the shell's PTY and its emulator (doc/0045).
+    PaneShellResize { rows: u16, cols: u16 },
+    /// Queue bytes for the shell's PTY (doc/0045).
+    PaneShellWrite(Vec<u8>),
     /// Close the pane's PTY client (doc/0045).
     PaneClose,
     /// Resize the pane's PTY and its emulator (doc/0045).
@@ -1203,7 +1212,10 @@ pub const PANE_KEY_TABLE: &[(&str, &str)] = &[
         "back to the list; other keys go to Claude Code",
     ),
     ("h, click ◆ tower", "Home; the terminal stays attached"),
-    ("Shift+drag", "your terminal's own text selection, usually"),
+    (
+        "!, Shift+drag",
+        "shell in the pane; your terminal's own selection",
+    ),
 ];
 
 /// Keys of the new-session dialog, for the help (doc/0011).
@@ -5189,6 +5201,10 @@ impl App {
             return Vec::new();
         }
         let folder = paths::shorten_home(&cwd, &self.home);
+        // In the workspace it opens in the pane (doc/0045).
+        if self.pane_active() {
+            return self.pane_shell(PathBuf::from(cwd), folder);
+        }
         vec![Effect::Shell(ShellRequest {
             dir: PathBuf::from(cwd),
             folder,

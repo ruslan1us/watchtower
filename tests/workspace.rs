@@ -58,6 +58,8 @@ struct Options {
     live_only: bool,
     /// A listed row named `orchestrator`, with the id [`ORCHESTRATOR`].
     orchestrator: bool,
+    /// So many more live rows, `row-00` and on.
+    more_rows: usize,
     /// The name a session the fake starts with `--bg` gets; it has the id
     /// [`STARTED`] and is listed from then on.
     starts: Option<&'static str>,
@@ -73,6 +75,7 @@ impl Default for Options {
             on_attach: Vec::new(),
             live_only: true,
             orchestrator: false,
+            more_rows: 0,
             starts: None,
         }
     }
@@ -114,6 +117,14 @@ impl Tower {
         ];
         if !options.live_only {
             rows.push(row(STOPPED, "gamma-stopped", &project, false));
+        }
+        for k in 0..options.more_rows {
+            rows.push(row(
+                &format!("f{k:07}"),
+                &format!("row-{k:02}"),
+                &project,
+                true,
+            ));
         }
         if options.orchestrator {
             rows.push(row(ORCHESTRATOR, "orchestrator", &project, true));
@@ -415,10 +426,11 @@ fn move_to_other(tower: &mut Tower, from: &str) {
     // The rows sit next to each other in one group; only one of the two keys
     // moves from `from` to the other row.
     let at_top = {
+        // In the bar: the pane's title names a row too.
         let text = tower.screen_text();
-        let a = text.find(&name_of(from)).unwrap();
-        let b = text.find(&name_of(other(from))).unwrap();
-        a < b
+        let bar: Vec<String> = text.lines().map(|l| l.chars().take(28).collect()).collect();
+        let at = |name: &str| bar.iter().position(|l| l.contains(name)).unwrap();
+        at(&name_of(from)) < at(&name_of(other(from)))
     };
     tower.send(if at_top { b"j" } else { b"k" });
 }
@@ -576,6 +588,236 @@ fn start_and_attach_opens_the_new_session_in_the_pane_with_the_keys() {
     tower.send(b"\x1a");
     tower.wait_screen(" LIST ");
     assert!(alive(pid));
+}
+
+/// The pid of the shell in the pane: it prints it, and this reads the screen.
+fn shell_pid(tower: &mut Tower) -> i32 {
+    tower.send(b"echo pid=$$-end\r");
+    tower.wait_for("the shell's pid", |t| pid_on(&t.screen_text()).is_some());
+    pid_on(&tower.screen_text()).unwrap()
+}
+
+fn pid_on(screen: &str) -> Option<i32> {
+    screen
+        .lines()
+        .flat_map(|l| l.split("pid="))
+        .skip(1)
+        .find_map(|rest| rest.split("-end").next()?.parse().ok())
+}
+
+/// `!` on the selected row, in the pane: the shell's pid.
+fn shell_terminal(tower: &mut Tower) -> i32 {
+    tower.send(b"!");
+    tower.wait_screen("shell  ~/demo");
+    tower.wait_screen(" TERMINAL ");
+    shell_pid(tower)
+}
+
+#[test]
+fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
+    let (mut tower, id, client) = attached(Options {
+        on_attach: b"CLAUDE SCREEN\r\n".to_vec(),
+        ..Options::default()
+    });
+    tower.wait_screen("CLAUDE SCREEN");
+    let pid = shell_terminal(&mut tower);
+    assert!(alive(pid));
+    assert!(alive(client), "beside the client");
+    assert!(
+        !tower.wrote(LEFT_THE_SCREEN),
+        "the terminal is not handed over"
+    );
+    assert!(!tower.screen_text().contains("CLAUDE SCREEN"));
+    // The folder, and the same cleaning of the environment as the client's.
+    tower.send(b"echo [$PWD][$TERM][$TERM_PROGRAM][$TMUX]\r");
+    let want = format!(
+        "[{}][xterm-256color][][]",
+        tower.tower_dir().join("demo").display()
+    );
+    tower.wait_for("its environment", |t| {
+        t.screen_text()
+            .replace(['\n', ' ', '│', '┃'], "")
+            .contains(&want.replace(' ', ""))
+    });
+    // Typed keys went nowhere else.
+    tower.send(b"echo typed$((40+2))\r");
+    tower.wait_screen("typed42");
+    assert!(tower.keys_of(&id).is_empty());
+
+    // Ctrl+Z returns to the list; the shell is not stopped.
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
+    assert!(alive(pid));
+    // `!` shows Claude, `!` again the shell, with the keys.
+    tower.send(b"!");
+    tower.wait_screen("CLAUDE SCREEN");
+    assert!(!tower.screen_text().contains("typed42"));
+    tower.send(b"!");
+    tower.wait_screen("typed42");
+    tower.wait_screen(" TERMINAL ");
+    assert_eq!(tower.attaches().len(), 1, "no second client");
+    tower.send(b"\x1b[24~");
+    tower.wait_screen(" LIST ");
+
+    // Browse: the other row attaches, the shell stays; back, it shows.
+    move_to_other(&mut tower, &id);
+    let (other_id, _) = tower.wait_attaches(2);
+    tower.wait_for("the other row", |t| !t.screen_text().contains("typed42"));
+    assert!(alive(pid), "the shell outlives browsing");
+    move_to_other(&mut tower, &other_id);
+    tower.wait_screen("typed42");
+    tower.wait_screen("shell  ~/demo");
+    thread::sleep(PAUSE);
+    assert_eq!(tower.attaches().len(), 2, "its row needs no client now");
+
+    // `exit`: back to what the row shows, with the list focused.
+    tower.send(b"\r");
+    tower.wait_screen(" TERMINAL ");
+    tower.send(b"exit\r");
+    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_screen(" LIST ");
+    tower.wait_for("the shell's title goes", |t| {
+        !t.screen_text().contains("shell  ~/demo")
+    });
+    tower.wait_for("no zombie", |t| t.zombies().is_empty());
+    assert!(!tower.wrote(LEFT_THE_SCREEN));
+}
+
+#[test]
+fn the_shell_on_another_row_replaces_the_old_one() {
+    let (mut tower, id, _client) = attached(Options::default());
+    let first = shell_terminal(&mut tower);
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
+    move_to_other(&mut tower, &id);
+    tower.send(b"!");
+    tower.wait_screen("closed the shell in ~/demo");
+    tower.wait_for("the old shell is gone", |_| !alive(first));
+    tower.wait_for("the old shell's screen goes", |t| {
+        pid_on(&t.screen_text()).is_none()
+    });
+    let second = shell_pid(&mut tower);
+    assert_ne!(first, second);
+    assert!(alive(second));
+    tower.wait_for("no zombie", |t| t.zombies().is_empty());
+}
+
+#[test]
+fn quitting_ends_the_shell_with_no_zombie() {
+    let (mut tower, _id, client) = attached(Options::default());
+    let pid = shell_terminal(&mut tower);
+    let code = tower.stop();
+    assert_eq!(code, Some(128 + libc::SIGTERM));
+    assert!(!alive(pid), "the shell ended with tower");
+    assert!(!alive(client), "the client too");
+    // `q` from the list as well.
+    let (mut tower, _id, _client) = attached(Options::default());
+    let pid = shell_terminal(&mut tower);
+    tower.send(b"\x1a");
+    tower.wait_screen(" LIST ");
+    tower.send(b"q");
+    let deadline = Instant::now() + WAIT;
+    while alive(pid) {
+        assert!(Instant::now() < deadline, "the shell outlived tower");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn the_shell_on_a_stopped_row_does_not_wake_it() {
+    let mut tower = Tower::start(Options {
+        live_only: false,
+        ..Options::default()
+    });
+    tower.wait_screen("Stopped");
+    // Its group starts folded: a click opens it, on the fake.
+    let row = {
+        let text = tower.screen_text();
+        text.lines().position(|l| l.contains("Stopped")).unwrap() as u16 + 1
+    };
+    tower.send(&mouse(0, 5, row, 'M'));
+    tower.send(&mouse(0, 5, row, 'm'));
+    tower.wait_screen("gamma-stopped");
+    let text = tower.screen_text();
+    let row = text
+        .lines()
+        .position(|l| l.contains("gamma-stopped"))
+        .unwrap() as u16
+        + 1;
+    tower.send(&mouse(0, 5, row, 'M'));
+    tower.send(&mouse(0, 5, row, 'm'));
+    tower.wait_screen("Enter wakes it here");
+    tower.send(b"!");
+    tower.wait_screen("shell  ~/demo");
+    let pid = shell_pid(&mut tower);
+    assert!(alive(pid));
+    thread::sleep(PAUSE);
+    assert!(tower.attaches().is_empty(), "nothing wakes it");
+    let calls = tower.fake.all_argv();
+    assert!(
+        !calls
+            .iter()
+            .any(|argv| argv.iter().any(|a| a == "--resume")),
+        "{calls:?}"
+    );
+    tower.send(b"exit\r");
+    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_screen("Enter wakes it here");
+    thread::sleep(PAUSE);
+    assert!(tower.attaches().is_empty());
+}
+
+#[test]
+fn a_shell_in_a_gone_folder_starts_nothing_and_says_so() {
+    let mut tower = Tower::start(Options::default());
+    tower.wait_screen("alpha-task");
+    std::fs::remove_dir_all(tower.tower_dir().join("demo")).unwrap();
+    tower.send(b"j");
+    tower.send(b"!");
+    tower.wait_screen("no longer exists; no shell started");
+    tower.wait_screen(" LIST ");
+    assert!(!tower.screen_text().contains("shell  ~/demo"));
+}
+
+#[test]
+fn below_the_width_the_shell_stays_the_foreground_hand_over() {
+    let mut tower = Tower::start(Options {
+        rows: 40,
+        cols: 90,
+        ..Options::default()
+    });
+    tower.wait_screen("alpha-task");
+    tower.send(b"!");
+    tower.wait_for("handed over", |t| t.wrote(LEFT_THE_SCREEN));
+    tower.wait_screen("tower: shell in ~/demo");
+    tower.send(b"exit\r");
+    tower.wait_screen("back from the shell");
+}
+
+#[test]
+fn a_burst_of_the_wheel_ends_on_one_client_for_the_row_it_stopped_on() {
+    let mut tower = Tower::start(Options {
+        more_rows: 58,
+        ..Options::default()
+    });
+    tower.wait_screen("alpha-task");
+    tower.wait_screen("▼");
+    let burst: Vec<u8> = (0..30).flat_map(|_| mouse(65, 5, 10, 'M')).collect();
+    tower.send(&burst);
+    let settled = |t: &Tower| t.attaches().last().is_some_and(|(_, pid)| alive(*pid));
+    tower.wait_for("an attach", settled);
+    thread::sleep(PAUSE);
+    // Load decides how many starts the burst allows; the rest is the point:
+    // far fewer than the notches, and one left, for the selected card.
+    let attaches = tower.attaches();
+    assert!(attaches.len() < 30, "{attaches:?}");
+    let live: Vec<_> = attaches.iter().filter(|(_, pid)| alive(*pid)).collect();
+    assert_eq!(live.len(), 1, "{attaches:?}");
+    let (id, _) = live[0];
+    let text = tower.screen_text();
+    let k: usize = id.trim_start_matches('f').parse().unwrap();
+    assert!(text.contains(&format!("┏━ ▪ row-{k:02}")), "{text}");
+    tower.wait_for("no zombie", |t| t.zombies().is_empty());
 }
 
 #[test]

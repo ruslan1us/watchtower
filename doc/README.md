@@ -54,15 +54,15 @@ This directory records the design decisions behind it, one file per decision.
 | 0034 | [Remove with another account's command when the owner's service does not answer](0034-remove-with-another-account-when-the-service-is-down.md) | Accepted |
 | 0035 | [A subagent continued with `SendMessage`](0035-continued-subagents.md) | Accepted |
 | 0036 | [Prompt templates](0036-prompt-templates.md) | Accepted (picker also used by 0040) |
-| 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted (side-panel `git` wrapping, long-branch rule, zero counts and key line amended by 0041) |
+| 0037 | [Git summary in the details panel and a shell in the session's folder](0037-git-summary-and-shell.md) | Accepted (side-panel `git` wrapping, long-branch rule, zero counts and key line amended by 0041; `!` in the workspace's pane by 0045) |
 | 0038 | [Light themes, a 16-colour theme and the colour depth](0038-light-and-16-colour-themes.md) | Accepted |
 | 0039 | [Subagent hooks for conversations resumed with `R`](0039-subagent-hooks-for-resumed-conversations.md) | Accepted |
 | 0040 | [Quick reply](0040-quick-reply.md) | Accepted (slash-command suggestions by 0042; wake path shared with `tower wake` by 0044) |
 | 0041 | [Long values in the details panel wrap](0041-details-panel-values-wrap.md) | Accepted |
 | 0042 | [Slash-command suggestions in the task field](0042-slash-command-suggestions.md) | Accepted (claude.ai synced skills added 2026-10-28) |
-| 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted (per account on the workspace's Home by 0045) |
+| 0043 | [Plan usage display](0043-plan-usage-display.md) | Accepted (per account on the workspace's Home and in its bar by 0045) |
 | 0044 | [The orchestrator starts and wakes sessions when asked](0044-orchestrator-starts-and-wakes-sessions.md) | Accepted |
-| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap` and attaches in the pane added 2026-10-31) |
+| 0045 | [Workspace style: Claude's terminal in a pane (first step)](0045-workspace-style.md) | Accepted (Home, group clicks, the wheel and cards, then the filled selected card, `card_gap`, attaches and the shell in the pane, the usage block and scroll hints added 2026-10-31) |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -101,18 +101,56 @@ large (4 rows)            medium (3 rows)           small (2 rows)
 - *Added 2026-10-31:* `[ui] card_gap` (0 or 1, default 1, also in Settings) is the blank rows
   between cards and before each group header; a header stays with its first card, and the top of
   the list has none. A click on a gap selects nothing. The viewport and the page keys count it.
-  Cards that fit with 6 group headers (2 rows of chrome: the footer and the bar's title row):
+  Cards that fit with 6 group headers, when the list scrolls (the footer, the bar's title row and
+  the two hint rows are taken; the usage block takes its rows too):
 
   | Terminal | `large` | `medium` | `small` |
   |---|---|---|---|
-  | 200 × 50, `card_gap = 1` | 8 | 10 | 14 |
-  | 120 × 36, `card_gap = 1` | 5 | 7 | 9 |
-  | 200 × 50, `card_gap = 0` | 10 | 14 | 21 |
-  | 120 × 36, `card_gap = 0` | 7 | 9 | 14 |
+  | 200 × 50, `card_gap = 1` | 8 | 10 | 13 |
+  | 120 × 36, `card_gap = 1` | 5 | 6 | 9 |
+  | 200 × 50, `card_gap = 0` | 10 | 13 | 20 |
+  | 120 × 36, `card_gap = 0` | 6 | 8 | 13 |
 
+- *Added 2026-10-31, the third request:* a list that does not fit keeps one row at each end, the
+  same rows wherever the selection goes, for a dim `▲ 3 more` and `▼ 5 more`, counting the hidden
+  sessions (`▼ 2 more groups` when only folded groups are hidden). A click on one moves a page; a
+  list that fits has neither hint nor reserved rows. A burst of the wheel is absorbed by the 150 ms
+  of rest, so one client attaches, for the row it stopped on. A frame's work over the list is
+  linear in its entries, and each card's texts are built only for the cards that show.
+- *Added 2026-10-31:* while `[usage] show` is on, a block fixed at the bar's bottom, a rule and one
+  row per account (`main  5h 24% · 7d 12%`), with Home's colours, stale dimming and `…` / `—`. Cards
+  scroll above it and never overlap it, and the viewport, the clicks and the page keys use what
+  is left. The week goes first, then a stale value's age, and only then is the name cut. With fewer
+  than 12 rows left for the list the block is hidden. Reset times are on Home only.
 - Fitting on one row: a folder first becomes `…/last`, then the state its short form
   (`permission`, `reply`), then the folder and then the state are cut with `…`. A name is cut
   with `…`. On a row too narrow for both the folder goes.
+
+**The shell in the pane** (*added 2026-10-31*, amending [0037](0037-git-summary-and-shell.md)
+for this style). `!` on a row runs `$SHELL` (`/bin/sh` when unset) in a PTY of its own in the row's
+folder, with the client's clean environment, and shows it in the pane with the keys, titled
+`shell  ~/workspace/api`. It wakes nothing, so stopped rows work too. The worker looks at the folder: when
+it is gone nothing starts and the status line says so, as in 0037. Below 100 × 24 `!` stays
+the foreground hand-over.
+
+- One shell at a time, separate from the Claude client: both can exist, and each keeps running
+  unseen. The shell stays alive while the selection browses other rows, whose Claude the pane shows
+  as usual; back on its row it shows again, with the keys left on the list.
+- `!` on its row toggles the pane between the shell and what the row normally shows; going to the
+  shell gives it the keys. While the shell shows, `Enter` gives it the keys, and the row needs no
+  client, so none is started. `!` on another row closes the old shell with a status note and
+  opens a new one there.
+- `exit`, or the shell ending any way, returns the pane to what the row normally shows, with
+  the list focused, and polls. Tower's quit ends it like a client: `SIGHUP` to its group, closing the
+  PTY, `SIGKILL` after 2 s, and reaping. So does the row leaving the listing, or leaving the style. A
+  terminal too small for the workspace only hides it.
+- `Ctrl+Z` and `F12` return to the list, as in Claude's terminal. **So `Ctrl+Z` never reaches the
+  shell's job control in this style**; for a job to stop, use the foreground `!` of a smaller window
+  or another style. Everything else goes to the shell, `Ctrl+C` included. The shell answers nothing
+  a row asks, so `●` stays, and its keys do not count as the Claude client's.
+- **A limit, recorded rather than built:** the pane has no scrollback and tower no text selection of
+  its own, so a plain drag does nothing unless the program in the shell asks for the mouse.
+  `Shift`+drag is the real terminal's own selection. Programs with their own scrolling work.
 
 **The client ([`embed`](../src/embed.rs)).** One `<owner's command> attach <id>` at a time
 ([0003](0003-accounts-and-session-ownership.md)), in the session's folder (without one
@@ -207,7 +245,8 @@ attention and everything else still come from the CLI's JSON
 - One more thread and a small emulator (32 bytes a cell) per client, and only one client.
 - The terminal's own text selection usually needs `Shift` while the capture is on.
 - The plan usage display of [0043](0043-plan-usage-display.md) shows in the pane's details and,
-  *since 2026-10-31,* per account on Home (no header in this style).
+  *since 2026-10-31,* per account on Home, with reset times, and in the bar's block (no header in
+  this style).
 - Tests use a fake `claude`, the real binary in a PTY; the real client is checked by hand
   with the keyboard only ([0015](0015-testing-strategy.md)). Never send mouse events into a
   real `claude attach` from a test: its copy-on-release runs PowerShell `Set-Clipboard` on
@@ -245,9 +284,10 @@ attention and everything else still come from the CLI's JSON
 ## Open items
 
 - The owner's results on Warp, Windows Terminal and over SSH.
-- Done 2026-10-31: cards, the wheel on the list, clicks on group headers, Home (which has the
-  plan usage, so the bar has none).
+- Done 2026-10-31: cards, the wheel on the list, clicks on group headers, Home.
 - Done in the second trial, 2026-10-31: `o`, start-and-attach and the rename opening in the pane,
   the whole selected card highlighted, `[ui] card_gap`.
-- Still to come: clicks on the stopped panel, a zoom key and lifecycle polish. The mockup's `a → alt` hand-off hint on the selected card is not
+- Done in the third request, 2026-10-31: the shell in the pane, the usage block and the scroll hints.
+- Still to come: clicks on the stopped panel, a zoom key, lifecycle polish, and scrollback and a
+  selection of its own in the pane if the limit above proves too tight. The mockup's `a → alt` hand-off hint on the selected card is not
   built.

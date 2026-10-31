@@ -860,6 +860,7 @@ fn event_loop(rt: &mut Runtime<'_>, app: &mut App) -> io::Result<()> {
                 ClientEvent::Exited { generation, code } => {
                     effects.extend(app.pane_exited(generation, code));
                 }
+                ClientEvent::FolderGone { generation } => app.pane_shell_folder_gone(generation),
             }
         }
         let mut polled = false;
@@ -940,12 +941,30 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                     line: cli::attach_command(&open.account, &open.id).with_cwd(&open.cwd),
                     rows: open.rows,
                     cols: open.cols,
+                    needs_cwd: false,
                 };
                 match rt.embed.open(spec) {
                     Ok(screen) => app.pane_opened(open.generation, screen),
                     Err(err) => app.pane_start_failed(open.generation, &err.to_string()),
                 }
             }
+            Effect::PaneShellOpen(open) => {
+                let shell = crate::shell::program_from_env();
+                let spec = OpenSpec {
+                    generation: open.generation,
+                    line: crate::shell::command(&shell, &open.dir),
+                    rows: open.rows,
+                    cols: open.cols,
+                    needs_cwd: true,
+                };
+                match rt.embed.open_shell(spec) {
+                    Ok(screen) => app.pane_opened(open.generation, screen),
+                    Err(err) => app.pane_start_failed(open.generation, &err.to_string()),
+                }
+            }
+            Effect::PaneShellClose => rt.embed.close_shell(),
+            Effect::PaneShellResize { rows, cols } => rt.embed.resize_shell(rows, cols),
+            Effect::PaneShellWrite(bytes) => rt.embed.write_shell(&bytes),
             Effect::PaneClose => rt.embed.close(),
             Effect::PaneResize { rows, cols } => rt.embed.resize(rows, cols),
             Effect::PaneWrite(bytes) => rt.embed.write(&bytes),

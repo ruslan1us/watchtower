@@ -600,6 +600,42 @@ fn with_pane(app: &mut App) {
     app.style = style;
 }
 
+/// A shell in the workspace's pane, with what it prints (doc/0045).
+fn with_shell(app: &mut App) {
+    let style = app.style;
+    app.style = UiStyle::Workspace;
+    draw(app, 160, 45);
+    let effects = press(app, ch('!'));
+    let open = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::PaneShellOpen(open) => Some(open.clone()),
+            _ => None,
+        })
+        .expect("a shell opens in the pane");
+    let screen = watchtower::embed::PaneScreen::new(open.rows, open.cols);
+    screen.feed(b"$ ls\r\nCargo.toml  src\r\n$ \x1b[?25h");
+    app.pane_opened(open.generation, screen);
+    app.style = style;
+}
+
+/// Sixty sessions, more than any bar shows.
+fn many_rows() -> App {
+    let live = r#""pid": 4150, "status": "idle","#;
+    let rows: Vec<String> = (0..60)
+        .map(|k| {
+            let id = format!("9{k:07}");
+            row(&id, &format!("many-{k:02}"), "demo-app", "done", live, 60)
+        })
+        .collect();
+    app_with(
+        false,
+        HANDOFF_PROMPT,
+        true,
+        &format!("[{}]", rows.join(",")),
+    )
+}
+
 /// The new-session dialog over the long projects.
 fn dialog(warnings: &[&str]) -> Built {
     let dir = tempfile::tempdir().unwrap();
@@ -1028,6 +1064,36 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
             }),
         ));
     }
+    // The usage block at the bar's bottom, on a row; off in the scenarios
+    // above (doc/0045).
+    s!("list-workspace-usage", || {
+        let mut app = usage_app();
+        usage_in(&mut app, "main", Ok(plan(vec![], false)), 0);
+        usage_in(&mut app, "alt", Ok(plain_plan()), 25 * 60);
+        select(&mut app, LONG_NAME);
+        just(app)
+    });
+    // Sessions that do not fit: the hints of what is hidden.
+    s!("list-workspace-scrolled", || {
+        let mut app = many_rows();
+        select(&mut app, "many-20");
+        just(app)
+    });
+    s!("list-workspace-scrolled-usage", || {
+        let mut app = many_rows();
+        let mut config = app.config().clone();
+        config.usage_show = true;
+        app.apply_config(config);
+        select(&mut app, "many-20");
+        just(app)
+    });
+    // The shell in the pane.
+    s!("list-workspace-shell", || {
+        let mut app = base();
+        select(&mut app, LONG_NAME);
+        with_shell(&mut app);
+        just(app)
+    });
     s!("help-workspace", || {
         let mut app = base();
         with_pane(&mut app);
@@ -2419,8 +2485,10 @@ fn check_frame_all(f: &Frame) -> Vec<(Finding, Option<(usize, usize)>)> {
             continue;
         }
         // While the terminal has the keys, `?` is Claude Code's.
-        if f.scenario == "list-workspace-terminal-keys"
-            && *must == "? help"
+        if matches!(
+            f.scenario,
+            "list-workspace-terminal-keys" | "list-workspace-shell"
+        ) && *must == "? help"
             && f.look == "workspace"
             && f.w >= 100
         {
@@ -2781,6 +2849,34 @@ fn the_workspace_starts_on_home_and_its_cards_keep_their_shape() {
         assert!(rows[top + 1].starts_with('█'), "{}", f.text());
         assert!(!rows[top + 2].starts_with('█'), "{}", f.text());
     }
+}
+
+#[test]
+fn the_workspace_says_what_is_hidden_and_keeps_its_usage_block() {
+    for (w, h) in [(100, 30), (160, 45), (250, 60)] {
+        let f = frame("list-workspace-scrolled", "workspace", w, h);
+        let text = f.text();
+        assert!(text.contains('▲') && text.contains('▼'), "{w}x{h}: {text}");
+        assert!(!text.contains("─ usage"), "{w}x{h}: {text}");
+        let f = frame("list-workspace-scrolled-usage", "workspace", w, h);
+        let rows = rows_of(f);
+        let block = rows
+            .iter()
+            .position(|r| r.starts_with("─ usage"))
+            .unwrap_or_else(|| panic!("{w}x{h}: {}", f.text()));
+        // The block ends the bar, above the footer, and the hint is above it.
+        assert!(rows[block - 1].contains('▼'), "{w}x{h}: {}", f.text());
+        assert_eq!(block + 3 + 1, usize::from(h) - 1, "{w}x{h}: {}", f.text());
+    }
+    let f = frame("list-workspace-usage", "workspace", 160, 45);
+    assert!(f.text().contains("─ usage"), "{}", f.text());
+    let f = frame("list-workspace-shell", "workspace", 160, 45);
+    assert!(f.text().contains("shell  ~/workspace"), "{}", f.text());
+    assert!(f.text().contains("Cargo.toml"), "{}", f.text());
+    // The other looks show none of it.
+    let f = frame("list-workspace-scrolled-usage", "dash-neutral", 160, 45);
+    assert!(!f.text().contains('▼'), "{}", f.text());
+    assert!(!f.text().contains("─ usage"), "{}", f.text());
 }
 
 #[test]

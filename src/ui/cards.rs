@@ -20,6 +20,7 @@ use super::dashboard::{
     Level, RowText, account_chip, put, put_lr, row, row_text, scroll_lines, separator, spinner,
 };
 use super::theme::{Lb, Theme, rfit};
+use super::usage::bar_row_at;
 use super::{MARKER, age_column, fit, shorten};
 use crate::app::{App, Entry, PaneFocus};
 use crate::config::CardSize;
@@ -68,6 +69,9 @@ const GAP: usize = 2;
 
 /// A cut text keeps at least this many cells.
 const CUT_MIN: usize = 5;
+
+/// The usage block goes before the list would have fewer rows than this.
+const USAGE_LIST_MIN: u16 = 12;
 
 /// A name keeps at least this many cells before the `+N` badge goes.
 const NAME_MIN: usize = 6;
@@ -495,17 +499,77 @@ fn draw_title(frame: &mut Frame, app: &App, area: Rect, th: Theme) {
     put_lr(frame, area, left, right);
 }
 
-/// Draws the bar in `area`: the title row, then the list's whole entries from
-/// the viewport's first.
+/// The block of plan usage at the bar's bottom while `[usage] show` is on: a
+/// rule and a row per account. With fewer rows than [`USAGE_LIST_MIN`] left for
+/// the list it is left out (doc/0045).
+fn usage_block_rows(app: &App, body: u16) -> u16 {
+    if !app.config().usage_show {
+        return 0;
+    }
+    let rows = u16::try_from(app.config().accounts.len() + 1).unwrap_or(u16::MAX);
+    if body.saturating_sub(rows) < USAGE_LIST_MIN {
+        return 0;
+    }
+    rows
+}
+
+/// Draws the usage block in `area`, its bottom rows of the bar.
+fn draw_usage_block(frame: &mut Frame, app: &App, area: Rect, now_ms: i64, th: Theme) {
+    let w = usize::from(area.width);
+    let accounts = &app.config().accounts;
+    let name_w = accounts
+        .iter()
+        .map(|a| a.name.width())
+        .max()
+        .unwrap_or(0)
+        .min(w / 2);
+    let mut rule = Lb::new();
+    rule.push("─ usage ", th.line());
+    rule.push("─".repeat(w.saturating_sub(rule.w)), th.line());
+    put(frame, row(area, 0), rule.line());
+    for (k, account) in accounts.iter().enumerate() {
+        let line = bar_row_at(app, &account.name, name_w, w, now_ms, th);
+        put(frame, row(area, 1 + k as u16), line.line());
+    }
+}
+
+/// `▲ 3 more`: what the viewport hides on one side, in sessions; a group
+/// without a card shown counts when nothing else is hidden there.
+fn more_hint(arrow: &str, entries: &[Entry]) -> String {
+    let sessions = entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Row(_)))
+        .count();
+    if sessions > 0 {
+        format!(" {arrow} {sessions} more")
+    } else if entries.len() == 1 {
+        format!(" {arrow} 1 more group")
+    } else {
+        format!(" {arrow} {} more groups", entries.len())
+    }
+}
+
+/// Draws the bar in `area`: the title row, the list's whole entries from the
+/// viewport's first, the hints that more is hidden, and the usage block.
 pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Theme) {
     draw_title(frame, app, row(area, 0), th);
+    let body = area.height.saturating_sub(1);
+    let usage = usage_block_rows(app, body);
+    if usage > 0 {
+        let block = Rect {
+            y: area.bottom() - usage,
+            height: usage,
+            ..area
+        };
+        draw_usage_block(frame, app, block, now_ms, th);
+    }
     let list = Rect {
         y: area.y + 1,
-        height: area.height.saturating_sub(1),
+        height: body - usage,
         ..area
     };
-    let h = usize::from(list.height);
     let iw = usize::from(list.width);
+    let h = usize::from(list.height);
     if h == 0 || iw == 0 {
         app.set_pane_bar(area, Vec::new());
         return;
@@ -544,6 +608,19 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
         .map(|k| rows_of(k) + gap_after(k))
         .collect();
     let drawn: Vec<usize> = (0..entries.len()).map(rows_of).collect();
+    // A list that does not fit keeps a row at each end for what it hides, the
+    // same rows wherever the selection goes, so nothing shifts as it moves.
+    let scrolls = heights.iter().sum::<usize>() > h;
+    let (list, h) = if scrolls && h > 2 {
+        let inner = Rect {
+            y: list.y + 1,
+            height: list.height - 2,
+            ..list
+        };
+        (inner, h - 2)
+    } else {
+        (list, h)
+    };
     // The selected entry's own gap may fall outside the view.
     let mut offset = scroll_lines(app.list_state.offset(), selected, h + gap, &heights);
     if let Some(sel) = selected {
@@ -566,11 +643,36 @@ pub(super) fn draw_bar(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64
         rows.extend((y..y + drawn[k]).map(|at| (list.y + at as u16, k)));
         y += heights[k];
     }
+    let shown = tops.last().map_or(offset, |(k, _)| k + 1);
+    let above = (offset > 0).then(|| more_hint("▲", &entries[..offset]));
+    let below = (shown < entries.len()).then(|| more_hint("▼", &entries[shown..]));
     *app.list_state.offset_mut() = offset;
     app.list_state.select(selected);
     // A page is what shows, so `PgDn` moves as far as the eye does.
     app.page_size = tops.len().max(1);
     app.set_pane_bar(area, rows);
+    let (top_hint, bottom_hint) = (list.y.saturating_sub(1), list.bottom());
+    app.set_pane_bar_more(
+        above.as_ref().map(|_| top_hint),
+        below.as_ref().map(|_| bottom_hint),
+    );
+    let dim = th.faint();
+    if let Some(text) = above {
+        let at = Rect {
+            y: top_hint,
+            height: 1,
+            ..list
+        };
+        put(frame, at, Line::styled(text, dim));
+    }
+    if let Some(text) = below {
+        let at = Rect {
+            y: bottom_hint,
+            height: 1,
+            ..list
+        };
+        put(frame, at, Line::styled(text, dim));
+    }
 
     let app = &*app;
     let spin = spinner(now_ms);

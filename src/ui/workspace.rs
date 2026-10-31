@@ -18,10 +18,10 @@ use super::dashboard::{
     account_chip, footer_hints_of, group_counts, hint_spans, panel, put, put_lr, row, status_spans,
 };
 use super::theme::{Lb, Look, Theme};
-use super::usage::{HeaderUsage, header_piece};
+use super::usage::detail_rows;
 use super::{
-    FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_HEADER, FOOTER_KEYS_PANE_HOME, FOOTER_KEYS_PANE_STOPPED,
-    MARKER, detail, shorten, wrap,
+    FOOTER_KEYS_PANE, FOOTER_KEYS_PANE_HEADER, FOOTER_KEYS_PANE_HOME, FOOTER_KEYS_PANE_SHELL,
+    FOOTER_KEYS_PANE_STOPPED, MARKER, detail, shorten, wrap,
 };
 use crate::app::{App, PaneFocus, interactive_hint};
 use crate::embed::PaneScreen;
@@ -145,6 +145,21 @@ fn title(app: &App, m: Option<&MergedSession>, room: usize, th: Theme) -> Lb {
     l
 }
 
+/// The pane's title while it shows the shell: `shell  ~/workspace/api`, and who
+/// has the keys.
+fn shell_title(app: &App, folder: &str, room: usize, th: Theme) -> Lb {
+    let focus = match app.pane_focus() {
+        PaneFocus::Terminal => " · keyboard here ",
+        PaneFocus::List => " · view only ",
+    };
+    let mut l = Lb::new();
+    l.push(" shell  ", th.bold(th.p.title));
+    let folder_room = room.saturating_sub(l.w + focus.width()).max(4);
+    l.push(shorten(folder, folder_room), th.bold(th.p.title));
+    l.push(focus, th.muted());
+    l
+}
+
 /// The pane: its frame and title, and the terminal or what stands for it.
 fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Theme) {
     let focused = app.pane_focus() == PaneFocus::Terminal;
@@ -157,7 +172,10 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
     let app = &*app;
     let row_shown = title_row(app);
     let room = usize::from(area.width).saturating_sub(4);
-    let head = title(app, row_shown, room, th);
+    let head = match app.pane_shell_folder() {
+        Some(folder) => shell_title(app, folder, room, th),
+        None => title(app, row_shown, room, th),
+    };
     let git_room = room.saturating_sub(head.w + 6);
     let mut block = block.title(head.line());
     if let Some(summary) = row_shown.and_then(|m| app.git_summary(&m.session.cwd))
@@ -168,6 +186,7 @@ fn draw_pane(frame: &mut Frame, app: &mut App, area: Rect, now_ms: i64, th: Them
         );
     }
     let hint = match (app.pane_ended_code(), app.pane_screen(), focused) {
+        (_, Some(_), false) if app.pane_shell_showing() => " Enter: type here · !: hide the shell ",
         (Some(_), ..) => " Enter attaches again ",
         (None, Some(_), true) => " Ctrl+Z or F12: back to the list ",
         (None, Some(_), false) => " Enter: type here ",
@@ -339,7 +358,7 @@ fn home_attention(app: &App, width: usize, room: usize, th: Theme) -> Vec<Lb> {
 
 /// Each account's plan usage while `[usage] show` is on (doc/0043): this style
 /// has no header to show it in.
-fn home_usage(app: &App, now_ms: i64, th: Theme) -> Vec<Lb> {
+fn home_usage(app: &App, width: usize, now_ms: i64, th: Theme) -> Vec<Lb> {
     if !app.config().usage_show {
         return Vec::new();
     }
@@ -357,8 +376,24 @@ fn home_usage(app: &App, now_ms: i64, th: Theme) -> Vec<Lb> {
             " ".repeat(name_w.saturating_sub(account.name.width())),
             th.text(),
         );
-        if let Some(piece) = header_piece(app, &account.name, now_ms, HeaderUsage::Both, th) {
-            l.append(piece);
+        // The limits with their reset times, as many as fit whole; the bar's
+        // block has the short form (doc/0043).
+        for (k, part) in detail_rows(app, &account.name, now_ms, th)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let gap = if k == 0 { " " } else { " · " };
+            if l.w + gap.width() + part.text.width() > width {
+                if k == 0 {
+                    l.push(gap, th.faint());
+                    let room = width.saturating_sub(l.w).max(1);
+                    l.push(shorten(&part.text, room), part.style);
+                }
+                break;
+            }
+            l.push(gap, th.faint());
+            l.push(part.text, part.style);
         }
         out.push(l);
     }
@@ -375,7 +410,7 @@ fn home_lines(app: &App, width: usize, height: usize, now_ms: i64, th: Theme) ->
         th.bold(th.p.logo),
     );
     let counts = home_counts(app, width, th);
-    let usage = home_usage(app, now_ms, th);
+    let usage = home_usage(app, width, now_ms, th);
     let keys: Vec<Lb> = HOME_KEYS
         .iter()
         .map(|(key, what)| {
@@ -514,6 +549,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, now: Instant, th: Theme
             .is_none_or(|m| m.session.has_live_process());
         let keys = if app.pane_home() {
             FOOTER_KEYS_PANE_HOME
+        } else if app.pane_shell_showing() {
+            FOOTER_KEYS_PANE_SHELL
         } else if app.selected_header().is_some() {
             FOOTER_KEYS_PANE_HEADER
         } else if live {

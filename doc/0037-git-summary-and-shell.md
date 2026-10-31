@@ -1,6 +1,6 @@
 # 0037. Git summary in the details panel and a shell in the session's folder
 
-- Status: Accepted · 2026-10-21 · the side-panel `git` line (wrapped), the long-branch rule, zero counts and the details key line amended by [0041](0041-details-panel-values-wrap.md)
+- Status: Accepted · 2026-10-21 · the side-panel `git` line (wrapped), the long-branch rule, zero counts and the details key line amended by [0041](0041-details-panel-values-wrap.md) · in the workspace style `!` opens the shell in the pane, by [0045](0045-workspace-style.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 - Amends: [0001](0001-thin-wrapper-over-claude-cli.md) (what tower reads outside the CLI), [0011](0011-keybindings.md) (the `!` key), [0020](0020-visual-styles.md) (detail panel content, strip height)
 
@@ -73,6 +73,10 @@ so it never competes with a session's own git commands for `index.lock`),
 never prompts and never pages. It touches no session and no Claude Code
 state ([0016](0016-do-not-change-claude-code-defaults.md)). Tower still
 reads no Claude Code file.
+
+*Amended by [0045](0045-workspace-style.md):* while the workspace style is drawn, `!` runs the
+shell in a PTY in the pane instead of handing the terminal over, with the rules for its folder and
+`$SHELL` below; there `Ctrl+Z` returns to the list and never reaches the shell's job control.
 
 **The shell: `!`.** On a session row with a `cwd` (background, live or
 stopped, interactive, the orchestrator), `!` hands the terminal over

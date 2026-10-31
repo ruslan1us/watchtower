@@ -1,7 +1,7 @@
 //! Claude's real terminal inside tower, the `workspace` style (doc/0045):
-//! one `<account command> attach <id>` at a time in a pseudo-terminal, whose
-//! output goes into a `vt100` emulator that the renderer copies into the
-//! pane. Only ratatui writes to the real terminal, so nothing the child
+//! one `<account command> attach <id>` at a time in a pseudo-terminal, and
+//! beside it at most one shell, each with a `vt100` emulator for its output
+//! that the renderer copies into the pane. Only ratatui writes to the real terminal, so nothing the child
 //! prints reaches it raw: BEL, OSC notifications and title changes end in the
 //! emulator (doc/0007). The one exception is an OSC 52 clipboard write, which
 //! the runtime writes again itself; a clipboard read is never passed on.
@@ -488,6 +488,8 @@ pub enum ClientEvent {
     Failed { generation: u64, error: String },
     /// The child exited with this code, `None` for a signal.
     Exited { generation: u64, code: Option<i32> },
+    /// A shell's folder no longer exists, so nothing started (doc/0037).
+    FolderGone { generation: u64 },
 }
 
 /// What the UI thread and a client's worker share.
@@ -540,11 +542,13 @@ struct Client {
     master: Arc<OwnedFd>,
 }
 
-/// The one PTY client of the workspace style.
+/// The PTY children of the workspace style: one Claude client, and one shell,
+/// which lives beside it (doc/0045).
 #[derive(Default)]
 pub struct Embed {
     waker: Option<Arc<Waker>>,
     current: Option<Client>,
+    shell: Option<Client>,
     /// Closed clients whose workers are still reaping them.
     closing: Vec<Arc<Shared>>,
 }
@@ -555,6 +559,10 @@ pub struct OpenSpec {
     pub line: CommandLine,
     pub rows: u16,
     pub cols: u16,
+    /// Nothing starts unless `line`'s folder exists, which the worker looks
+    /// at, as a hung folder must not block the UI thread. Otherwise a folder
+    /// that is gone is left out (doc/0045).
+    pub needs_cwd: bool,
 }
 
 impl Embed {
@@ -576,11 +584,12 @@ impl Embed {
         self.current.is_some()
     }
 
-    /// Whether the client's update is still being written (`?2026`).
+    /// Whether a child's update is still being written (`?2026`).
     pub fn syncing(&self, now: Instant) -> bool {
-        self.current
-            .as_ref()
-            .is_some_and(|c| c.shared.screen.syncing(now))
+        [&self.current, &self.shell]
+            .into_iter()
+            .flatten()
+            .any(|c| c.shared.screen.syncing(now))
     }
 
     /// Closes the current client and starts `spec`, on a worker thread.
@@ -588,6 +597,20 @@ impl Embed {
     /// started is reported later as [`ClientEvent::Failed`].
     pub fn open(&mut self, spec: OpenSpec) -> io::Result<PaneScreen> {
         self.close();
+        let (client, screen) = self.start(spec)?;
+        self.current = Some(client);
+        Ok(screen)
+    }
+
+    /// [`Embed::open`] for the shell, which leaves the Claude client alone.
+    pub fn open_shell(&mut self, spec: OpenSpec) -> io::Result<PaneScreen> {
+        self.close_shell();
+        let (client, screen) = self.start(spec)?;
+        self.shell = Some(client);
+        Ok(screen)
+    }
+
+    fn start(&mut self, spec: OpenSpec) -> io::Result<(Client, PaneScreen)> {
         let waker = match &self.waker {
             Some(waker) => Arc::clone(waker),
             None => {
@@ -613,31 +636,43 @@ impl Embed {
             control_write,
         });
         let line = spec.line;
+        let needs_cwd = spec.needs_cwd;
         let worker = Arc::clone(&shared);
         let worker_master = Arc::clone(&master);
         thread::Builder::new()
             .name("embed-client".into())
-            .spawn(move || run_client(worker, worker_master, slave, line))?;
-        self.current = Some(Client { shared, master });
-        Ok(screen)
+            .spawn(move || run_client(worker, worker_master, slave, line, needs_cwd))?;
+        Ok((Client { shared, master }, screen))
     }
 
     /// Closes the current client, if any: the worker sends `SIGHUP` and reaps
     /// it, whatever the UI does meanwhile.
     pub fn close(&mut self) {
+        let client = self.current.take();
+        self.close_client(client);
+    }
+
+    /// Closes the shell, if any, as [`Embed::close`] does the client.
+    pub fn close_shell(&mut self) {
+        let client = self.shell.take();
+        self.close_client(client);
+    }
+
+    fn close_client(&mut self, client: Option<Client>) {
         self.closing.retain(|s| !s.done.load(Ordering::SeqCst));
-        if let Some(client) = self.current.take() {
+        if let Some(client) = client {
             client.shared.close.store(true, Ordering::SeqCst);
             poke(&client.shared.control_write);
             self.closing.push(client.shared);
         }
     }
 
-    /// Closes the client and waits up to `wait` for every closed one to be
+    /// Closes both children and waits up to `wait` for every closed one to be
     /// reaped: tower is exiting. What is left then ends with tower, whose
     /// exit closes the PTY.
     pub fn shutdown(&mut self, wait: Duration) {
         self.close();
+        self.close_shell();
         let deadline = Instant::now() + wait;
         while Instant::now() < deadline
             && self.closing.iter().any(|s| !s.done.load(Ordering::SeqCst))
@@ -649,54 +684,88 @@ impl Embed {
     /// Queues `bytes` for the PTY; never blocks.
     pub fn write(&self, bytes: &[u8]) {
         if let Some(client) = &self.current {
-            let mut queue = client.shared.queue();
-            if queue.len() + bytes.len() <= QUEUE_MAX {
-                queue.extend(bytes);
-            }
-            drop(queue);
-            poke(&client.shared.control_write);
+            client.write(bytes);
+        }
+    }
+
+    /// [`Embed::write`] for the shell.
+    pub fn write_shell(&self, bytes: &[u8]) {
+        if let Some(client) = &self.shell {
+            client.write(bytes);
         }
     }
 
     /// Resizes the PTY, which sends the child `SIGWINCH`, and the emulator.
     pub fn resize(&self, rows: u16, cols: u16) {
         if let Some(client) = &self.current {
-            let _ = set_winsize(client.master.as_raw_fd(), rows.max(1), cols.max(1));
-            client.shared.screen.set_size(rows, cols);
+            client.resize(rows, cols);
         }
     }
 
-    /// How the current client ended, if it did. It is then no longer current.
+    /// [`Embed::resize`] for the shell.
+    pub fn resize_shell(&self, rows: u16, cols: u16) {
+        if let Some(client) = &self.shell {
+            client.resize(rows, cols);
+        }
+    }
+
+    /// How a child ended, if one did. It is then no longer held.
     pub fn take_event(&mut self) -> Option<ClientEvent> {
-        let client = self.current.as_ref()?;
-        let event = client
-            .shared
-            .event
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()?;
-        self.current = None;
-        Some(event)
+        for slot in [&mut self.current, &mut self.shell] {
+            let event = slot.as_ref().and_then(|client| {
+                client
+                    .shared
+                    .event
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+            });
+            if event.is_some() {
+                *slot = None;
+                return event;
+            }
+        }
+        None
     }
 
     /// The clipboard writes waiting to go to the real terminal.
     pub fn take_clipboard(&self) -> Vec<Vec<u8>> {
-        match &self.current {
-            Some(client) => std::mem::take(
-                &mut *client
-                    .shared
-                    .clipboard
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()),
-            ),
-            None => Vec::new(),
+        [&self.current, &self.shell]
+            .into_iter()
+            .flatten()
+            .flat_map(|client| {
+                std::mem::take(
+                    &mut *client
+                        .shared
+                        .clipboard
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                )
+            })
+            .collect()
+    }
+}
+
+impl Client {
+    fn write(&self, bytes: &[u8]) {
+        let mut queue = self.shared.queue();
+        if queue.len() + bytes.len() <= QUEUE_MAX {
+            queue.extend(bytes);
         }
+        drop(queue);
+        poke(&self.shared.control_write);
+    }
+
+    fn resize(&self, rows: u16, cols: u16) {
+        let _ = set_winsize(self.master.as_raw_fd(), rows.max(1), cols.max(1));
+        self.shared.screen.set_size(rows, cols);
     }
 }
 
 impl Drop for Embed {
     fn drop(&mut self) {
         self.close();
+        self.close_shell();
     }
 }
 
@@ -734,8 +803,20 @@ fn spawn_child(mut line: CommandLine, slave: OwnedFd) -> io::Result<Child> {
 }
 
 /// Runs `line` in the PTY until it ends or tower closes it.
-fn run_client(shared: Arc<Shared>, master: Arc<OwnedFd>, slave: OwnedFd, line: CommandLine) {
+fn run_client(
+    shared: Arc<Shared>,
+    master: Arc<OwnedFd>,
+    slave: OwnedFd,
+    line: CommandLine,
+    needs_cwd: bool,
+) {
     let _done = WorkerDone(Arc::clone(&shared));
+    if needs_cwd && !line.cwd.as_ref().is_some_and(|dir| dir.is_dir()) {
+        shared.report(ClientEvent::FolderGone {
+            generation: shared.generation,
+        });
+        return;
+    }
     let program = line.program.clone();
     let mut child = match spawn_child(line, slave) {
         Ok(child) => child,

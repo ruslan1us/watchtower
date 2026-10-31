@@ -443,6 +443,14 @@ untested), and Claude Code's fullscreen view it relies on is a research preview
   it, a click on a group folds or unfolds it, and the wheel moves through the list.
 - `o`, start-and-attach in the new-session dialog and renaming a running session open it in the
   pane with the keys; `Ctrl+Z` or `F12` returns. A session just started opens when it is listed.
+- `!` opens a shell in the row's folder in the pane, on stopped rows too, without waking them. It
+  lives beside the Claude terminal and stays while you browse: `!` on its row toggles between the
+  two, `!` on another row replaces it, and `exit` returns to the list. `Ctrl+Z` and `F12` return to
+  the list here too, so `Ctrl+Z` is not the shell's job control. The pane has no scrollback or
+  text selection of its own: `Shift`+drag uses your terminal's.
+- A list that does not fit says so: `▲ 3 more` and `▼ 5 more`, which a click moves by a page. With
+  `[usage] show` on, each account's usage is fixed at the bar's bottom, and on Home with reset
+  times.
 - `Enter` gives the terminal the keys, and `●` clears then. Every key goes to Claude Code,
   `Ctrl+C` too, except `Ctrl+Z` and `F12`, which return to the list and stay attached. After
   10 minutes without the keys the terminal is released.

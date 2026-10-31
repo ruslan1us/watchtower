@@ -2,7 +2,8 @@
 //! the terminal over exactly as for an attach ([`attach::run_foreground`],
 //! doc/0005) and runs `$SHELL` (else `/bin/sh`) there, with no arguments
 //! and no variables of its own; when the shell exits, tower takes the
-//! terminal back and polls.
+//! terminal back and polls. In the workspace style the shell runs in the
+//! pane instead ([`crate::embed`], doc/0045), from [`command`] too.
 
 use std::ffi::OsStr;
 use std::io;

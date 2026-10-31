@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mou
 use ratatui::layout::{Position, Rect};
 
 use super::{
-    App, AttachRequest, Effect, Entry, Filter, Keep, Overlay, Purpose, Selected, Severity,
+    App, AttachRequest, Effect, Entry, Filter, Keep, Overlay, Purpose, Selected, Severity, row_key,
 };
 use crate::config::{Account, UiStyle};
 use crate::embed::{self, PaneScreen};
@@ -57,6 +57,28 @@ pub struct PaneOpen {
     pub cwd: PathBuf,
     pub rows: u16,
     pub cols: u16,
+}
+
+/// The workspace's shell to start ([`Effect::PaneShellOpen`]): `$SHELL` in the
+/// row's folder (doc/0037, doc/0045).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneShellOpen {
+    /// Names this shell in everything reported about it.
+    pub generation: u64,
+    pub dir: PathBuf,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// The one shell: it lives beside the Claude client and outlasts browsing.
+struct PaneShell {
+    /// The row it was opened on, by [`row_key`].
+    key: String,
+    /// The folder as shown to the user.
+    folder: String,
+    generation: u64,
+    screen: Option<PaneScreen>,
+    size: (u16, u16),
 }
 
 /// The client of the row the pane shows.
@@ -120,6 +142,13 @@ pub(super) struct PaneState {
     /// When the selection last changed.
     since: Option<Instant>,
     client: Option<PaneClient>,
+    shell: Option<PaneShell>,
+    /// On the shell's row the pane shows the shell, not what the row normally
+    /// shows; `!` there toggles this (doc/0045).
+    shell_shown: bool,
+    /// The keys are with the shell rather than the client, while the focus
+    /// is on the terminal.
+    focus_shell: bool,
     ended: Option<Ended>,
     held: Option<Held>,
     /// The pane's inside, as the renderer last drew it; `None` while it does
@@ -128,6 +157,8 @@ pub(super) struct PaneState {
     /// The list bar on the screen, and the list entry on each of its rows.
     bar: Option<Rect>,
     bar_rows: Vec<(u16, usize)>,
+    /// The rows of the hints that more is hidden above and below, for clicks.
+    bar_more: (Option<u16>, Option<u16>),
     /// Why no client can start; tower then draws the dashboard.
     failed: Option<String>,
     /// The short id whose checked attach `Enter` asked for (a stopped row, or
@@ -149,11 +180,15 @@ impl Default for PaneState {
             selected: None,
             since: None,
             client: None,
+            shell: None,
+            shell_shown: false,
+            focus_shell: false,
             ended: None,
             held: None,
             rect: None,
             bar: None,
             bar_rows: Vec::new(),
+            bar_more: (None, None),
             failed: None,
             wake: None,
             wanted: None,
@@ -210,14 +245,36 @@ impl App {
     /// Whether keys and paste go to the child now: no window takes them.
     pub fn pane_has_keys(&self) -> bool {
         self.pane.focus == PaneFocus::Terminal
-            && self.pane.client.is_some()
+            && (self.pane.client.is_some() || self.pane_shell_showing())
             && self.pane_active()
             && !self.window_open()
             && !self.filter.editing
     }
 
-    /// The screen to draw: the client's, or a failed client's last one.
+    /// Whether the pane shows the shell: its row is selected and `!` has not
+    /// toggled it away (doc/0045).
+    pub fn pane_shell_showing(&self) -> bool {
+        self.pane.shell_shown
+            && self.pane.shell.as_ref().is_some_and(|shell| {
+                self.selected_session()
+                    .is_some_and(|m| row_key(m) == shell.key)
+            })
+    }
+
+    /// The shell's folder as shown, while the pane shows it.
+    pub fn pane_shell_folder(&self) -> Option<&str> {
+        if !self.pane_shell_showing() {
+            return None;
+        }
+        self.pane.shell.as_ref().map(|shell| shell.folder.as_str())
+    }
+
+    /// The screen to draw: the shell's while it shows, else the client's, or a
+    /// failed client's last one.
     pub fn pane_screen(&self) -> Option<&PaneScreen> {
+        if self.pane_shell_showing() {
+            return self.pane.shell.as_ref().and_then(|s| s.screen.as_ref());
+        }
         match &self.pane.client {
             Some(client) => client.screen.as_ref(),
             None => self.pane.ended.as_ref().map(|e| &e.screen),
@@ -239,6 +296,9 @@ impl App {
 
     /// How the client whose last screen is shown ended.
     pub fn pane_ended_code(&self) -> Option<Option<i32>> {
+        if self.pane_shell_showing() {
+            return None;
+        }
         self.pane.ended.as_ref().map(|e| e.code)
     }
 
@@ -267,6 +327,12 @@ impl App {
     pub fn set_pane_bar(&mut self, bar: Rect, rows: Vec<(u16, usize)>) {
         self.pane.bar = Some(bar);
         self.pane.bar_rows = rows;
+        self.pane.bar_more = (None, None);
+    }
+
+    /// Set by the renderer: the rows of the `▲` and `▼` hints shown, for clicks.
+    pub fn set_pane_bar_more(&mut self, above: Option<u16>, below: Option<u16>) {
+        self.pane.bar_more = (above, below);
     }
 
     /// Called by the renderer while the workspace gives way to the dashboard
@@ -361,7 +427,18 @@ impl App {
                 self.pane.home = true;
                 self.pane.chosen = false;
             }
+            // The shell waits out a terminal too small to show it, not another
+            // style or a pane that cannot start.
+            let close_shell = (self.style != UiStyle::Workspace || self.pane.failed.is_some())
+                && self.pane.shell.is_some();
             let pane = &mut self.pane;
+            let mut effects = Vec::new();
+            if close_shell {
+                pane.shell = None;
+                pane.shell_shown = false;
+                effects.push(Effect::PaneShellClose);
+            }
+            pane.focus_shell = false;
             pane.focus = PaneFocus::List;
             pane.gesture = false;
             pane.selected = None;
@@ -370,14 +447,15 @@ impl App {
             pane.held = None;
             pane.wake = None;
             pane.wanted = None;
-            return match pane.client.take() {
-                Some(_) => vec![Effect::PaneClose],
-                None => Vec::new(),
-            };
+            if pane.client.take().is_some() {
+                effects.push(Effect::PaneClose);
+            }
+            return effects;
         }
         // The pane has the logs panel's place, and more (doc/0045).
         self.logs = None;
         let mut effects = self.pane_open_wanted(now);
+        effects.extend(self.pane_shell_tick());
         let key = self
             .selected_session()
             .and_then(|m| m.session.key())
@@ -416,8 +494,13 @@ impl App {
             .since
             .is_some_and(|at| now.saturating_duration_since(at) >= ATTACH_DEBOUNCE);
         // Home closes nothing: a client stays, hidden, until the selection
-        // picks another row or the release below (doc/0045).
-        if rested && !self.pane_home() && self.pane_client_key().map(str::to_owned) != key {
+        // picks another row or the release below (doc/0045). The same while
+        // the pane shows the shell, which needs no client.
+        if rested
+            && !self.pane_home()
+            && !self.pane_shell_showing()
+            && self.pane_client_key().map(str::to_owned) != key
+        {
             match self.pane_auto_row() {
                 Some(row) => effects.push(self.pane_start(row, now)),
                 None => {
@@ -427,8 +510,9 @@ impl App {
                 }
             }
         }
+        let client_has_keys = self.pane.focus == PaneFocus::Terminal && !self.pane.focus_shell;
         if let Some(client) = &mut self.pane.client {
-            if self.pane.focus == PaneFocus::Terminal {
+            if client_has_keys {
                 client.last_keys = now;
             } else if now.saturating_duration_since(client.last_keys) >= RELEASE_AFTER {
                 let key = client.key.clone();
@@ -442,7 +526,7 @@ impl App {
         }
         // The row whose terminal has the keys is being looked at: what it
         // asks now is seen, as after an attach (doc/0007).
-        if self.pane.focus == PaneFocus::Terminal
+        if client_has_keys
             && let Some(key) = self.pane_client_key().map(str::to_owned)
             && self.acknowledge(&key)
         {
@@ -456,6 +540,7 @@ impl App {
     pub fn pane_wait(&self, now: Instant) -> Option<Duration> {
         if !self.pane_active()
             || self.pane_home()
+            || self.pane_shell_showing()
             || self.pane_client_key() == self.pane.selected.as_deref()
         {
             return None;
@@ -468,6 +553,12 @@ impl App {
 
     /// [`Effect::PaneOpen`] has started: the client's screen.
     pub fn pane_opened(&mut self, generation: u64, screen: PaneScreen) {
+        if let Some(shell) = &mut self.pane.shell
+            && shell.generation == generation
+        {
+            shell.screen = Some(screen);
+            return;
+        }
         if let Some(client) = &mut self.pane.client
             && client.generation == generation
         {
@@ -478,6 +569,13 @@ impl App {
     /// No client could be started: tower falls back to the dashboard until it
     /// restarts (doc/0045).
     pub fn pane_start_failed(&mut self, generation: u64, error: &str) {
+        if let Some(shell) = self.pane_take_shell(generation) {
+            self.set_message(
+                format!("no shell started in {}: {error}", shell.folder),
+                Severity::Error,
+            );
+            return;
+        }
         if self
             .pane
             .client
@@ -499,6 +597,23 @@ impl App {
     /// polled and not attached again until asked. A failed client's last
     /// screen stays until the selection moves, with its error text.
     pub fn pane_exited(&mut self, generation: u64, code: Option<i32>) -> Vec<Effect> {
+        if let Some(shell) = self.pane_take_shell(generation) {
+            let folder = shell.folder;
+            match code {
+                Some(0) => {
+                    self.set_message(format!("back from the shell in {folder}"), Severity::Info);
+                }
+                Some(code) => self.set_message(
+                    format!("the shell in {folder} exited with code {code}"),
+                    Severity::Warning,
+                ),
+                None => self.set_message(
+                    format!("the shell in {folder} was ended by a signal"),
+                    Severity::Warning,
+                ),
+            }
+            return vec![Effect::PollNow];
+        }
         let Some(client) = self.pane.client.take_if(|c| c.generation == generation) else {
             return Vec::new();
         };
@@ -648,6 +763,15 @@ impl App {
         }
         self.pane.ended = None;
         self.pane.held = None;
+        // Claude's terminal was asked for: it shows instead of this row's shell.
+        if self
+            .pane
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.key == key)
+        {
+            self.pane.shell_shown = false;
+        }
         // From the list, so an existing client hears that it has the focus.
         self.pane.focus = PaneFocus::List;
         effects.extend(self.pane_focus_terminal());
@@ -723,6 +847,117 @@ impl App {
         self.pane_open_row(&key, &wanted.request, now)
     }
 
+    // ---- the shell (doc/0037, doc/0045) ------------------------------------------
+
+    /// `!` on the selected row, whose folder is `dir`: toggles the pane between
+    /// its shell and what the row normally shows, or opens a shell here, ending
+    /// the one on another row. Tower does nothing to the session itself.
+    pub(super) fn pane_shell(&mut self, dir: PathBuf, folder: String) -> Vec<Effect> {
+        let Some(key) = self.selected_session().map(row_key) else {
+            return Vec::new();
+        };
+        if self.pane.shell.as_ref().is_some_and(|s| s.key == key) {
+            self.pane.shell_shown = !self.pane.shell_shown;
+            return if self.pane.shell_shown {
+                self.pane_focus_terminal()
+            } else {
+                Vec::new()
+            };
+        }
+        let mut effects = Vec::new();
+        if let Some(old) = self.pane.shell.take() {
+            self.set_message(
+                format!("closed the shell in {}; a new one in {folder}", old.folder),
+                Severity::Info,
+            );
+            effects.push(Effect::PaneShellClose);
+        }
+        self.pane.generations += 1;
+        let generation = self.pane.generations;
+        let (rows, cols) = self.pane.rect.map_or((1, 1), |r| (r.height, r.width));
+        self.pane.shell = Some(PaneShell {
+            key,
+            folder,
+            generation,
+            screen: None,
+            size: (rows, cols),
+        });
+        self.pane.shell_shown = true;
+        effects.push(Effect::PaneShellOpen(PaneShellOpen {
+            generation,
+            dir,
+            rows,
+            cols,
+        }));
+        effects.extend(self.pane_focus_terminal());
+        effects
+    }
+
+    /// Forgets the shell of `generation` and gives the list the keys if it had
+    /// them; the pane goes back to what the row normally shows.
+    fn pane_take_shell(&mut self, generation: u64) -> Option<PaneShell> {
+        let shell = self
+            .pane
+            .shell
+            .take_if(|shell| shell.generation == generation)?;
+        self.pane.shell_shown = false;
+        if self.pane.focus_shell {
+            self.pane.focus_shell = false;
+            self.pane.focus = PaneFocus::List;
+            self.pane.gesture = false;
+        }
+        Some(shell)
+    }
+
+    /// The shell's folder is gone: nothing started (doc/0037).
+    pub fn pane_shell_folder_gone(&mut self, generation: u64) {
+        if let Some(shell) = self.pane_take_shell(generation) {
+            self.set_message(
+                format!("{} no longer exists; no shell started", shell.folder),
+                Severity::Warning,
+            );
+        }
+    }
+
+    /// The shell follows the pane's size, and ends with its row.
+    fn pane_shell_tick(&mut self) -> Vec<Effect> {
+        let Some(shell) = &self.pane.shell else {
+            return Vec::new();
+        };
+        if !self.sessions.iter().any(|m| row_key(m) == shell.key) {
+            let (generation, folder) = (shell.generation, shell.folder.clone());
+            self.pane_take_shell(generation);
+            self.set_message(
+                format!("closed the shell in {folder}: its session is gone"),
+                Severity::Info,
+            );
+            return vec![Effect::PaneShellClose];
+        }
+        let Some(rect) = self.pane.rect else {
+            return Vec::new();
+        };
+        let size = (rect.height, rect.width);
+        match &mut self.pane.shell {
+            Some(shell) if shell.size != size => {
+                shell.size = size;
+                vec![Effect::PaneShellResize {
+                    rows: size.0,
+                    cols: size.1,
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `bytes` for the child that has the keys.
+    fn pane_write(&self, bytes: Vec<u8>) -> Effect {
+        if self.pane.focus_shell {
+            Effect::PaneShellWrite(bytes)
+        } else {
+            Effect::PaneWrite(bytes)
+        }
+    }
+
     // ---- a rename through the pane's client (doc/0027) ------------------------
 
     /// Whether a rename through an attach goes on in the pane's client.
@@ -790,6 +1025,9 @@ impl App {
             self.set_message("choose a session first: ↓ or a click", Severity::Info);
             return Vec::new();
         }
+        if self.pane_shell_showing() {
+            return self.pane_focus_terminal();
+        }
         let now = Instant::now();
         let Some(m) = self.selected_session() else {
             return Vec::new();
@@ -828,6 +1066,14 @@ impl App {
             return effects;
         }
         self.pane.focus = PaneFocus::Terminal;
+        self.pane.focus_shell = self.pane_shell_showing();
+        if self.pane.focus_shell {
+            // The shell is no answer to what a row asks: `●` stays.
+            if self.pane_screen().is_some_and(PaneScreen::focus_events) {
+                effects.push(Effect::PaneShellWrite(b"\x1b[I".to_vec()));
+            }
+            return effects;
+        }
         if let Some(client) = &self.pane.client
             && client.screen.as_ref().is_some_and(PaneScreen::focus_events)
         {
@@ -848,6 +1094,19 @@ impl App {
             return Vec::new();
         }
         self.pane.focus = PaneFocus::List;
+        if std::mem::take(&mut self.pane.focus_shell) {
+            let events = self
+                .pane
+                .shell
+                .as_ref()
+                .and_then(|shell| shell.screen.as_ref())
+                .is_some_and(PaneScreen::focus_events);
+            return if events {
+                vec![Effect::PaneShellWrite(b"\x1b[O".to_vec())]
+            } else {
+                Vec::new()
+            };
+        }
         let Some(client) = &mut self.pane.client else {
             return Vec::new();
         };
@@ -879,7 +1138,7 @@ impl App {
         if bytes.is_empty() {
             Vec::new()
         } else {
-            vec![Effect::PaneWrite(bytes)]
+            vec![self.pane_write(bytes)]
         }
     }
 
@@ -890,7 +1149,7 @@ impl App {
     pub fn handle_paste(&mut self, text: &str) -> Vec<Effect> {
         if self.pane_has_keys() {
             let bracketed = self.pane_screen().is_some_and(PaneScreen::bracketed_paste);
-            return vec![Effect::PaneWrite(embed::encode_paste(text, bracketed))];
+            return vec![self.pane_write(embed::encode_paste(text, bracketed))];
         }
         if !self.window_open() && !self.filter.editing {
             return Vec::new();
@@ -933,7 +1192,7 @@ impl App {
                 return effects;
             }
             // Home hides the client, so the press does not reach it.
-            if self.pane.client.is_some() && !self.pane_home() {
+            if (self.pane.client.is_some() || self.pane_shell_showing()) && !self.pane_home() {
                 effects.extend(self.pane_focus_terminal());
             }
         }
@@ -978,7 +1237,7 @@ impl App {
         let x = mouse.column.clamp(rect.x, rect.right() - 1) - rect.x + 1;
         let y = mouse.row.clamp(rect.y, rect.bottom() - 1) - rect.y + 1;
         if let Some(bytes) = embed::encode_mouse(mouse.kind, mouse.modifiers, x, y) {
-            effects.push(Effect::PaneWrite(bytes));
+            effects.push(self.pane_write(bytes));
         }
         effects
     }
@@ -992,6 +1251,16 @@ impl App {
         };
         if at.y == bar.y {
             self.pane_go_home();
+            return;
+        }
+        // The hints move a page, as the page keys do.
+        let page = self.page_size.max(1) as isize;
+        if self.pane.bar_more.0 == Some(at.y) {
+            self.move_by(-page);
+            return;
+        }
+        if self.pane.bar_more.1 == Some(at.y) {
+            self.move_by(page);
             return;
         }
         let entry = self

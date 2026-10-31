@@ -1403,15 +1403,14 @@ fn the_viewport_and_the_page_keys_match_the_gap() {
 
 #[test]
 fn a_selected_card_at_the_bottom_does_not_move_the_list_when_only_its_gap_is_cut() {
-    // 40 rows less the footer and the title row; a header and medium cards
-    // with their gaps: the last whole card ends on the last row when the list
-    // is `1 + 4 n` rows high and needs no scrolling to be selected.
+    // The footer, the title row and the two hints' rows, then a header and six
+    // medium cards with their gaps: the sixth ends on the list's last row.
     let mut app = app_with(&many(40), "", "");
-    let h = 1 + 4 * 6 - 1 + 2;
+    let h = 4 + 1 + 6 * 3 + 5;
     let lines = bar(&mut app, h);
     let name = "row-05";
     let top = y_of(&lines, name);
-    assert_eq!(top + 3, usize::from(h) - 1, "{lines:#?}");
+    assert_eq!(top + 3, usize::from(h) - 2, "{lines:#?}");
     app.handle_mouse(mouse(DOWN, 3, top as u16));
     assert_eq!(selected(&app).as_deref(), Some(name));
     let after = bar(&mut app, h);
@@ -1446,11 +1445,11 @@ fn cards_that_fit(size: &str, gap: u16, w: u16, h: u16) -> usize {
 fn the_fit_counts_of_the_decision_hold() {
     for (size, gap, wide, narrow) in [
         ("large", 1, 8, 5),
-        ("medium", 1, 10, 7),
-        ("small", 1, 14, 9),
-        ("large", 0, 10, 7),
-        ("medium", 0, 14, 9),
-        ("small", 0, 21, 14),
+        ("medium", 1, 10, 6),
+        ("small", 1, 13, 9),
+        ("large", 0, 10, 6),
+        ("medium", 0, 13, 8),
+        ("small", 0, 20, 13),
     ] {
         assert_eq!(
             cards_that_fit(size, gap, 200, 50),
@@ -1882,6 +1881,752 @@ fn a_rename_that_did_not_happen_gets_the_note_and_a_failed_client_drops_it() {
         "{}",
         status_text(&app)
     );
+}
+
+// ---- the usage block -----------------------------------------------------------------
+
+const TWO_ACCOUNTS: &str = "[[accounts]]\nname = \"alt\"\ncommand = \"claude-alt\"\n\
+                            config_dir = \"~/.claude-alt\"\n";
+
+fn usage_app(text: &str, ui: &str) -> App {
+    let mut app = app_with(text, ui, &format!("{TWO_ACCOUNTS}[usage]\nshow = true\n"));
+    app.clock = Clock::UTC;
+    app
+}
+
+fn usage_in(app: &mut App, account: &str, result: Result<Probed, String>, ago_s: i64) {
+    app.usage_received(account, result, Instant::now(), NOW_MS - ago_s * 1000);
+}
+
+#[test]
+fn the_usage_block_is_at_the_bars_bottom_while_it_is_on() {
+    let mut app = usage_app(&listing(), "");
+    usage_in(&mut app, "main", Ok(plan(24.0, 12.0)), 0);
+    usage_in(&mut app, "alt", Ok(plan(5.0, 30.0)), 0);
+    let lines = bar(&mut app, 40);
+    // The footer is the last of the 40 rows.
+    assert!(lines[36].starts_with("─ usage ─"), "{lines:#?}");
+    assert!(
+        lines[37].contains("main") && lines[37].contains("5h 24% · 7d 12%"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[38].contains("alt") && lines[38].contains("5h 5% · 7d 30%"),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines[37].contains("resets"),
+        "reset times stay on Home: {}",
+        lines[37]
+    );
+    // Off: no space, no rows.
+    let mut app = app_with(&listing(), "", TWO_ACCOUNTS);
+    let lines = bar(&mut app, 40);
+    assert!(!lines.iter().any(|l| l.contains("usage")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("5h")), "{lines:#?}");
+}
+
+#[test]
+fn the_usage_blocks_rows_read_as_on_home_stale_dim_and_waiting_or_missing() {
+    let mut app = usage_app(&listing(), "");
+    // Before the first answer.
+    let lines = bar(&mut app, 40);
+    assert!(
+        lines[37].contains("main") && lines[37].contains('…'),
+        "{}",
+        lines[37]
+    );
+    // A failed probe with nothing known, and a stale value dimmed.
+    usage_in(&mut app, "main", Err("no answer".into()), 0);
+    usage_in(&mut app, "alt", Ok(plan(5.0, 30.0)), 3 * 3600);
+    let buf = render(&mut app, 160, 40);
+    let lines = bar_of(&text_of(&buf), 28);
+    assert!(lines[37].contains('—'), "{}", lines[37]);
+    assert!(lines[38].contains("5h 5%"), "{}", lines[38]);
+    let x = lines[38]
+        .find("5h")
+        .map(|b| lines[38][..b].chars().count())
+        .unwrap();
+    assert_eq!(
+        buf[(x as u16, 38)].fg,
+        Color::Rgb(138, 138, 138),
+        "dim: {}",
+        lines[38]
+    );
+}
+
+#[test]
+fn the_usage_block_drops_the_week_before_cutting_anything() {
+    let long = "[[accounts]]\nname = \"a-very-long-account-name\"\ncommand = \"claude-alt\"\n\
+                config_dir = \"~/.claude-alt\"\n[usage]\nshow = true\n";
+    let mut app = app_with(&listing(), "list_width = 20", long);
+    usage_in(&mut app, "main", Ok(plan(24.0, 12.0)), 0);
+    usage_in(&mut app, "a-very-long-account-name", Ok(plan(5.0, 30.0)), 0);
+    let lines = bar_of(&draw(&mut app, 160, 40), 20);
+    let main = &lines[37];
+    let other = &lines[38];
+    assert_eq!(main.chars().count(), 20);
+    // 20 cells hold the name column, so the week has gone from both; the long
+    // name alone is cut, with `…`, and its number stays.
+    assert!(main.contains("5h 24%") && !main.contains("7d"), "{main}");
+    assert!(other.contains("5h 5%") && !other.contains("7d"), "{other}");
+    assert!(other.contains('…'), "{other}");
+    // Room for all of it: nothing goes.
+    let mut app = app_with(&listing(), "list_width = 40", long);
+    usage_in(&mut app, "main", Ok(plan(24.0, 12.0)), 0);
+    usage_in(&mut app, "a-very-long-account-name", Ok(plan(5.0, 30.0)), 0);
+    let lines = bar_of(&draw(&mut app, 160, 40), 40);
+    assert!(lines[37].contains("5h 24% · 7d 12%"), "{}", lines[37]);
+}
+
+#[test]
+fn cards_never_overlap_the_usage_block_and_clicks_and_pages_use_the_smaller_list() {
+    let accounts = format!("{TWO_ACCOUNTS}[usage]\nshow = true\n");
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+        let mut app = app_with(&many(40), &format!("card_size = \"{size}\""), &accounts);
+        usage_in(&mut app, "main", Ok(plan(24.0, 12.0)), 0);
+        usage_in(&mut app, "alt", Ok(plan(5.0, 30.0)), 0);
+        let lines = bar(&mut app, 30);
+        // The block's 3 rows end on row 28; the hint is above it.
+        assert!(lines[26].starts_with("─ usage"), "{size}: {lines:#?}");
+        assert!(
+            lines[25].trim().is_empty() || lines[25].contains('▼'),
+            "{size}: {}",
+            lines[25]
+        );
+        app.handle_key(key(KeyCode::Down));
+        for _ in 0..39 {
+            let lines = bar(&mut app, 30);
+            let name = selected(&app).unwrap();
+            let top = y_of(&lines, &name);
+            assert!(top + rows <= 25, "{size}: {name} at {top}\n{lines:#?}");
+            assert!(lines[26].starts_with("─ usage"), "{size}: {lines:#?}");
+            app.handle_key(key(KeyCode::Down));
+        }
+        // A click on the block selects nothing.
+        let before = app.selected_entry();
+        for y in 26..29 {
+            app.handle_mouse(mouse(DOWN, 3, y));
+            assert_eq!(app.selected_entry(), before, "{size}: row {y}");
+        }
+    }
+}
+
+#[test]
+fn a_short_list_hides_the_usage_block_rather_than_the_cards() {
+    // Eight accounts need 9 rows: at 24 rows only 13 would be left for the
+    // list... and at 21 rows it goes. The workspace's minimum is 24, so many
+    // accounts stand in for few rows.
+    let mut accounts = String::new();
+    for k in 0..11 {
+        accounts.push_str(&format!(
+            "[[accounts]]\nname = \"acct{k}\"\ncommand = \"claude-{k}\"\n\
+             config_dir = \"~/.claude-{k}\"\n"
+        ));
+    }
+    accounts.push_str("[usage]\nshow = true\n");
+    let mut app = app_with(&many(40), "", &accounts);
+    let lines = bar(&mut app, 24);
+    assert!(
+        !lines.iter().any(|l| l.contains("─ usage")),
+        "hidden: {lines:#?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("row-")), "{lines:#?}");
+    // With rows to spare it is back.
+    let lines = bar(&mut app, 40);
+    assert!(lines.iter().any(|l| l.contains("─ usage")), "{lines:#?}");
+}
+
+#[test]
+fn home_keeps_the_reset_times() {
+    let mut app = usage_app(&listing(), "");
+    let in_two_hours = NOW_MS + 2 * 3_600_000;
+    let mut probed = plan(24.0, 12.0);
+    for limit in &mut probed.usage.as_mut().unwrap().limits {
+        limit.resets_at_ms = Some(in_two_hours);
+    }
+    usage_in(&mut app, "main", Ok(probed), 0);
+    let text = draw(&mut app, 160, 40);
+    let home = text
+        .lines()
+        .find(|l| l.contains("5h 24% · resets"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(home.contains("7d 12% · resets"), "{home}");
+    let bar = bar_of(&text, 28);
+    assert!(!bar.iter().any(|l| l.contains("resets")), "{bar:#?}");
+}
+
+// ---- the list scrolls ----------------------------------------------------------------
+
+#[test]
+fn hints_say_what_is_hidden_on_rows_that_do_not_move() {
+    let mut app = app_with(&many(40), "", "");
+    let lines = bar(&mut app, 30);
+    // 28 rows less the title: one header, then cards every 4 rows.
+    assert!(
+        lines[1].trim().is_empty(),
+        "nothing above yet: {}",
+        lines[1]
+    );
+    let below = &lines[28];
+    assert!(below.contains('▼') && below.contains("more"), "{below}");
+    let hidden: usize = below
+        .split_whitespace()
+        .find_map(|w| w.parse().ok())
+        .unwrap();
+    let shown = lines.iter().filter(|l| l.contains("row-")).count();
+    assert_eq!(hidden + shown, 40, "{below}");
+    app.handle_key(key(KeyCode::End));
+    let lines = bar(&mut app, 30);
+    let above = &lines[1];
+    assert!(above.contains('▲') && above.contains("more"), "{above}");
+    let hidden: usize = above
+        .split_whitespace()
+        .find_map(|w| w.parse().ok())
+        .unwrap();
+    let shown = lines.iter().filter(|l| l.contains("row-")).count();
+    assert_eq!(hidden + shown, 40, "{above}");
+    assert!(lines[28].trim().is_empty(), "nothing below: {}", lines[28]);
+    // Dim, and the same rows in between.
+    app.handle_key(key(KeyCode::Home));
+    for _ in 0..20 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    let buf = render(&mut app, 160, 30);
+    let lines = bar_of(&text_of(&buf), 28);
+    assert!(
+        lines[1].contains('▲') && lines[28].contains('▼'),
+        "{lines:#?}"
+    );
+    assert_eq!(buf[(1, 1)].fg, Color::Rgb(138, 138, 138));
+    assert_eq!(buf[(1, 28)].fg, Color::Rgb(138, 138, 138));
+}
+
+#[test]
+fn a_hint_counts_groups_when_only_folded_ones_are_hidden() {
+    let mut rows: Vec<String> = (0..12)
+        .map(|k| {
+            row(
+                &format!("b{k:07}"),
+                &format!("row-{k:02}"),
+                "demo",
+                BUSY,
+                "working",
+            )
+        })
+        .collect();
+    rows.push(row("dddd4444", "sleeps", "infra", "", "done"));
+    let text = format!("[{}]", rows.join(","));
+    let found = (24..60).any(|h| {
+        let mut app = app_with(&text, "", "");
+        common::select_name(&mut app, "row-11");
+        bar(&mut app, h)
+            .iter()
+            .any(|l| l.contains("▼ 1 more group"))
+    });
+    assert!(found, "the folded group below the last card");
+}
+
+#[test]
+fn no_hints_and_no_reserved_rows_when_the_list_fits() {
+    let mut app = app_with(&listing(), "", "");
+    let lines = bar(&mut app, 40);
+    assert!(!lines.iter().any(|l| l.contains('▲') || l.contains('▼')));
+    assert_eq!(y_of(&lines, "Needs me"), 1, "{lines:#?}");
+}
+
+#[test]
+fn a_click_on_a_hint_moves_a_page() {
+    let mut app = app_with(&many(40), "", "");
+    let lines = bar(&mut app, 30);
+    let shown = lines.iter().filter(|l| l.contains("row-")).count();
+    app.handle_key(key(KeyCode::Down));
+    let first = app.selected_entry().unwrap();
+    bar(&mut app, 30);
+    app.handle_mouse(mouse(DOWN, 3, 28));
+    let after = app.selected_entry().unwrap();
+    assert!(after > first, "down a page");
+    assert!(after - first <= shown + 1, "{after} from {first}");
+    bar(&mut app, 30);
+    app.handle_mouse(mouse(DOWN, 3, 1));
+    assert!(app.selected_entry().unwrap() < after, "up a page");
+    // A blank hint row is nobody's.
+    let mut app = app_with(&many(40), "", "");
+    bar(&mut app, 30);
+    app.handle_mouse(mouse(DOWN, 3, 1));
+    assert!(app.pane_home());
+}
+
+/// 60 sessions across the state groups, none of them folded.
+fn sixty() -> String {
+    let kinds = [
+        (ASKS, "blocked"),
+        (BUSY, "working"),
+        (IDLE, "done"),
+        (r#""pid": 4103, "status": "idle","#, "failed"),
+    ];
+    let rows: Vec<String> = (0..60)
+        .map(|k| {
+            let (process, state) = kinds[k % kinds.len()];
+            row(
+                &format!("c{k:07}"),
+                &format!("many-{k:02}"),
+                "demo",
+                process,
+                state,
+            )
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
+#[test]
+fn sixty_sessions_stay_usable_at_every_size() {
+    for (size, rows) in [("large", 4usize), ("medium", 3), ("small", 2)] {
+        let at = |what: &str| format!("{size}: {what}");
+        let mut app = app_with(&sixty(), &format!("card_size = \"{size}\""), "");
+        draw(&mut app, 200, 50);
+        // Down the whole list: the selection is always whole on the screen.
+        app.handle_key(key(KeyCode::Down));
+        for _ in 0..70 {
+            let lines = bar_of(&draw(&mut app, 200, 50), 36);
+            if let Some(name) = selected(&app) {
+                let top = y_of(&lines, &name);
+                assert!(top + rows <= 48, "{} at {top}", at(&name));
+                assert!(top >= 1, "{}", at(&name));
+            } else {
+                let title = app.selected_header().unwrap().title().to_owned();
+                y_of(&lines, &title);
+            }
+            app.handle_key(key(KeyCode::Down));
+        }
+        // `G` and `g` reach the ends.
+        app.handle_key(ch('G'));
+        let lines = bar_of(&draw(&mut app, 200, 50), 36);
+        assert!(!lines.iter().any(|l| l.contains('▼')), "{}", at("the end"));
+        assert!(lines.iter().any(|l| l.contains('▲')), "{}", at("the end"));
+        y_of(&lines, &selected(&app).unwrap());
+        app.handle_key(ch('g'));
+        assert_eq!(app.selected_entry(), Some(0));
+        let lines = bar_of(&draw(&mut app, 200, 50), 36);
+        assert!(!lines.iter().any(|l| l.contains('▲')), "{}", at("the top"));
+        assert!(lines.iter().any(|l| l.contains('▼')), "{}", at("the top"));
+        // Folding every group fits the list, and the hints go.
+        loop {
+            let header = app.selected_header().is_some();
+            assert!(header);
+            let open = app.entries().iter().any(|e| {
+                matches!(
+                    e,
+                    watchtower::app::Entry::Header {
+                        collapsed: false,
+                        ..
+                    }
+                )
+            });
+            if !open {
+                break;
+            }
+            app.handle_key(key(KeyCode::Tab));
+            app.handle_key(key(KeyCode::Down));
+            while app.selected_header().is_none() {
+                app.handle_key(key(KeyCode::Down));
+            }
+            let collapsed = matches!(
+                app.entries()[app.selected_entry().unwrap()],
+                watchtower::app::Entry::Header {
+                    collapsed: true,
+                    ..
+                }
+            );
+            if collapsed && app.selected_entry().unwrap() + 1 >= app.entries().len() {
+                break;
+            }
+        }
+        let lines = bar_of(&draw(&mut app, 200, 50), 36);
+        assert!(
+            !lines.iter().any(|l| l.contains('▼')),
+            "{}\n{lines:#?}",
+            at("folded")
+        );
+    }
+}
+
+#[test]
+fn a_fast_wheel_attaches_once_after_it_settles() {
+    for size in ["large", "medium", "small"] {
+        let mut app = app_with(&sixty(), &format!("card_size = \"{size}\""), "");
+        draw(&mut app, 200, 50);
+        let mut t = Instant::now();
+        let wheel = |app: &mut App| app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 10));
+        let mut opens = 0;
+        // Notches faster than the rest, across many rows.
+        for _ in 0..40 {
+            assert!(!opened(&wheel(&mut app)));
+            let effects = app.pane_tick(t);
+            opens += usize::from(opened(&effects));
+            draw(&mut app, 200, 50);
+            t += ATTACH_DEBOUNCE / 3;
+        }
+        assert_eq!(opens, 0, "{size}: nothing while it moves");
+        let settled = t + ATTACH_DEBOUNCE;
+        let effects = app.pane_tick(settled);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::PaneOpen(_)))
+                .count(),
+            1,
+            "{size}: {effects:?}"
+        );
+        let id = the_open(&effects).id;
+        let row = app.selected_session().unwrap();
+        assert_eq!(
+            row.session.id.as_deref(),
+            Some(id.as_str()),
+            "{size}: the row it stopped on"
+        );
+        assert!(
+            !opened(&app.pane_tick(settled + ATTACH_DEBOUNCE)),
+            "{size}: once"
+        );
+    }
+}
+
+// ---- the shell in the pane -----------------------------------------------------------
+
+fn shell_open(effects: &[Effect]) -> watchtower::app::PaneShellOpen {
+    effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::PaneShellOpen(open) => Some(open.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no shell in {effects:?}"))
+}
+
+/// `!` on `name`, with the shell's screen reported: its generation and screen.
+fn shell_on(app: &mut App, name: &str) -> (u64, PaneScreen) {
+    common::select_name(app, name);
+    let open = shell_open(&app.handle_key(ch('!')));
+    assert!(open.dir.ends_with(if name == "builds" {
+        "billing-ui"
+    } else {
+        "web"
+    }));
+    let screen = PaneScreen::new(open.rows, open.cols);
+    screen.feed(b"SHELL SCREEN");
+    app.pane_opened(open.generation, screen.clone());
+    (open.generation, screen)
+}
+
+#[test]
+fn bang_opens_the_shell_in_the_pane_with_the_keys_beside_the_client() {
+    let (mut app, t) = attached_to("builds");
+    let (generation, screen) = shell_on(&mut app, "builds");
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(app.pane_has_keys());
+    assert!(app.pane_client_key().is_some(), "the client stays");
+    let text = draw(&mut app, 160, 40);
+    assert!(text.contains("shell  ~/workspace/billing-ui"), "{text}");
+    assert!(text.contains("keyboard here"), "{text}");
+    assert!(text.contains("SHELL SCREEN"), "{text}");
+    // Keys go to the shell, not the client.
+    assert_eq!(
+        app.handle_key(ch('x')),
+        [Effect::PaneShellWrite(b"x".to_vec())]
+    );
+    assert_eq!(
+        app.handle_key(ctrl('c')),
+        [Effect::PaneShellWrite(b"\x03".to_vec())]
+    );
+    assert_eq!(
+        app.handle_paste("hi"),
+        [Effect::PaneShellWrite(b"hi".to_vec())]
+    );
+    // Ctrl+Z and F12 are tower's, here too: never the shell's job control.
+    let effects = app.handle_key(ctrl('z'));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::PaneShellWrite(_))),
+        "{effects:?}"
+    );
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.pane_focus(),
+        PaneFocus::Terminal,
+        "Enter returns to the shell"
+    );
+    assert!(app.handle_key(key(KeyCode::F(12))).is_empty());
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    // A focus report and the size go to the shell.
+    screen.feed(b"\x1b[?1004h");
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        [Effect::PaneShellWrite(b"\x1b[I".to_vec())]
+    );
+    assert_eq!(
+        app.handle_key(ctrl('z')),
+        [Effect::PaneShellWrite(b"\x1b[O".to_vec())]
+    );
+    draw(&mut app, 140, 40);
+    let effects = app.pane_tick(t);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::PaneShellResize { .. })),
+        "{effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::PaneResize { .. })),
+        "{effects:?}"
+    );
+    assert!(generation > 0);
+}
+
+#[test]
+fn bang_toggles_between_the_shell_and_what_the_row_shows() {
+    let (mut app, t) = attached_to("builds");
+    shell_on(&mut app, "builds");
+    app.handle_key(ctrl('z'));
+    // To Claude: the list keeps the keys.
+    assert!(app.handle_key(ch('!')).is_empty());
+    assert!(!app.pane_shell_showing());
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    let text = draw(&mut app, 160, 40);
+    assert!(!text.contains("SHELL SCREEN"), "{text}");
+    assert!(text.contains("view only"), "{text}");
+    assert!(!opened(&app.pane_tick(t)), "the client was there all along");
+    // Back to the shell, with the keys, and no second shell.
+    let effects = app.handle_key(ch('!'));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::PaneShellOpen(_))),
+        "{effects:?}"
+    );
+    assert!(app.pane_shell_showing());
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(draw(&mut app, 160, 40).contains("SHELL SCREEN"));
+}
+
+#[test]
+fn the_shell_outlives_browsing_and_shows_again_on_its_row() {
+    let mut app = at_home();
+    let (_generation, _screen) = shell_on(&mut app, "builds");
+    let t = Instant::now();
+    app.pane_tick(t);
+    // Its row needs no client while the shell shows.
+    assert!(!opened(&app.pane_tick(t + ATTACH_DEBOUNCE)));
+    assert_eq!(app.pane_wait(t), None, "no timer either");
+    app.handle_key(ctrl('z'));
+    // Another row: it attaches as usual, the shell stays.
+    common::select_name(&mut app, "reviews");
+    assert!(!app.pane_shell_showing());
+    let effects = app.pane_tick(t);
+    assert!(!effects.contains(&Effect::PaneShellClose), "{effects:?}");
+    let effects = app.pane_tick(t + ATTACH_DEBOUNCE * 2);
+    let open = the_open(&effects);
+    assert_eq!(open.id, "cccc3333");
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+    assert!(!draw(&mut app, 160, 40).contains("SHELL SCREEN"));
+    // Back: the shell shows, the keys stay with the list.
+    common::select_name(&mut app, "builds");
+    assert!(app.pane_shell_showing());
+    assert!(
+        app.pane_tick(t + ATTACH_DEBOUNCE * 2)
+            .iter()
+            .all(|e| !matches!(e, Effect::PaneShellOpen(_)))
+    );
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(draw(&mut app, 160, 40).contains("SHELL SCREEN"));
+    // Home hides it too, and comes back.
+    app.handle_key(ch('h'));
+    assert!(!app.pane_shell_showing());
+    app.handle_key(key(KeyCode::Down));
+    assert!(app.pane_shell_showing());
+}
+
+#[test]
+fn bang_on_another_row_closes_the_old_shell_with_a_note() {
+    let mut app = at_home();
+    shell_on(&mut app, "builds");
+    app.handle_key(ctrl('z'));
+    common::select_name(&mut app, "reviews");
+    let effects = app.handle_key(ch('!'));
+    assert_eq!(
+        effects.first(),
+        Some(&Effect::PaneShellClose),
+        "{effects:?}"
+    );
+    let open = shell_open(&effects);
+    assert!(open.dir.ends_with("web"));
+    assert!(status_text(&app).contains("closed the shell in ~/workspace/billing-ui"));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    // Its generation is the one that counts now: the old one's end says nothing.
+    let screen = PaneScreen::new(open.rows, open.cols);
+    app.pane_opened(open.generation, screen);
+    assert!(app.pane_shell_showing());
+    assert!(app.pane_exited(open.generation - 1, Some(0)).is_empty());
+    assert!(app.pane_shell_showing());
+}
+
+#[test]
+fn the_shell_ending_returns_the_pane_to_the_row_with_the_list_focused() {
+    let (mut app, t) = attached_to("builds");
+    let (generation, _screen) = shell_on(&mut app, "builds");
+    let effects = app.pane_exited(generation, Some(0));
+    assert_eq!(effects, [Effect::PollNow]);
+    assert!(status_text(&app).contains("back from the shell in ~/workspace/billing-ui"));
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(!app.pane_shell_showing());
+    assert!(
+        app.pane_client_key().is_some(),
+        "the client was never touched"
+    );
+    let text = draw(&mut app, 160, 40);
+    assert!(!text.contains("SHELL SCREEN"), "{text}");
+    assert!(app.pane_tick(t).is_empty());
+    // A failure says so; a shell hidden when it ends leaves the keys alone.
+    let (generation, _screen) = shell_on(&mut app, "builds");
+    app.pane_exited(generation, Some(3));
+    assert!(status_text(&app).contains("exited with code 3"));
+    let (generation, _screen) = shell_on(&mut app, "builds");
+    app.handle_key(ctrl('z'));
+    common::select_name(&mut app, "reviews");
+    app.handle_key(key(KeyCode::Enter));
+    app.pane_exited(generation, None);
+    assert!(status_text(&app).contains("ended by a signal"));
+}
+
+#[test]
+fn bang_on_a_stopped_row_wakes_nothing_and_a_gone_folder_starts_nothing() {
+    let mut app = at_home();
+    common::select_name(&mut app, "sleeps");
+    let effects = app.handle_key(ch('!'));
+    let open = shell_open(&effects);
+    assert!(open.dir.ends_with("infra"));
+    no_foreground_attach(&effects);
+    assert!(!effects.contains(&Effect::PollForAttach), "{effects:?}");
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+    let t = Instant::now();
+    assert!(!opened(&app.pane_tick(t + ATTACH_DEBOUNCE)));
+    // Enter types in the shell; only after `!` hides it does Enter wake.
+    let effects = app.handle_key(key(KeyCode::Enter));
+    assert!(!effects.contains(&Effect::PollForAttach), "{effects:?}");
+    app.handle_key(ctrl('z'));
+    app.handle_key(ch('!'));
+    let text = draw(&mut app, 160, 40);
+    assert!(text.contains("Enter wakes it here"), "{text}");
+    assert!(
+        app.handle_key(key(KeyCode::Enter))
+            .contains(&Effect::PollForAttach)
+    );
+
+    let mut app = at_home();
+    common::select_name(&mut app, "sleeps");
+    let open = shell_open(&app.handle_key(ch('!')));
+    app.pane_shell_folder_gone(open.generation);
+    assert!(status_text(&app).contains("no longer exists; no shell started"));
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(!app.pane_shell_showing());
+}
+
+#[test]
+fn a_shell_ends_with_its_row_and_with_the_style_and_a_failed_start_keeps_the_workspace() {
+    let mut app = at_home();
+    let (_generation, _screen) = shell_on(&mut app, "builds");
+    let without = listing()
+        .replace("\"builds\"", "\"x\"")
+        .replace("bbbb2222", "zzzz9999");
+    app.apply_poll(poll("main", &without));
+    let effects = app.pane_tick(Instant::now());
+    assert!(effects.contains(&Effect::PaneShellClose), "{effects:?}");
+    assert!(
+        status_text(&app).contains("its session is gone"),
+        "{}",
+        status_text(&app)
+    );
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+
+    let mut app = at_home();
+    shell_on(&mut app, "builds");
+    app.style = UiStyle::Dashboard;
+    draw(&mut app, 160, 40);
+    let effects = app.pane_tick(Instant::now());
+    assert!(effects.contains(&Effect::PaneShellClose), "{effects:?}");
+
+    // Too narrow for a while: it waits, and shows again.
+    let mut app = at_home();
+    shell_on(&mut app, "builds");
+    draw(&mut app, 90, 30);
+    assert!(
+        !app.pane_tick(Instant::now())
+            .contains(&Effect::PaneShellClose)
+    );
+    assert_eq!(app.pane_focus(), PaneFocus::List);
+    assert!(draw(&mut app, 160, 40).contains("SHELL SCREEN"));
+
+    // No PTY for it: a message, and the workspace goes on.
+    let mut app = at_home();
+    common::select_name(&mut app, "builds");
+    let open = shell_open(&app.handle_key(ch('!')));
+    app.pane_start_failed(open.generation, "no pty");
+    assert!(
+        status_text(&app).contains("no shell started"),
+        "{}",
+        status_text(&app)
+    );
+    assert!(!app.pane_failed());
+    assert!(draw(&mut app, 160, 40).contains(" LIST "));
+}
+
+#[test]
+fn below_the_width_bang_stays_the_foreground_hand_over() {
+    let mut app = app_with(&listing(), "", "");
+    draw(&mut app, 90, 30);
+    common::select_name(&mut app, "builds");
+    let effects = app.handle_key(ch('!'));
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Shell(_))),
+        "{effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::PaneShellOpen(_)))
+    );
+    // The other styles too.
+    let mut app = app_with(&listing(), "", "");
+    app.style = UiStyle::Dashboard;
+    draw(&mut app, 160, 40);
+    common::select_name(&mut app, "builds");
+    let effects = app.handle_key(ch('!'));
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Shell(_))),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn the_shell_clears_no_attention_and_keeps_the_client_from_counting_keys() {
+    let (mut app, t) = attached_to("asks");
+    assert_eq!(app.attention_count(), 1);
+    common::select_name(&mut app, "asks");
+    let open = shell_open(&app.handle_key(ch('!')));
+    app.pane_opened(open.generation, PaneScreen::new(open.rows, open.cols));
+    assert_eq!(app.pane_focus(), PaneFocus::Terminal);
+    assert!(!app.pane_tick(t).contains(&Effect::SaveSidecar));
+    assert_eq!(app.attention_count(), 1, "the shell answers nothing");
+    // The client's clock for its release keeps running.
+    let effects = app.pane_tick(t + RELEASE_AFTER);
+    assert!(effects.contains(&Effect::PaneClose), "{effects:?}");
+    assert!(!effects.contains(&Effect::PaneShellClose), "{effects:?}");
+    assert!(app.pane_shell_showing());
 }
 
 // ---- the other styles ---------------------------------------------------------------------

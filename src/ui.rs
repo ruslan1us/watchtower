@@ -161,6 +161,19 @@ pub const FOOTER_KEYS_PANE_STOPPED: &[&str] = &[
     "q quit",
 ];
 
+/// Footer key hints of the workspace's list while the pane shows the shell
+/// (doc/0045).
+pub const FOOTER_KEYS_PANE_SHELL: &[&str] = &[
+    "Enter type here",
+    "! hide shell",
+    "n new",
+    "/ filter",
+    "h home",
+    "Tab fold",
+    "c settings",
+    "q quit",
+];
+
 /// Footer key hints of the workspace's list with a group header selected,
 /// where `Enter` folds or unfolds it (doc/0045).
 pub const FOOTER_KEYS_PANE_HEADER: &[&str] = &[
