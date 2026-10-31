@@ -2,7 +2,7 @@
 
 Claude Code's real terminal in a pane beside the session list. Back to the [README](../../README.md).
 
-`[ui] style = "workspace"` (also in Settings, `c`) draws the list in a bar and Claude Code's
+`[ui] style = "workspace"` (the welcome window's preselected style, also in Settings, `c`) draws the list in a bar and Claude Code's
 real terminal in a pane beside it, where the details panel was. It's still experimental: it
 has been used in Warp, locally and over SSH, but other terminals are untested, and Claude
 Code's fullscreen view it relies on is a research preview

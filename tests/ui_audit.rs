@@ -69,6 +69,7 @@ use watchtower::sidecar::{AccountSource, Sidecar};
 use watchtower::subagents::Subagent;
 use watchtower::templates::{Template, TemplateList};
 use watchtower::usage::{Clock, ExtraUsage, Limit, LimitKind, PlanUsage, Probed, RateLimited};
+use watchtower::welcome::Origin as WelcomeOrigin;
 
 // ---- data -------------------------------------------------------------------
 
@@ -834,6 +835,31 @@ fn settings(config: Option<&str>, f: impl Fn(&mut App)) -> Built {
 
 fn sp(app: &mut App, k: ratatui::crossterm::event::KeyEvent) {
     settings_common::press(app, k);
+}
+
+/// The welcome window (doc/0048), `steps` steps in, in a home with a long
+/// folder among the usual ones.
+fn welcome(
+    config: Option<&str>,
+    origin: WelcomeOrigin,
+    steps: usize,
+    f: impl Fn(&mut App),
+) -> Built {
+    let env = settings_common::env(config);
+    let long = env
+        .home
+        .join("projects/a-rather-long-project-name-for-a-small-terminal/.git");
+    std::fs::create_dir_all(long).unwrap();
+    std::fs::create_dir_all(env.home.join("code")).unwrap();
+    let mut app = settings_common::app_for(&env);
+    let effects = app.open_welcome(origin, (80, 24));
+    settings_common::run(&mut app, effects);
+    app.claude_version_found(Ok("2.1.316".to_owned()));
+    for _ in 0..steps {
+        sp(&mut app, key(KeyCode::Enter));
+    }
+    f(&mut app);
+    keep(app, env)
 }
 
 type Builder = Box<dyn Fn() -> Built + Sync + Send>;
@@ -1730,6 +1756,78 @@ fn scenarios() -> Vec<(&'static str, Builder)> {
     s!("settings-no-file", || {
         settings(None, |app| settings_common::select(app, "style"))
     });
+    // The welcome window (doc/0048).
+    s!("welcome-welcome", || {
+        welcome(None, WelcomeOrigin::FirstRun, 0, |_| {})
+    });
+    s!("welcome-no-claude", || {
+        welcome(None, WelcomeOrigin::FirstRun, 0, |app| {
+            app.claude_version_found(Err(
+                "cannot run `claude`: No such file or directory (os error 2)".to_owned(),
+            ));
+        })
+    });
+    s!("welcome-look", || welcome(
+        None,
+        WelcomeOrigin::FirstRun,
+        1,
+        |_| {}
+    ));
+    s!("welcome-look-theme", || {
+        welcome(None, WelcomeOrigin::FirstRun, 1, |app| {
+            sp(app, key(KeyCode::Down));
+            for _ in 0..7 {
+                sp(app, key(KeyCode::Right));
+            }
+        })
+    });
+    s!("welcome-look-card", || {
+        welcome(None, WelcomeOrigin::FirstRun, 1, |app| {
+            sp(app, key(KeyCode::Down));
+            sp(app, key(KeyCode::Down));
+        })
+    });
+    s!("welcome-projects", || {
+        welcome(None, WelcomeOrigin::FirstRun, 2, |_| {})
+    });
+    s!("welcome-projects-field", || {
+        welcome(None, WelcomeOrigin::FirstRun, 2, |app| {
+            for _ in 0..3 {
+                sp(app, key(KeyCode::Down));
+            }
+            settings_common::type_in(app, "~/workspace/not-there");
+            sp(app, key(KeyCode::Enter));
+        })
+    });
+    s!("welcome-options", || {
+        welcome(None, WelcomeOrigin::FirstRun, 3, |_| {})
+    });
+    s!("welcome-done", || welcome(
+        None,
+        WelcomeOrigin::FirstRun,
+        4,
+        |_| {}
+    ));
+    s!("welcome-setup", || {
+        welcome(Some(SETTINGS_CONFIG), WelcomeOrigin::Setup, 0, |_| {})
+    });
+    s!("welcome-setup-done", || {
+        welcome(Some(SETTINGS_CONFIG), WelcomeOrigin::Setup, 4, |_| {})
+    });
+    s!("welcome-failed", || {
+        welcome(None, WelcomeOrigin::FirstRun, 4, |app| {
+            let env_dir = app.config_source().unwrap().path.clone();
+            std::fs::create_dir_all(env_dir.with_file_name("config.toml.lock")).unwrap();
+            sp(app, key(KeyCode::Enter));
+        })
+    });
+    s!("welcome-conflict", || {
+        welcome(None, WelcomeOrigin::FirstRun, 4, |app| {
+            let path = app.config_source().unwrap().path.clone();
+            std::fs::write(path, "[ui]\nstyle = \"minimal\"\n").unwrap();
+            sp(app, key(KeyCode::Enter));
+        })
+    });
     out
 }
 
@@ -2000,6 +2098,9 @@ fn known() -> &'static [(String, Kind)] {
             "Enter pick   ←→ change   Del default",
             // The selected row's hint, with its trailing space.
             "Enter pick   ←→ change ",
+            "Enter next   Bksp back   ↑↓ move   ←→ change   Esc skip, save   Ctrl+C quit",
+            "Space tick   Enter next   Bksp back   ↑↓ move   Esc skip, save   Ctrl+C quit",
+            "Enter add   Tab complete   Esc clear   ↑ list   Ctrl+C quit",
         ] {
             hint(s);
         }
@@ -2133,6 +2234,7 @@ fn is_screen(scenario: &str) -> bool {
             "settings-no-file",
         ]
         .contains(&scenario)
+        || (scenario.starts_with("welcome-") && scenario != "welcome-conflict")
 }
 
 /// A window over the screen, not a panel of it: it touches neither side.
@@ -2263,6 +2365,7 @@ const MUST: &[(&str, &str)] = &[
     ("help-logs", "Esc or ? closes this help"),
     ("help-logs", "Space            close the logs panel"),
     ("settings-", "? help"),
+    ("welcome-", "Ctrl+C quit"),
     ("list-", "? help"),
     ("filter-editing", "Enter keep · Esc clear"),
 ];
@@ -2796,6 +2899,7 @@ invariants! {
     border_picker: Border, "picker-";
     border_resume: Border, "resume-";
     border_settings: Border, "settings-";
+    border_welcome: Border, "welcome-";
     pad_list: Pad, "list-";
     pad_status: Pad, "status-";
     pad_filter: Pad, "filter-";
@@ -2812,6 +2916,7 @@ invariants! {
     pad_picker: Pad, "picker-";
     pad_resume: Pad, "resume-";
     pad_settings: Pad, "settings-";
+    pad_welcome: Pad, "welcome-";
     hint_row_list: HintRow, "list-";
     hint_row_status: HintRow, "status-";
     hint_row_filter: HintRow, "filter-";
@@ -2828,6 +2933,7 @@ invariants! {
     hint_row_picker: HintRow, "picker-";
     hint_row_resume: HintRow, "resume-";
     hint_row_settings: HintRow, "settings-";
+    hint_row_welcome: HintRow, "welcome-";
     cut_list: Cut, "list-";
     cut_status: Cut, "status-";
     cut_filter: Cut, "filter-";
@@ -2844,6 +2950,7 @@ invariants! {
     cut_picker: Cut, "picker-";
     cut_resume: Cut, "resume-";
     cut_settings: Cut, "settings-";
+    cut_welcome: Cut, "welcome-";
     mid_word_list: MidWord, "list-";
     mid_word_status: MidWord, "status-";
     mid_word_filter: MidWord, "filter-";
@@ -2860,6 +2967,7 @@ invariants! {
     mid_word_picker: MidWord, "picker-";
     mid_word_resume: MidWord, "resume-";
     mid_word_settings: MidWord, "settings-";
+    mid_word_welcome: MidWord, "welcome-";
     could_wrap_list: CouldWrap, "list-";
     could_wrap_status: CouldWrap, "status-";
     could_wrap_filter: CouldWrap, "filter-";
@@ -2876,6 +2984,7 @@ invariants! {
     could_wrap_picker: CouldWrap, "picker-";
     could_wrap_resume: CouldWrap, "resume-";
     could_wrap_settings: CouldWrap, "settings-";
+    could_wrap_welcome: CouldWrap, "welcome-";
     odd_list: Odd, "list-";
     odd_status: Odd, "status-";
     odd_filter: Odd, "filter-";
@@ -2892,6 +3001,7 @@ invariants! {
     odd_picker: Odd, "picker-";
     odd_resume: Odd, "resume-";
     odd_settings: Odd, "settings-";
+    odd_welcome: Odd, "welcome-";
     align_list: Align, "list-";
     align_status: Align, "status-";
     align_filter: Align, "filter-";
@@ -2908,6 +3018,7 @@ invariants! {
     align_picker: Align, "picker-";
     align_resume: Align, "resume-";
     align_settings: Align, "settings-";
+    align_welcome: Align, "welcome-";
     missing_list: Missing, "list-";
     missing_status: Missing, "status-";
     missing_filter: Missing, "filter-";
@@ -2924,6 +3035,7 @@ invariants! {
     missing_picker: Missing, "picker-";
     missing_resume: Missing, "resume-";
     missing_settings: Missing, "settings-";
+    missing_welcome: Missing, "welcome-";
 }
 
 // ---- targeted invariants ---------------------------------------------------

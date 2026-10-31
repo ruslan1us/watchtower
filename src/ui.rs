@@ -33,6 +33,7 @@ mod subtree;
 mod templates;
 mod theme;
 mod usage;
+mod welcome;
 mod workspace;
 
 use theme::{Look, Theme};
@@ -254,9 +255,15 @@ fn draw_screen_and_windows(frame: &mut Frame, app: &mut App, now: Instant, now_m
     // (doc/0037).
     app.set_git_shown(false);
     if app.settings().is_some() {
-        // The Settings window takes the whole screen (doc/0024).
+        // The Settings window takes the whole screen (doc/0024), and so do
+        // the welcome window's steps on top of it (doc/0048).
         let look = look(app, area);
-        settings::draw(frame, app, look);
+        app.welcome_sized(area.width, area.height);
+        if app.settings().is_some_and(|w| w.welcome.is_some()) {
+            welcome::draw(frame, app, look);
+        } else {
+            settings::draw(frame, app, look);
+        }
         draw_windows(frame, app);
         return;
     }

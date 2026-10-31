@@ -13,7 +13,7 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 ## Features
 
 - [All sessions by state](doc/guide/how-it-works.md#what-tower-adds): see what needs you, what failed, what is ready for review and what is still working.
-- [A session's real terminal inside tower](doc/guide/workspace-style.md): the workspace style shown above. It is experimental, and you turn it on in the settings.
+- [A session's real terminal inside tower](doc/guide/workspace-style.md): the workspace style shown above. It is experimental, and the welcome window offers it first.
 - [Several accounts](doc/guide/configuration.md#accounts): every Claude Code account you use, in one list.
 - [Hand-off](doc/guide/accounts-and-terms.md): continue a session under another of your own accounts, with its history.
 - [Quick reply](doc/guide/sessions.md#quick-reply): send a session your next prompt without opening it.
@@ -48,11 +48,10 @@ To check the download against its checksum, or to build from source, see [Gettin
 
 ## Quick start
 
-1. Copy [`config.example.toml`](config.example.toml) to `~/.config/watchtower/config.toml`. List your accounts and the folders that hold your projects.
-2. Run `tower`. Your background sessions appear in the list.
-3. Press `n`, pick a project, type a task and press `Ctrl+S` to start it.
-4. Press `Enter` on a session to open it. `Ctrl+Z` brings you back to tower.
-5. Press `?` to see all keys, and `q` to quit.
+1. Run `tower`. The first time, a welcome window asks for a style, a theme and your project folders. `tower setup` opens it again later.
+2. Your background sessions appear in the list. Press `n`, pick a project, type a task and press `Ctrl+S` to start it.
+3. Press `Enter` on a session to open it. `Ctrl+Z` brings you back to tower.
+4. Press `?` to see all keys, and `q` to quit.
 
 ## Documentation
 
@@ -60,7 +59,7 @@ To check the download against its checksum, or to build from source, see [Gettin
 |---|---|
 | [Getting started](doc/guide/getting-started.md) | Requirements, all install options, updating, building from source, the full quick start |
 | [Keys](doc/guide/keys.md) | Every key, window by window |
-| [Configuration](doc/guide/configuration.md) | The config file, the Settings window, accounts, styles, themes |
+| [Configuration](doc/guide/configuration.md) | The welcome window, the config file, the Settings window, accounts, styles, themes |
 | [Workspace style](doc/guide/workspace-style.md) | Claude Code's real terminal beside the list |
 | [Working with sessions](doc/guide/sessions.md) | Quick reply, prompt templates, slash commands, pinning, restarting after an update |
 | [The orchestrator and the `tower` commands](doc/guide/orchestrator.md) | The orchestrator, `tower status`, `tower dispatch` and `tower wake` |

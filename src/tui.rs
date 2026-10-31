@@ -79,6 +79,7 @@ use crate::paths::{self, Dirs};
 use crate::poller::Poller;
 use crate::sidecar::Loaded;
 use crate::tabtitle::TabTitle;
+use crate::welcome::Origin;
 use crate::{dispatch, editor};
 
 /// How long the loop waits for input before checking for poll results and
@@ -642,8 +643,15 @@ pub fn flush_sidecar(
 
 /// Runs the TUI until the user quits or a SIGTERM/SIGHUP arrives.
 /// `source` says which config file was used and whether it was found
-/// (doc/0002); a missing one shows a warning.
-pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> io::Result<Exit> {
+/// (doc/0002); a missing one shows a warning. `welcome` opens the welcome
+/// window first (doc/0048).
+pub fn run(
+    config: Config,
+    source: ConfigSource,
+    dirs: Dirs,
+    loaded: Loaded,
+    welcome: Option<Origin>,
+) -> io::Result<Exit> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err(io::Error::other(
             "needs an interactive terminal (stdin and stdout must be a TTY)",
@@ -659,8 +667,10 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
     app.set_config_dir(&dirs.config_dir);
     app.enable_subagents(&dirs.config_dir);
     // Written when not current (doc/0029); each dispatch and `R` check it
-    // again.
+    // again. Not before a first start's window, which may quit having written
+    // nothing (doc/0048).
     if config.track_subagents
+        && welcome != Some(Origin::FirstRun)
         && let Err(err) =
             crate::subagents::prepare_settings(&crate::subagents::settings_path(&dirs.config_dir))
     {
@@ -735,7 +745,20 @@ pub fn run(config: Config, source: ConfigSource, dirs: Dirs, loaded: Loaded) -> 
         enhanced,
         pending: VecDeque::new(),
     };
-    let result = event_loop(&mut rt, &mut app);
+    let result = match welcome {
+        Some(origin) => {
+            let size = rt.terminal.size()?;
+            let first = app.open_welcome(origin, (size.width, size.height));
+            run_effects(&mut rt, &mut app, first).and_then(|go_on| {
+                if go_on {
+                    event_loop(&mut rt, &mut app)
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        None => event_loop(&mut rt, &mut app),
+    };
     // The pane's client ends with tower; the session keeps running.
     rt.embed.shutdown(CLIENT_EXIT_WAIT);
     if let Some(sig) = termination.pending()
@@ -1153,6 +1176,7 @@ fn run_effects(rt: &mut Runtime<'_>, app: &mut App, effects: Vec<Effect>) -> io:
                 queue.extend(app.settings_opened(result));
             }
             Effect::CheckFolders(job) => rt.jobs.folders(job),
+            Effect::ProbeClaude(account) => rt.jobs.claude_version(account),
             Effect::Rename(job) => rt.jobs.rename(job),
             Effect::RenameTrust(job) => {
                 let req = &job.request;

@@ -1,6 +1,6 @@
 # 0022. Tower writes its own config
 
-- Status: Accepted · 2026-10-19 · `[sessions] track_subagents` added by [0029](0029-tracking-subagents.md) · `logs_follow_secs` added by [0031](0031-logs-follow-interval.md) · `[ui] color_depth` added by [0038](0038-light-and-16-colour-themes.md) · `[usage] show` and `refresh_secs` added by [0043](0043-plan-usage-display.md) · `[ui] card_size` and `card_gap` added by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-19 · `[sessions] track_subagents` added by [0029](0029-tracking-subagents.md) · `logs_follow_secs` added by [0031](0031-logs-follow-interval.md) · `[ui] color_depth` added by [0038](0038-light-and-16-colour-themes.md) · `[usage] show` and `refresh_secs` added by [0043](0043-plan-usage-display.md) · `[ui] card_size` and `card_gap` added by [0045](0045-workspace-style.md) · a first start's file by [0048](0048-first-run-welcome.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md)
 - Supersedes: in [0002](0002-tech-stack-and-files.md), "Tower only reads it" and the rejected alternative "Tower writing its own config"
 
@@ -76,7 +76,9 @@ the end of the file. A trailing comment on the key's own line goes with it.
    final target, so the link stays a link.
 7. A missing file is created, with its parent folders, holding a short
    header comment that points to `config.example.toml` and only the changed
-   keys.
+   keys. *Amended by [0048](0048-first-run-welcome.md):* the welcome window
+   creates it from the whole commented example instead; the Settings window
+   and the editor keep the short form.
 
 **Editor.** A key in the Settings window opens `config.toml` in
 `$VISUAL`, else `$EDITOR`, in the foreground like an attach

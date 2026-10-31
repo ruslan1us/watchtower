@@ -31,7 +31,7 @@ pub const SIDE_MIN: u16 = 130;
 const DETAIL_W: u16 = 50;
 
 /// Gap between footer hints.
-const GAP: &str = "   ";
+pub(super) const GAP: &str = "   ";
 
 /// What a line of the settings list is.
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ enum Item {
 /// The style of a span on a row that may be selected: the selection bar
 /// with the span's colour on it when the bar is painted; on a reversed bar
 /// (the minimal look, `terminal`, `NO_COLOR`) only its modifiers.
-fn on_bar(look: Look, selected: bool, st: Style) -> Style {
+pub(super) fn on_bar(look: Look, selected: bool, st: Style) -> Style {
     if !selected {
         return st;
     }
@@ -111,7 +111,7 @@ pub fn draw(frame: &mut Frame, app: &App, look: Look) {
 }
 
 /// One row of `area` at offset `y`.
-fn row(area: Rect, y: u16) -> Rect {
+pub(super) fn row(area: Rect, y: u16) -> Rect {
     Rect {
         x: area.x,
         y: area.y + y,
@@ -120,14 +120,14 @@ fn row(area: Rect, y: u16) -> Rect {
     }
 }
 
-fn put(frame: &mut Frame, area: Rect, line: Line<'static>) {
+pub(super) fn put(frame: &mut Frame, area: Rect, line: Line<'static>) {
     if area.width > 0 && area.height > 0 {
         frame.render_widget(Paragraph::new(line), area);
     }
 }
 
 /// `left` and a right-aligned `right` on one row; `right` wins.
-fn put_lr(frame: &mut Frame, area: Rect, left: Lb, right: Lb) {
+pub(super) fn put_lr(frame: &mut Frame, area: Rect, left: Lb, right: Lb) {
     put(frame, area, left.line());
     let rw = right.w as u16;
     if rw > 0 && rw <= area.width {
@@ -357,7 +357,7 @@ fn separator(section: Section, width: usize, look: Look) -> Line<'static> {
 }
 
 /// The style of a [`NoticeKind`].
-fn kind_style(kind: NoticeKind, look: Look) -> Style {
+pub(super) fn kind_style(kind: NoticeKind, look: Look) -> Style {
     match kind {
         NoticeKind::Info => look.text(),
         NoticeKind::Success => look.success(),
@@ -776,7 +776,7 @@ fn draw_detail(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
 /// list joined by ` · ` breaks between its items, so no row starts or
 /// ends with `·`; other values break at spaces; a word longer than a row
 /// breaks after a `-`, `/` or `_` where it can, else at the row's end.
-fn wrap_value(v: &str, w: usize) -> Vec<String> {
+pub(super) fn wrap_value(v: &str, w: usize) -> Vec<String> {
     let w = w.max(1);
     let sep = if v.contains(" · ") { " · " } else { " " };
     let mut out = Vec::new();
@@ -991,7 +991,7 @@ fn draw_footer(frame: &mut Frame, win: &SettingsWindow, area: Rect, look: Look) 
 
 /// One line of a pick list or the list editor: the selection bar, a
 /// `▌` in the mark colour.
-fn bar_line(mut l: Lb, selected: bool, w: usize, look: Look) -> Line<'static> {
+pub(super) fn bar_line(mut l: Lb, selected: bool, w: usize, look: Look) -> Line<'static> {
     if selected {
         l.pad_to(w, look.selected_item());
     }
@@ -999,10 +999,11 @@ fn bar_line(mut l: Lb, selected: bool, w: usize, look: Look) -> Line<'static> {
 }
 
 /// A short description of a style or theme in the pick list.
-fn choice_note(key: SettingKey, value: &str) -> &'static str {
+pub(super) fn choice_note(key: SettingKey, value: &str) -> &'static str {
     match (key, value) {
         (SettingKey::UiStyle, "dashboard") => "rounded panels, pills and a detail panel",
         (SettingKey::UiStyle, "minimal") => "the plain single-column list",
+        (SettingKey::UiStyle, "workspace") => "experimental; Claude's terminal in a pane",
         (SettingKey::UiTheme, "neutral") => "greys; colour only for states",
         (SettingKey::UiTheme, "warm") => "warm greys and a clay accent",
         (SettingKey::UiTheme, "terminal") => "your terminal's 16 colours",
@@ -1344,7 +1345,7 @@ fn draw_list_editor(
 
 /// The questions: unsaved changes on `Esc` or `e`, a conflict on save,
 /// the cross-group hand-off, quitting with unsaved changes.
-fn draw_question(frame: &mut Frame, win: &SettingsWindow, body: Rect, look: Look) {
+pub(super) fn draw_question(frame: &mut Frame, win: &SettingsWindow, body: Rect, look: Look) {
     let w = 76.min(body.width.saturating_sub(4));
     let iw = usize::from(w.saturating_sub(4)).max(10);
     let mut lines: Vec<Line<'static>> = Vec::new();

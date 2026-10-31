@@ -82,6 +82,24 @@ Decision: [0040](../0040-quick-reply.md).
 | `Ctrl+T` | After `Workspace not trusted`: run the owner's command in the folder to accept trust, then send once more |
 | `Esc` | Cancel (asks first if text was typed) |
 
+## Welcome window
+
+The window of a first start and of `tower setup`. Decision: [0048](../0048-first-run-welcome.md).
+
+| Key | Action |
+|---|---|
+| `Enter` | Next step; on the last one, save and go on to tower |
+| `Backspace`, `Shift+Tab` | Previous step |
+| `↑` / `↓` | Move over the step's rows |
+| `←` / `→` | Change the value (style, theme, card size, an option) |
+| `Space` | Tick a folder, switch an option |
+| `Esc` | First start: skip the rest and save the current choices. `tower setup`: cancel, writing nothing |
+| `Ctrl+C` | Quit, writing nothing |
+
+In the field for another folder: typing goes into the field, `Enter` adds the folder, `Tab` completes
+its name, `Ctrl+U` or `Esc` clears it, and `↑` goes back to the list. With nothing typed `Enter`,
+`Backspace` and `Esc` do what they do on the rest of the step.
+
 ## Settings window
 
 Decision: [0024](../0024-settings-window.md).

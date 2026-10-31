@@ -1,6 +1,26 @@
 # Configuration
 
-The config file, the Settings window, and what each setting does. Back to the [README](../../README.md).
+The welcome window, the config file, the Settings window, and what each setting does. Back to the [README](../../README.md).
+
+## The welcome window and `tower setup`
+
+When `tower` starts and there is no config file, a welcome window opens
+([0048](../0048-first-run-welcome.md)). Five steps: what tower found (Claude Code's version and
+your sessions), the look (style, with `workspace` preselected, theme, and the card size in that
+style), the project folders (the usual ones under your home that exist, with how many git clones
+each holds; those with clones are ticked, and you can type another), three options (plan usage,
+tracking subagents, the tab title), and a summary. The [keys](keys.md#welcome-window) are few:
+`Enter` goes on, `Backspace` goes back, and `Esc` skips the rest and saves what you have chosen.
+
+It writes the whole of [`config.example.toml`](../../config.example.toml) with its comments and
+your values, with one active account, `main`, running `claude`, so more accounts are a matter of
+editing the end of that file ([below](#accounts)). Then tower carries on with those settings.
+`Ctrl+C` quits and writes nothing, so the window comes back. If the file cannot be written, the
+window says so and tower runs on its defaults; on a terminal below 80×24 tower says so in the
+status line and does the same. Commands such as `tower status` never open it.
+
+`tower setup` opens the same window at any time, starting from the file's values. It saves only
+what you change, the way the Settings window does, and `Esc` there cancels without writing.
 
 ## The config file
 
@@ -9,6 +29,9 @@ The config is `$XDG_CONFIG_HOME/watchtower/config.toml` (default
 [`config.example.toml`](../../config.example.toml) for each key with its default, and
 [0002](../0002-tech-stack-and-files.md) for the details. The example defines two
 accounts: `main` (`claude`, `~/.claude`) and `alt` (`claude-alt`, `~/.claude-alt`).
+
+To write the file by hand, copy the example there before the first start and edit it. Tower never
+replaces a file that exists, so the welcome window then does not open.
 
 ## The Settings window
 
@@ -27,7 +50,8 @@ does not parse is not applied; the status line shows the error until it is fixed
 
 ## Accounts
 
-Each account has a `name`, the `command` tower runs for it, and its
+The welcome window never edits accounts; a file it wrote has `main` active and `alt` as a comment
+to start from. Each account has a `name`, the `command` tower runs for it, and its
 `config_dir`. `default_account` is used for new sessions and the orchestrator; the
 new-session dialog lets you pick another one per session.
 
@@ -84,7 +108,8 @@ Here `a` refuses to move a session from `main` to `alt` and says which groups di
 ## Styles
 
 `[ui] style` picks the look of the session list
-([0020](../0020-visual-styles.md)). The default, `"dashboard"`, draws rounded panels:
+([0020](../0020-visual-styles.md)). The welcome window preselects `"workspace"` and writes your
+choice; a config without the key gets the default, `"dashboard"`, which draws rounded panels:
 a header with a count pill per state and the accounts, the session list with section
 separators, and a detail panel for the selected session (on the right from 130 columns,
 a strip under the list below that; the logs panel takes its place while open). When the

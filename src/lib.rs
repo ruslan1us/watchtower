@@ -45,6 +45,7 @@
 //! - [`dialog`]: the new-session dialog's fields and keys (doc/0008); no I/O.
 //! - [`settings`]: the Settings window's state and keys (doc/0024); its
 //!   folder checks run as jobs.
+//! - [`welcome`]: the steps of the welcome window on top of it (doc/0048).
 //! - [`layout`]: command keys typed under a Cyrillic layout (doc/0011).
 //! - [`ui`]: renders [`app::App`] with ratatui.
 //! - [`poller`]: polls every account on worker threads (doc/0001).
@@ -125,3 +126,4 @@ pub mod ui;
 pub mod update;
 pub mod usage;
 pub mod wake;
+pub mod welcome;

@@ -43,7 +43,7 @@ use crate::app::{
 };
 use crate::cli::{CliError, CliRunner};
 use crate::commands::{CommandList, CommandLoad};
-use crate::config::ConfigError;
+use crate::config::{Account, ConfigError};
 use crate::config_edit::{self, ConfigSnapshot, SaveError, SaveOutcome};
 use crate::dispatch::{self, DispatchError, Dispatched};
 use crate::gitinfo::{GitJob, GitRunner, GitState};
@@ -104,6 +104,9 @@ pub enum JobResult {
     ConfigSaved(Box<Result<SaveOutcome, SaveError>>),
     /// The Settings window's folder checks and completion (doc/0024).
     Folders(FolderResult),
+    /// What `<command> --version` said for the welcome window (doc/0048):
+    /// the version, or why it could not be run.
+    ClaudeVersion(Result<String, String>),
     /// The running subagents by `sessionId`, read from tower's files
     /// (doc/0029).
     Subagents(HashMap<String, Vec<Subagent>>),
@@ -157,6 +160,10 @@ impl JobResult {
             JobResult::ConfigChecked(epoch, found) => app.config_checked(epoch, found),
             JobResult::ConfigSaved(result) => app.config_saved(*result),
             JobResult::Folders(result) => app.folders_checked(result),
+            JobResult::ClaudeVersion(result) => {
+                app.claude_version_found(result);
+                Vec::new()
+            }
             JobResult::Subagents(found) => {
                 app.subagents_read(found);
                 Vec::new()
@@ -523,6 +530,29 @@ impl Jobs {
         };
         self.launch("folders", job, fail, |_, _, job| {
             JobResult::Folders(job.run())
+        });
+    }
+
+    /// Asks `<command> --version` for the welcome window (doc/0048).
+    pub fn claude_version(&self, account: Account) {
+        let fail = |_: Account, err: CliError| JobResult::ClaudeVersion(Err(err.to_string()));
+        self.launch("claude-version", account, fail, |runner, _, account| {
+            let result = match runner.run(&account, ["--version"]) {
+                Ok(output) if output.success() => {
+                    Ok(crate::welcome::version_text(&output.stdout_text()))
+                }
+                Ok(output) => {
+                    let why = output.stderr.lines().next().unwrap_or("").trim().to_owned();
+                    Err(format!(
+                        "`{}` exited with code {}{}{why}",
+                        account.command,
+                        output.code.map_or("?".to_owned(), |c| c.to_string()),
+                        if why.is_empty() { "" } else { ": " },
+                    ))
+                }
+                Err(err) => Err(err.to_string()),
+            };
+            JobResult::ClaudeVersion(result)
         });
     }
 

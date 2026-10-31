@@ -58,6 +58,39 @@ pub const HEADER: &str = "\
 # comments and formatting (doc/0002, doc/0022).
 ";
 
+/// `config.example.toml`, embedded so the first start can write it with the
+/// values the welcome window gathered (doc/0048).
+pub const EXAMPLE: &str = include_str!("../config.example.toml");
+
+/// The text a first start writes, before the chosen values are set: the
+/// whole of [`EXAMPLE`] with its comments, where every active value is the
+/// built-in default. So its example folders are empty, and only the account
+/// `main` stays active, without a group: `alt` would be polled through a
+/// `claude-alt` wrapper this user may not have, and tower cannot infer one
+/// (doc/0048).
+pub fn first_run_template() -> String {
+    let mut out = String::with_capacity(EXAMPLE.len() + 64);
+    let mut accounts = 0;
+    for line in EXAMPLE.lines() {
+        if line.trim() == "[[accounts]]" {
+            accounts += 1;
+        }
+        let active = !line.trim().is_empty() && !line.trim_start().starts_with('#');
+        if line.starts_with("project_roots =") {
+            out.push_str("project_roots = []");
+        } else if line.starts_with("extra_projects =") {
+            out.push_str("extra_projects = []");
+        } else if active && (accounts > 1 || (accounts == 1 && line.starts_with("group ="))) {
+            out.push_str("# ");
+            out.push_str(line);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// How long a save waits for `config.toml.lock` before it gives up.
 pub const LOCK_WAIT: Duration = sidecar::LOCK_WAIT;
 
@@ -595,6 +628,9 @@ pub struct EditSession {
     /// The file's values when opened or last saved; `None`: absent.
     base: BTreeMap<SettingKey, Option<SettingValue>>,
     changes: BTreeMap<SettingKey, Change>,
+    /// The text a missing file starts from instead of [`HEADER`]
+    /// ([`EditSession::with_template`], doc/0048).
+    template: Option<String>,
 }
 
 impl EditSession {
@@ -641,7 +677,16 @@ impl EditSession {
             config,
             base,
             changes: BTreeMap::new(),
+            template: None,
         })
+    }
+
+    /// The session, whose save creates a missing file from `template` with
+    /// the changes set in it, instead of [`HEADER`] and the changed keys
+    /// (doc/0048). A file that exists by then is edited as usual.
+    pub fn with_template(mut self, template: String) -> EditSession {
+        self.template = Some(template);
+        self
     }
 
     /// The config file this session edits.
@@ -926,6 +971,17 @@ impl EditSession {
         self.changes.remove(&key);
     }
 
+    /// Drops the change of `key` when the file exists and the change leaves
+    /// the key's value as it was, even where the key is not in the file, so
+    /// that a save rewrites only what really changed (doc/0048). Without a
+    /// file every key is written anyway.
+    pub fn drop_if_unchanged(&mut self, key: SettingKey) {
+        let before = self.saved(key).unwrap_or_else(|| self.default_value(key));
+        if self.text.is_some() && self.value(key) == before {
+            self.changes.remove(&key);
+        }
+    }
+
     /// Drops every unsaved change.
     pub fn revert_all(&mut self) {
         self.changes.clear();
@@ -952,8 +1008,8 @@ impl EditSession {
     /// The config the file would give with this window's changes, applied
     /// to the text as opened; the error a save would refuse with.
     pub fn validate(&self) -> Result<Config, ConfigError> {
-        let text =
-            apply_changes(self.text.as_deref(), &self.changes).map_err(ConfigError::Invalid)?;
+        let start = self.text.as_deref().or(self.template.as_deref());
+        let text = apply_changes(start, &self.changes).map_err(ConfigError::Invalid)?;
         Config::parse(&text, &self.home).map_err(|err| with_path(err, &self.path))
     }
 
@@ -968,6 +1024,7 @@ impl EditSession {
             changes: self.changes.clone(),
             force,
             lock_wait: LOCK_WAIT,
+            template: self.template.clone(),
         }
     }
 
@@ -1019,6 +1076,7 @@ pub struct SaveJob {
     changes: BTreeMap<SettingKey, Change>,
     force: bool,
     lock_wait: Duration,
+    template: Option<String>,
 }
 
 impl SaveJob {
@@ -1086,11 +1144,11 @@ impl SaveJob {
                 applied: BTreeMap::new(),
             });
         }
-        let text =
-            apply_changes(disk.as_deref(), &self.changes).map_err(|message| SaveError::Parse {
-                path: self.path.clone(),
-                message,
-            })?;
+        let start = disk.as_deref().or(self.template.as_deref());
+        let text = apply_changes(start, &self.changes).map_err(|message| SaveError::Parse {
+            path: self.path.clone(),
+            message,
+        })?;
         let config = Config::parse(&text, &self.home)
             .map_err(|err| SaveError::Invalid(with_path(err, &self.path)))?;
         let perms = fs::metadata(&target).ok().map(|m| m.permissions());

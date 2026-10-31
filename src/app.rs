@@ -71,6 +71,7 @@ use crate::sidecar::{
 use crate::subagents::{self, Subagent};
 use crate::templates::{self, TemplateList, TemplateLoad, TemplatePicker};
 use crate::usage::{self, Clock, ProbeFolder, Probed, Shown, UsageBoard, UsageJob};
+use crate::welcome::{self, ClaudeProbe, Origin};
 
 mod workspace;
 
@@ -196,6 +197,9 @@ pub enum Effect {
     /// worker thread ([`crate::settings::FolderJob::run`]), then call
     /// [`App::folders_checked`] (doc/0024).
     CheckFolders(crate::settings::FolderJob),
+    /// Ask this account's `--version` on a worker thread, then call
+    /// [`App::claude_version_found`] (doc/0048).
+    ProbeClaude(Account),
     /// Rename a stopped session on a worker thread ([`rename::run`]):
     /// wake it with `/rename`, confirm the name, stop it again; report
     /// steps to [`App::rename_step`], then call [`App::rename_finished`]
@@ -2007,7 +2011,7 @@ impl App {
     /// The warning for a missing config file.
     fn missing_config_warning(&self, source: &ConfigSource) -> String {
         format!(
-            "no config at {}; using defaults — see config.example.toml",
+            "no config at {}; using defaults — tower setup writes one",
             source.shown(Some(&self.home))
         )
     }
@@ -2045,8 +2049,8 @@ impl App {
                 source.shown(Some(&self.home))
             ),
             Some(source) => format!(
-                "no projects found — no config at {} (using defaults); create it with \
-                 project_roots or extra_projects (see config.example.toml)",
+                "no projects found — no config at {} (using defaults); tower setup writes it \
+                 with your project folders",
                 source.shown(Some(&self.home))
             ),
             None => {
@@ -6326,6 +6330,9 @@ impl App {
     /// theme and colour depth.
     fn close_settings(&mut self) {
         if let Some(window) = self.settings.take() {
+            if let Some(note) = window.welcome_closing_note() {
+                self.set_message(note, Severity::Warning);
+            }
             self.style = window.base.0;
             self.set_theme(window.base.1);
             self.color_depth = window.base.2;
@@ -6365,6 +6372,68 @@ impl App {
                 self.folder_job()
             }
             None => Vec::new(),
+        }
+    }
+
+    // ---- the welcome window (doc/0048) ------------------------------------
+
+    /// Opens the welcome window at the start: the Settings window with its
+    /// steps on top, over the config file. A terminal of `size` below
+    /// [`welcome::MIN_SIZE`] gets a plain notice instead and nothing is
+    /// written. The effects ask for Claude Code's version and look at the
+    /// suggested folders on worker threads.
+    pub fn open_welcome(&mut self, origin: Origin, size: (u16, u16)) -> Vec<Effect> {
+        let Some(source) = self.config_source.clone() else {
+            return Vec::new();
+        };
+        if size.0 < welcome::MIN_SIZE.0 || size.1 < welcome::MIN_SIZE.1 {
+            self.set_message(welcome::too_small_note(source.found), Severity::Warning);
+            return Vec::new();
+        }
+        let session = match EditSession::open(&source.path, &self.home) {
+            Ok(session) => session,
+            Err(err) => {
+                self.set_message(
+                    format!("settings not opened: {}", one_line(&err.to_string())),
+                    Severity::Error,
+                );
+                return Vec::new();
+            }
+        };
+        let shown = paths::shorten_home(&session.path().to_string_lossy(), &self.home);
+        self.settings = Some(SettingsWindow::welcome(
+            session,
+            shown,
+            (self.style, self.theme, self.color_depth),
+            &self.home,
+            origin,
+        ));
+        self.sync_settings_preview();
+        let account = self
+            .config
+            .account(&self.config.default_account)
+            .or(self.config.accounts.first())
+            .cloned();
+        let mut effects: Vec<Effect> = account.map(Effect::ProbeClaude).into_iter().collect();
+        effects.extend(self.folder_job());
+        effects
+    }
+
+    /// Takes back what `--version` said ([`Effect::ProbeClaude`]).
+    pub fn claude_version_found(&mut self, result: Result<String, String>) {
+        if let Some(welcome) = self.settings.as_mut().and_then(|w| w.welcome.as_mut()) {
+            welcome.claude = match result {
+                Ok(version) => ClaudeProbe::Found(version),
+                Err(why) => ClaudeProbe::Failed(why),
+            };
+        }
+    }
+
+    /// The renderer's size of the window (doc/0048): below
+    /// [`welcome::MIN_SIZE`] it shows a plain notice until the terminal grows.
+    pub fn welcome_sized(&mut self, width: u16, height: u16) {
+        if let Some(welcome) = self.settings.as_mut().and_then(|w| w.welcome.as_mut()) {
+            welcome.too_small = width < welcome::MIN_SIZE.0 || height < welcome::MIN_SIZE.1;
         }
     }
 

@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md) · more theme names added by [0046](0046-more-colour-themes.md) · `[ui] tab_title` and the `pins` of the state file added by [0047](0047-tab-title-pinning-and-restart.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md) · more theme names added by [0046](0046-more-colour-themes.md) · `[ui] tab_title` and the `pins` of the state file added by [0047](0047-tab-title-pinning-and-restart.md) · a first start's file by [0048](0048-first-run-welcome.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
@@ -35,6 +35,9 @@ only reads `state.json`, never writes it.
 `~/.config/watchtower/config.toml`. Tower reads it, and since
 [0022](0022-tower-writes-its-own-config.md) the Settings window also writes it,
 keeping comments and formatting; a running tower reloads it when it changes.
+*Amended by [0048](0048-first-run-welcome.md):* interactive `tower` without the
+file opens a welcome window that writes it; everything else, and a terminal
+that window does not fit, goes on as here.
 A missing file means
 built-in defaults with a single account `main` using `claude`. `~` is expanded
 in all paths. Because a missing file is easy to miss, tower names the file it

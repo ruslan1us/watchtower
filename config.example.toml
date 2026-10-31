@@ -1,10 +1,12 @@
-# Watchtower (tower) example config.
+# Watchtower (tower) config.
 #
-# Copy to $XDG_CONFIG_HOME/watchtower/config.toml (by default
-# ~/.config/watchtower/config.toml). Every key is optional: a missing file,
-# or a missing key, means the built-in default given in the comment. Unknown
-# keys are ignored. `~` is expanded in all paths. See
-# doc/0002-tech-stack-and-files.md.
+# Tower writes this file the first time it starts, with the values you choose
+# in its welcome window, and `tower setup` changes them later (doc/0048). To
+# write it by hand instead, copy config.example.toml to
+# $XDG_CONFIG_HOME/watchtower/config.toml (by default
+# ~/.config/watchtower/config.toml). Every key is optional: a missing key means
+# the built-in default given in the comment. Unknown keys are ignored. `~` is
+# expanded in all paths. See doc/0002-tech-stack-and-files.md.
 #
 # Tower's Settings window can also change this file: it edits only the keys
 # you change there and keeps comments and formatting, removes a key you reset
@@ -88,7 +90,7 @@ allow_cross_group_handoff = false
 #   running session attaches to it there, without waking anything. Needs at
 #   least 100x24; a smaller terminal gets the dashboard until it grows again.
 # Colours follow NO_COLOR either way.
-# Default: "dashboard"
+# Default: "dashboard" (the welcome window preselects "workspace", doc/0048)
 style = "dashboard"
 
 # Colour theme of the dashboard style (doc/0021). The minimal style keeps

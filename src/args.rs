@@ -5,6 +5,9 @@
 pub enum Command {
     /// Start the TUI.
     Run,
+    /// `tower setup`: start the TUI in the welcome window, to change the
+    /// style, theme, project folders and options (doc/0048).
+    Setup,
     /// `tower status [--json]`: print one merged snapshot and exit
     /// (doc/0010). `json` selects the JSON output over the short table.
     Status { json: bool },
@@ -79,6 +82,7 @@ pub struct WakeArgs {
 /// Short usage text.
 pub const USAGE: &str = "\
 Usage: tower [--version | --help]
+       tower setup
        tower status [--json]
        tower dispatch --project <dir> [--account <name>] [--name <name>]
                       [--model <m>] [--effort <e>] [--mode <p>] [--json] [--] <task>
@@ -89,6 +93,9 @@ A terminal UI over Claude Code background sessions.
 Run without arguments to start it. Press ? inside for the keys.
 
 Commands:
+  setup          The welcome window at any time: style, theme, project folders
+                 and options, starting from the config's values. Saves only
+                 what you change; Esc cancels without writing
   status         Poll every account once and print the merged sessions
   status --json  The same as JSON, for scripts and the orchestrator
   dispatch       Start a background session as the new-session dialog does
@@ -129,7 +136,7 @@ pub fn help(config: Option<&crate::config::ConfigSource>) -> String {
         let state = if source.found {
             "found"
         } else {
-            "not found — built-in defaults apply; see config.example.toml"
+            "not found — built-in defaults apply; `tower` asks and writes it when it starts"
         };
         text.push_str(&format!(
             "\nConfig in use: {} ({state})\n",
@@ -151,6 +158,9 @@ where
         [] => Ok(Command::Run),
         ["--version" | "-V"] => Ok(Command::Version),
         ["--help" | "-h"] => Ok(Command::Help),
+        ["setup"] => Ok(Command::Setup),
+        ["setup", "--help" | "-h"] => Ok(Command::Help),
+        ["setup", other, ..] => Err(format!("unknown argument `{other}` for `setup`")),
         ["status", rest @ ..] => parse_status(rest),
         ["update" | "--update", rest @ ..] => parse_update(rest),
         ["hook", rest @ ..] => Ok(parse_hook(rest)),
@@ -590,6 +600,14 @@ mod tests {
         ] {
             assert!(wake(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn setup_is_a_command_and_takes_only_help() {
+        assert_eq!(parse(["setup"]), Ok(Command::Setup));
+        assert_eq!(parse(["setup", "-h"]), Ok(Command::Help));
+        assert!(parse(["setup", "--bogus"]).is_err());
+        assert!(USAGE.contains("tower setup"));
     }
 
     #[test]

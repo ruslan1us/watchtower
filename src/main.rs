@@ -1,5 +1,6 @@
 //! `tower`: the Watchtower TUI. All logic lives in the library; this only
-//! parses arguments, loads config and state, and starts the TUI, or runs
+//! parses arguments, loads config and state, and starts the TUI (in the
+//! welcome window with no config file, or for `tower setup`), or runs
 //! `tower status`, `tower dispatch`, `tower wake` or `tower update` without
 //! it.
 
@@ -11,14 +12,16 @@ use watchtower::config::{Config, ConfigSource};
 use watchtower::paths::Dirs;
 use watchtower::sidecar::Sidecar;
 use watchtower::update;
+use watchtower::welcome::Origin;
 
 fn main() -> ExitCode {
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if raw.first().is_some_and(|a| a == "hook") {
         return hook(&raw);
     }
-    match args::parse(std::env::args().skip(1)) {
-        Ok(Command::Run) => {}
+    let setup = match args::parse(std::env::args().skip(1)) {
+        Ok(Command::Run) => false,
+        Ok(Command::Setup) => true,
         // Handled above, before arguments that are not UTF-8 could panic.
         Ok(Command::Hook { .. }) => return ExitCode::SUCCESS,
         Ok(Command::Status { json }) => return status(json),
@@ -51,7 +54,7 @@ fn main() -> ExitCode {
             eprint!("{}", help_text());
             return ExitCode::from(2);
         }
-    }
+    };
 
     let Some(dirs) = Dirs::from_env() else {
         eprintln!("tower: cannot determine the home directory (HOME is not set)");
@@ -69,7 +72,8 @@ fn main() -> ExitCode {
         }
     };
     let loaded = Sidecar::load(&dirs.state_file());
-    match watchtower::tui::run(config, source, dirs, loaded) {
+    let welcome = Origin::for_start(setup, source.found);
+    match watchtower::tui::run(config, source, dirs, loaded, welcome) {
         Ok(exit) => ExitCode::from(exit.status()),
         Err(err) => {
             eprintln!("tower: {}", shown(&err));

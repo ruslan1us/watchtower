@@ -1,6 +1,6 @@
 # 0011. Keybindings
 
-- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision · `z`, `F2`, `Shift+PgUp` / `Shift+PgDn` and `Esc` over a selection in the workspace's pane, 2026-10-31, by the same decision · `P`, `U` and `Ctrl+U` added by [0047](0047-tab-title-pinning-and-restart.md)
+- Status: Accepted · 2026-10-18 · `e` rename key added by [0027](0027-rename-sessions.md) · logs panel focus and keys amended by [0028](0028-scrolling-the-logs-panel.md) · `Ctrl+P` template key added by [0036](0036-prompt-templates.md) · `t` quick reply key added by [0040](0040-quick-reply.md) · `!` shell key added by [0037](0037-git-summary-and-shell.md) · slash-command menu keys added by [0042](0042-slash-command-suggestions.md) · `r` also refreshes plan usage, amended by [0043](0043-plan-usage-display.md) · keys of the workspace's terminal pane added by [0045](0045-workspace-style.md) · `h` for the workspace's Home panel and `!` in its pane, 2026-10-31, by the same decision · `z`, `F2`, `Shift+PgUp` / `Shift+PgDn` and `Esc` over a selection in the workspace's pane, 2026-10-31, by the same decision · `P`, `U` and `Ctrl+U` added by [0047](0047-tab-title-pinning-and-restart.md) · the welcome window's keys by [0048](0048-first-run-welcome.md)
 - Related: [0028](0028-scrolling-the-logs-panel.md), [0019](0019-resume-past-sessions.md), [0005](0005-attach-and-detach.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0009](0009-stop-remove-and-logs.md), [0010](0010-orchestrator.md), [0004](0004-account-hand-off.md), [0018](0018-account-groups-and-handoff-guard.md), [0024](0024-settings-window.md), [0027](0027-rename-sessions.md), [0036](0036-prompt-templates.md), [0040](0040-quick-reply.md), [0037](0037-git-summary-and-shell.md)
 
 ## Context
@@ -137,6 +137,13 @@ the list. After a `Workspace not trusted` failure a window offers `Ctrl+T`
 (run the owner's command in the folder, then retry once) and `Esc` (leave
 the session as it was). `e` on an interactive row or the orchestrator opens
 nothing and the status line says why.
+
+**Welcome window** (*added by [0048](0048-first-run-welcome.md)*): `Enter`
+next, `Backspace` / `Shift+Tab` back, `↑` / `↓` move, `←` / `→` change, `Space`
+ticks, `Esc` skips the rest and saves (`tower setup`: cancels), `Ctrl+C` quits
+and writes nothing, at once and without asking. Its field for another folder is
+a text context; with nothing in it, `Enter`, `Backspace` and `Esc` are the
+step's.
 
 **Settings window** (`c`, [0024](0024-settings-window.md)): `↑` / `↓`
 (`k` / `j`, `PgUp` / `PgDn`, `Home` / `End`) move over the settings and the

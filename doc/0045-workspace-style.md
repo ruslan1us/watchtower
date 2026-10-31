@@ -1,6 +1,6 @@
 # 0045. Workspace style: Claude's terminal in a pane (first step)
 
-- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31 · tower's own title by [0047](0047-tab-title-pinning-and-restart.md), which also closes the client around a restart
+- Status: Accepted · 2026-10-30 · the first step, for the owner to try on real terminals · the Home panel, clicks on group headers, the wheel on the list and cards added after the owner's trial, 2026-10-31 · the whole selected card highlighted, `[ui] card_gap`, and `o`, start-and-attach and the rename in the pane, after the second trial, 2026-10-31 · the shell in the pane, the usage block and the scroll hints, 2026-10-31 · tower's own selection, the shell's history and zoom, 2026-10-31 · tower's own title by [0047](0047-tab-title-pinning-and-restart.md), which also closes the client around a restart · preselected in the welcome window by [0048](0048-first-run-welcome.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0007](0007-visual-only-attention.md), [0009](0009-stop-remove-and-logs.md), [0011](0011-keybindings.md), [0014](0014-v1-scope.md), [0016](0016-do-not-change-claude-code-defaults.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0024](0024-settings-window.md), [0028](0028-scrolling-the-logs-panel.md), [0037](0037-git-summary-and-shell.md), [reference](reference/claude-code-cli.md#claude-attach-in-a-pseudo-terminal)
 - Overturns, for this style only: the rejected split view of [0005](0005-attach-and-detach.md), the "no PTY handling" of [0001](0001-thin-wrapper-over-claude-cli.md) and the non-goal of [0014](0014-v1-scope.md), "No mouse" of [0028](0028-scrolling-the-logs-panel.md), the key rules of [0011](0011-keybindings.md) and the two styles of [0020](0020-visual-styles.md)
 
@@ -25,6 +25,8 @@ the list's rows (**Cards**). What the trial did not question stands.
 experimental; the default stays `dashboard`, and no other style changes in any way: no
 second descriptor in the event loop's wait, no mouse capture, no bracketed paste, no
 draw limit.
+*Amended by [0048](0048-first-run-welcome.md):* the welcome window preselects it for a new
+user, who sees the choice. A config without the key still gets `dashboard`.
 
 **Layout.** Today's list in a bar at the left, 18 % of the width kept between 28 and 40
 columns, or `[ui] list_width` (20 to 60; 0 is automatic), with the columns a bar has room

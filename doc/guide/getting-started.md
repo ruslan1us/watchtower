@@ -75,12 +75,15 @@ For another host, copy that one file into its `~/.local/bin` (e.g. with `scp`).
 
 ## Quick start
 
-1. Copy [`config.example.toml`](../../config.example.toml) to `~/.config/watchtower/config.toml`,
-   list your accounts and set `project_roots` to the folders that hold your git clones
-   (e.g. `~/workspace`). Without a config file tower uses one account, `main`, running
-   `claude`, and the new-session dialog has no projects to offer; tower then says so in
-   its status line, and `tower status` and `tower --help` name the config file in use.
-2. Run `tower`. Existing background sessions of every account appear in the list.
+1. Run `tower`. Without a config file a welcome window opens
+   ([0048](../0048-first-run-welcome.md)): it says what it found, then asks for a style, a
+   theme, the folders that hold your git clones and three options. `Enter` goes on and saves at
+   the end; `Esc` saves what you have chosen so far; `Ctrl+C` quits without writing anything.
+   It writes `~/.config/watchtower/config.toml`, with one account, `main`, running `claude`.
+   More accounts, or writing the file by hand first, are in
+   [Configuration](configuration.md). `tower setup` opens the window again at any time.
+2. The existing background sessions of every account appear in the list, in the style you
+   chose. `tower status` and `tower --help` name the config file in use.
 3. Press `n`, pick a project, type a task and press `Ctrl+S` to start it in the background
    (or `Ctrl+Enter` / `Alt+Enter` to start and attach). If the account does not trust the
    folder yet, `Ctrl+T` opens `claude` there so you can accept, then retries.

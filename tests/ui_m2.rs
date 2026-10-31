@@ -224,8 +224,8 @@ fn dialog_without_projects_names_the_config_file() {
     });
     assert!(
         common::status_text(&app).contains(
-            "no config at ~/.config/watchtower/config.toml; using defaults — see \
-             config.example.toml"
+            "no config at ~/.config/watchtower/config.toml; using defaults — tower setup writes \
+             one"
         ),
         "{}",
         common::status_text(&app)
@@ -239,8 +239,11 @@ fn dialog_without_projects_names_the_config_file() {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(flat.contains("no projects found — no config at"), "{all}");
-    assert!(flat.contains("(using defaults); create it with"), "{all}");
-    assert!(flat.contains("(see config.example.toml)"), "{all}");
+    assert!(
+        flat.contains("(using defaults); tower setup writes it"),
+        "{all}"
+    );
+    assert!(flat.contains("with your project folders"), "{all}");
 }
 
 /// The text of the row holding `needle`, without the borders and spaces of

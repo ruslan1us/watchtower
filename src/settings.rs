@@ -29,6 +29,7 @@ use crate::config_edit::{
 use crate::dialog::{KeyUse, LineInput};
 use crate::paths;
 use crate::projects;
+use crate::welcome::Origin;
 
 /// Rows a page key moves.
 const PAGE: usize = 8;
@@ -418,6 +419,8 @@ pub struct SettingsWindow {
     folder_busy: bool,
     /// The home folder, to show paths with `~`.
     home: PathBuf,
+    /// The steps of the welcome window, when this is one (doc/0048).
+    pub welcome: Option<crate::welcome::Welcome>,
 }
 
 impl SettingsWindow {
@@ -447,6 +450,7 @@ impl SettingsWindow {
             complete_wanted: None,
             folder_busy: false,
             home: home.to_path_buf(),
+            welcome: None,
         }
     }
 
@@ -486,6 +490,9 @@ impl SettingsWindow {
     /// Whether the keys go to a text field (typed Cyrillic stays as is,
     /// doc/0011).
     pub fn takes_text(&self) -> bool {
+        if self.welcome.is_some() {
+            return self.mode == Mode::Browse && self.welcome_takes_text();
+        }
         match &self.mode {
             Mode::Input(_) => true,
             Mode::List(list) => list.input.is_some(),
@@ -540,7 +547,7 @@ impl SettingsWindow {
         (!parts.is_empty()).then(|| parts.join(", "))
     }
 
-    fn info(&mut self, text: impl Into<String>) {
+    pub(crate) fn info(&mut self, text: impl Into<String>) {
         self.notice = Some(Notice {
             text: text.into(),
             kind: NoticeKind::Info,
@@ -556,7 +563,7 @@ impl SettingsWindow {
 
     /// Sets `key` to `value` as an unsaved change; an invalid value is
     /// refused with its message.
-    fn set(&mut self, key: SettingKey, value: SettingValue) -> bool {
+    pub(crate) fn set(&mut self, key: SettingKey, value: SettingValue) -> bool {
         match self.session.set(key, value) {
             Ok(()) => {
                 self.just_saved = false;
@@ -573,6 +580,12 @@ impl SettingsWindow {
     /// Handles a key; command keys arrive already mapped from a Cyrillic
     /// layout, text keys as typed ([`SettingsWindow::takes_text`]).
     pub fn handle_key(&mut self, key: KeyEvent) -> SettingsAction {
+        // `Ctrl+C` quits it whatever it is doing (doc/0048).
+        let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'C'));
+        if self.welcome.is_some() && (self.mode == Mode::Browse || ctrl_c) {
+            return self.welcome_key(key);
+        }
         match self.mode.clone() {
             Mode::Browse => self.browse_key(key),
             Mode::Pick(pick) => self.pick_key(key, pick),
@@ -601,6 +614,14 @@ impl SettingsWindow {
                     SettingsAction::Save { force: true }
                 } else {
                     w.after_save = None;
+                    // A first start's draft does not push over the file that
+                    // appeared meanwhile: it is what the next reload applies.
+                    if w.welcome
+                        .as_ref()
+                        .is_some_and(|x| x.origin == Origin::FirstRun)
+                    {
+                        return SettingsAction::Close;
+                    }
                     w.info("not saved; your changes are still here");
                     SettingsAction::None
                 }
@@ -848,6 +869,11 @@ impl SettingsWindow {
         let Some(key) = self.selected_key() else {
             return;
         };
+        self.cycle_key(key, forward);
+    }
+
+    /// The previous / next offered value of `key`.
+    pub(crate) fn cycle_key(&mut self, key: SettingKey, forward: bool) {
         match self.session.kind(key) {
             SettingKind::Choice { values, .. } if !values.is_empty() => {
                 let current = self.session.value(key).display();
@@ -906,7 +932,7 @@ impl SettingsWindow {
     /// `Ctrl+S`, or `y` in a question: saves on a worker thread, then
     /// `after`. Refused while a save runs or the changes would not give a
     /// valid config.
-    fn save(&mut self, after: Option<AfterSave>) -> SettingsAction {
+    pub(crate) fn save(&mut self, after: Option<AfterSave>) -> SettingsAction {
         if self.saving {
             self.info("a save is already running");
             return SettingsAction::None;
@@ -964,7 +990,12 @@ impl SettingsWindow {
             }
             Err(err) => {
                 self.after_save = None;
-                self.error(format!("not saved: {}", one_line(&err.to_string())));
+                let text = one_line(&err.to_string());
+                if let Some(welcome) = self.welcome.as_mut() {
+                    welcome.failed = Some(text);
+                } else {
+                    self.error(format!("not saved: {text}"));
+                }
                 SettingsAction::None
             }
         }
@@ -1221,11 +1252,21 @@ impl SettingsWindow {
     }
 
     /// Asks for a look at `folder` unless it is known.
-    fn want_folder(&mut self, folder: &str) {
+    pub(crate) fn want_folder(&mut self, folder: &str) {
         if !self.folders.contains_key(folder) {
-            self.folders.insert(folder.to_owned(), FolderInfo::Checking);
-            self.wanted.insert(folder.to_owned());
+            self.recheck_folder(folder);
         }
+    }
+
+    /// Asks for a new look at `folder`, known or not.
+    pub(crate) fn recheck_folder(&mut self, folder: &str) {
+        self.folders.insert(folder.to_owned(), FolderInfo::Checking);
+        self.wanted.insert(folder.to_owned());
+    }
+
+    /// Asks for a `Tab` completion of `text`.
+    pub(crate) fn want_completion(&mut self, text: String) {
+        self.complete_wanted = Some(text);
     }
 
     /// The next [`FolderJob`] to run, unless one runs or nothing is
@@ -1247,8 +1288,12 @@ impl SettingsWindow {
     /// completion when the input still holds the text it was for.
     pub fn folders_checked(&mut self, result: FolderResult) {
         self.folder_busy = false;
-        for (folder, info) in result.probed {
-            self.folders.insert(folder, info);
+        for (folder, info) in &result.probed {
+            self.folders.insert(folder.clone(), info.clone());
+        }
+        if self.welcome.is_some() {
+            self.welcome_folders_checked(&result);
+            return;
         }
         let Some(done) = result.completed else {
             return;
