@@ -15,12 +15,14 @@
 //! trusted comment names exactly this release, and only then downloads the
 //! binary and compares it with its line in `SHA256SUMS`. An older release has
 //! no signature and is refused unless `--allow-unsigned` asks for its
-//! `.sha256` alone. Either way it then checks that the file is an ELF
-//! executable for this architecture, and that it runs and prints the expected
-//! `tower X.Y.Z`, and only then gives it the old binary's mode and owner and
-//! renames it over the target, so the swap is atomic. Nothing downloaded runs
-//! before those checks pass. On any failure the old binary is untouched and
-//! the temp dir is removed.
+//! `.sha256` alone. Either way it then checks that the file is an executable
+//! of this system's format for this architecture (ELF on Linux, thin Mach-O on
+//! macOS), and that it runs and prints the expected `tower X.Y.Z`, and only
+//! then gives it the old binary's mode and owner and renames it over the
+//! target, so the swap is atomic. Nothing downloaded runs before those checks
+//! pass, and nothing writes into the old binary, which macOS could punish by
+//! killing it. On any failure the old binary is untouched and the temp dir is
+//! removed.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -41,6 +43,9 @@ pub const MANIFEST_SIGNATURE: &str = "SHA256SUMS.minisig";
 /// The first version whose release is signed. This one and everything semver
 /// orders after it must have a good signature; anything before it has none.
 pub const SIGNED_SINCE: &str = "0.7.0-rc.1";
+
+/// The first version whose release has macOS binaries.
+pub const MACOS_SINCE: &str = "0.7.1-rc.1";
 
 /// The public keys a release signature may come from. Two exist so that one
 /// can be rotated out: a signature from either is accepted. An empty list
@@ -165,15 +170,23 @@ pub fn download_url(v: &Version, file: &str) -> String {
 }
 
 /// What to do without `curl` on this platform. The way around it must not
-/// need `curl` either.
+/// need `curl` either. macOS includes `curl`, so only `PATH` can be wrong there,
+/// and a browser's download of the binary would be quarantined by Gatekeeper.
 fn curl_missing(os: &str, arch: &str) -> String {
-    let install = "`curl` is not installed or not on PATH; install it and run this again";
+    let missing = "`curl` is not installed or not on PATH";
+    if os == "macos" {
+        return format!(
+            "{missing}; macOS includes it as /usr/bin/curl, \
+             so add /usr/bin to PATH and run this again"
+        );
+    }
+    let install = format!("{missing}; install it and run this again");
     match asset_for(os, arch) {
         Some(asset) => format!(
             "{install}, or download {LATEST_DOWNLOAD}/{asset} some other way, \
              save it as ~/.local/bin/tower and `chmod +x` it"
         ),
-        None => install.to_owned(),
+        None => install,
     }
 }
 
@@ -389,12 +402,40 @@ pub enum Outcome {
 // ---- the target ----------------------------------------------------------
 
 /// The release binary for this OS and architecture, as in `std::env::consts`.
+/// The macOS names say `arm64`, what `uname -m` prints there, where Rust says
+/// `aarch64`.
 pub fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
         ("linux", "x86_64") => Some("tower-x86_64-linux-musl"),
         ("linux", "aarch64") => Some("tower-aarch64-linux-musl"),
+        ("macos", "aarch64") => Some("tower-arm64-macos"),
+        ("macos", "x86_64") => Some("tower-x86_64-macos"),
         _ => None,
     }
+}
+
+/// The first release with a binary for this OS and architecture, or `None`
+/// when no release lacks one: Linux x86_64 has always had one.
+pub fn first_release(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "aarch64") => Some(SIGNED_SINCE),
+        ("macos", "aarch64" | "x86_64") => Some(MACOS_SINCE),
+        _ => None,
+    }
+}
+
+/// Why release `v` cannot be installed on this OS and architecture, when it
+/// is older than their [`first_release`].
+fn no_build(os: &str, arch: &str, v: &Version) -> Option<String> {
+    let first = first_release(os, arch)?;
+    if Version::parse(first).is_some_and(|first| *v >= first) {
+        return None;
+    }
+    let name = if os == "macos" { "macOS" } else { arch };
+    Some(format!(
+        "{} has no {name} build, the first is v{first}",
+        v.tag()
+    ))
 }
 
 /// Whether this OS and architecture have a release binary.
@@ -405,15 +446,6 @@ pub fn platform_supported(os: &str, arch: &str) -> bool {
 /// Whether a release must be signed: [`SIGNED_SINCE`] and everything after it.
 pub fn is_signed(v: &Version) -> bool {
     Version::parse(SIGNED_SINCE).is_some_and(|since| *v >= since)
-}
-
-/// Why `tower update` and `--check` stop at once on an OS tower runs on but has
-/// no release for, however new the latest release is (doc/0049). A Linux binary
-/// would not run there, and "newer release available" would promise an update
-/// that cannot happen.
-pub fn no_release_yet(os: &str) -> Option<&'static str> {
-    (os == "macos")
-        .then_some("no release for macOS yet; build from source (see doc/guide/getting-started.md)")
 }
 
 /// Whether `path` looks like a cargo build output: a file under
@@ -454,10 +486,11 @@ pub struct Updater {
     pub current: Version,
     /// `PATH` for finding `curl`; `None` inherits tower's.
     pub path: Option<OsString>,
-    /// Whether the download must be an ELF executable for this architecture.
-    /// Always on outside tests, which use a shell script as the fake release.
+    /// Whether the download must be an executable of this OS's format for this
+    /// architecture. Always on outside tests, which use a shell script as the
+    /// fake release.
     #[doc(hidden)]
-    pub require_elf: bool,
+    pub check_format: bool,
     /// The OS and architecture to decide for, as in `std::env::consts`. Always
     /// the real ones outside tests, whose fake releases work on any system.
     #[doc(hidden)]
@@ -473,7 +506,7 @@ impl Default for Updater {
         Updater {
             current: Version::current(),
             path: None,
-            require_elf: true,
+            check_format: true,
             platform: (std::env::consts::OS, std::env::consts::ARCH),
             keys: PINNED_KEYS.iter().map(|k| (*k).to_owned()).collect(),
         }
@@ -535,9 +568,6 @@ impl Updater {
 
     /// `tower update --check`: compares the latest release with this binary.
     pub fn check(&self) -> Result<Check, UpdateError> {
-        if let Some(refusal) = no_release_yet(self.platform.0) {
-            return err(refusal);
-        }
         Ok(Check {
             current: self.current.clone(),
             latest: self.latest()?,
@@ -553,13 +583,10 @@ impl Updater {
         out: &mut dyn Write,
     ) -> Result<Outcome, UpdateError> {
         let (os, arch) = self.platform;
-        if let Some(refusal) = no_release_yet(os) {
-            return err(refusal);
-        }
         let Some(asset) = asset_for(os, arch) else {
             return err(format!(
-                "releases exist only for Linux x86_64 and aarch64, not {os} {arch}; \
-                 build from source instead"
+                "releases exist only for Linux and macOS on x86_64 and aarch64, \
+                 not {os} {arch}; build from source instead"
             ));
         };
         if !request.force && looks_like_dev_build(target) {
@@ -585,28 +612,30 @@ impl Updater {
                     return Ok(Outcome::UpToDate(latest));
                 }
                 if latest < *current && !request.force {
+                    // Not a way to suggest when this platform would refuse it.
+                    let downgrade = if no_build(os, arch, &latest).is_none() {
+                        format!(" (use --version {} to downgrade)", latest.tag())
+                    } else {
+                        String::new()
+                    };
                     return err(format!(
-                        "running {} is newer than the latest release {}; nothing was changed \
-                         (use --version {} to downgrade)",
+                        "running {} is newer than the latest release {}; \
+                         nothing was changed{downgrade}",
                         current.tag(),
-                        latest.tag(),
                         latest.tag()
                     ));
                 }
                 latest
             }
         };
+        if let Some(why) = no_build(os, arch, &to) {
+            return err(format!("{why}; nothing was changed"));
+        }
         let signed = is_signed(&to);
         if signed && self.keys.is_empty() {
             return err(format!(
                 "this build has no release signing keys, so it cannot verify {}; \
                  nothing was changed",
-                to.tag()
-            ));
-        }
-        if !signed && arch != "x86_64" {
-            return err(format!(
-                "{} has no {arch} build, the first is v{SIGNED_SINCE}; nothing was changed",
                 to.tag()
             ));
         }
@@ -655,8 +684,8 @@ impl Updater {
             self.fetch_unsigned(&to, asset, tmp.path())
                 .map_err(unchanged)?;
         }
-        if self.require_elf {
-            check_elf(&new_path, arch).map_err(unchanged)?;
+        if self.check_format {
+            check_format(&new_path, os, arch).map_err(unchanged)?;
         }
         set_mode(&new_path, 0o700)
             .map_err(|e| unchanged(format!("cannot make the download executable: {e}")))?;
@@ -1035,13 +1064,48 @@ pub fn is_elf_executable(header: &[u8], machine: u16) -> bool {
         && u16::from_le_bytes([header[18], header[19]]) == machine
 }
 
-fn check_elf(path: &Path, arch: &str) -> Result<(), String> {
+/// The Mach-O CPU type (`cputype`) of an architecture with a release:
+/// `CPU_TYPE_ARM64` and `CPU_TYPE_X86_64`.
+pub fn macho_cpu_type(arch: &str) -> Option<u32> {
+    match arch {
+        "x86_64" => Some(0x0100_0007),
+        "aarch64" => Some(0x0100_000C),
+        _ => None,
+    }
+}
+
+/// Whether `header` starts a thin Mach-O executable for `cpu_type`, 64-bit
+/// little-endian: `MH_MAGIC_64`, then `filetype` at offset 12 is `MH_EXECUTE`.
+/// A fat binary has another magic, and the release binaries are not fat.
+pub fn is_macho_executable(header: &[u8], cpu_type: u32) -> bool {
+    let word = |at: usize| {
+        u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
+    header.len() >= 16
+        && header[..4] == [0xCF, 0xFA, 0xED, 0xFE]
+        && word(4) == cpu_type
+        && word(12) == 2
+}
+
+/// Whether the file at `path` is an executable of `os`'s format for `arch`.
+/// This has to hold before the file runs: macOS runs a file it does not
+/// recognise through `/bin/sh` instead of refusing it.
+fn check_format(path: &Path, os: &str, arch: &str) -> Result<(), String> {
     let mut header = [0u8; 20];
     let read = fs::File::open(path).and_then(|mut f| f.read_exact(&mut header));
-    let right = elf_machine(arch).is_some_and(|machine| is_elf_executable(&header, machine));
+    let right = match os {
+        "linux" => elf_machine(arch).is_some_and(|machine| is_elf_executable(&header, machine)),
+        "macos" => macho_cpu_type(arch).is_some_and(|cpu| is_macho_executable(&header, cpu)),
+        _ => false,
+    };
     if read.is_err() || !right {
-        let name = if arch == "x86_64" { "x86-64" } else { arch };
-        return Err(format!("the download is not an {name} Linux executable"));
+        let name = match (os, arch) {
+            ("macos", "aarch64") => "arm64",
+            (_, "x86_64") => "x86-64",
+            _ => arch,
+        };
+        let system = if os == "macos" { "macOS" } else { "Linux" };
+        return Err(format!("the download is not an {name} {system} executable"));
     }
     Ok(())
 }
@@ -1152,6 +1216,24 @@ mod tests {
         assert!(is_elf_executable(&h, 183));
         assert!(!is_elf_executable(&h, 62));
         assert!(!is_elf_executable(b"#!/bin/sh\necho tower 1", 62));
+    }
+
+    #[test]
+    fn macho_header() {
+        // The first 16 bytes of an arm64 executable.
+        let mut h = [
+            0xCF, 0xFA, 0xED, 0xFE, 0x0C, 0, 0, 0x01, 0, 0, 0, 0, 2, 0, 0, 0,
+        ];
+        assert!(is_macho_executable(&h, 0x0100_000C));
+        assert!(!is_macho_executable(&h, 0x0100_0007));
+        h[4] = 0x07; // x86_64
+        assert!(is_macho_executable(&h, 0x0100_0007));
+        assert!(!is_macho_executable(&h, 0x0100_000C));
+        h[12] = 6; // MH_DYLIB
+        assert!(!is_macho_executable(&h, 0x0100_0007));
+        // Too short to index: refused, not a panic.
+        assert!(!is_macho_executable(&h[..15], 0x0100_0007));
+        assert!(!is_macho_executable(&[], 0x0100_0007));
     }
 
     #[test]
