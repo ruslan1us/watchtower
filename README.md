@@ -31,7 +31,7 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 
 ## Requirements
 
-- Linux x86_64, or Windows through WSL. macOS is coming: see [Getting started](doc/guide/getting-started.md).
+- Linux x86_64 or aarch64, or Windows through WSL. macOS is coming: see [Getting started](doc/guide/getting-started.md).
 - Claude Code 2.1.300 or newer.
 - `curl`, only for `tower update`.
 - Rust 1.88 or newer, only to build from source.
@@ -39,12 +39,12 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 ## Install
 
 ```sh
-mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-x86_64-linux-musl && chmod +x ~/.local/bin/tower
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
 ```
 
 To update later, run `tower update`.
 
-To check the download against its checksum, or to build from source, see [Getting started](doc/guide/getting-started.md).
+To check the download against its signature, or to build from source, see [Getting started](doc/guide/getting-started.md).
 
 ## Quick start
 
@@ -57,7 +57,7 @@ To check the download against its checksum, or to build from source, see [Gettin
 
 | Page | What it covers |
 |---|---|
-| [Getting started](doc/guide/getting-started.md) | Requirements, all install options, updating, building from source, the full quick start |
+| [Getting started](doc/guide/getting-started.md) | Requirements, all install options, checking a download, updating, building from source, the full quick start |
 | [Keys](doc/guide/keys.md) | Every key, window by window |
 | [Configuration](doc/guide/configuration.md) | The welcome window, the config file, the Settings window, accounts, styles, themes |
 | [Workspace style](doc/guide/workspace-style.md) | Claude Code's real terminal beside the list |
