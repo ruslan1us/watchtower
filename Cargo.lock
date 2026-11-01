@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "watchtower"
-version = "0.7.0"
+version = "0.7.1-rc.1"
 dependencies = [
  "ct-codecs",
  "ed25519-compact",
