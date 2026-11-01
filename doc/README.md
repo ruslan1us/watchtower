@@ -76,7 +76,7 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 | 0046 | [Colour themes from published palettes](0046-more-colour-themes.md) | Accepted |
 | 0047 | [Attention in the tab title, pinned sessions, restart after an update](0047-tab-title-pinning-and-restart.md) | Accepted |
 | 0048 | [First start: the welcome window and `tower setup`](0048-first-run-welcome.md) | Accepted |
-| 0049 | [Supported platforms](0049-supported-platforms.md) | Accepted (an aarch64 Linux release and a split `release.yml` by 0050) |
+| 0049 | [Supported platforms](0049-supported-platforms.md) | Accepted (an aarch64 Linux release and a split `release.yml` by 0050; first use on a real Mac noted 2026-11-01) |
 | 0050 | [Signed releases, immutable releases and an ARM build](0050-signed-releases-and-arm.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI

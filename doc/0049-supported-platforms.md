@@ -1,6 +1,6 @@
 # 0049. Supported platforms
 
-- Status: Accepted · 2026-11-01 · an aarch64 Linux release and a split `release.yml` by [0050](0050-signed-releases-and-arm.md)
+- Status: Accepted · 2026-11-01 · an aarch64 Linux release and a split `release.yml` by [0050](0050-signed-releases-and-arm.md) · first use on a real Mac noted 2026-11-01
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0012](0012-build-and-distribution.md), [0014](0014-v1-scope.md), [0015](0015-testing-strategy.md), [0017](0017-ownership-evidence-rules.md), [0023](0023-self-update.md), [0025](0025-session-terminal-size-for-logs.md), [0045](0045-workspace-style.md)
 - Supersedes: the non-goal "Platforms other than Linux x86_64" of [0014](0014-v1-scope.md)
 - Amends: [0012](0012-build-and-distribution.md), and the `/proc` rules of [0001](0001-thin-wrapper-over-claude-cli.md), [0017](0017-ownership-evidence-rules.md) and [0025](0025-session-terminal-size-for-logs.md)
@@ -21,7 +21,7 @@ information, and three assumptions about terminals that only a real Mac can chec
 |---|---|
 | Linux x86_64 | The supported release: a static binary, nothing about it changes. |
 | Windows, today | Through WSL, where it is Linux x86_64. |
-| macOS | In progress: builds from source, no release asset, not yet tried on a real Mac. |
+| macOS | In progress: builds from source, no release asset, used by the owner on a real Mac (2026-11-01), real account detection not built yet. |
 | Windows, native | Later, only after the owner's manual check. |
 
 **Process information is per system.** The `/proc` exception of
@@ -77,18 +77,26 @@ The Linux job, its musl build and `release.yml` stay as they are. There is no ma
 - Tests that read `/proc` go through one helper, which uses `ps` elsewhere, so the terminal tests
   still run on macOS. Only what `/proc` alone can show (a process's ignored signals, the real
   reads themselves) is Linux only.
+- *Noted 2026-11-01:* the owner built tower from source and used it on a real Mac, in iTerm2 and
+  in Warp. It discovered projects, created a session and showed correct output, and everything
+  else they tried worked. That general use showed no problem, but `posix_openpt`, `poll(2)` and
+  the resize re-arm were not checked one by one, so they stay unproven. The owner has not run the
+  check of whether another process's environment can be read, so real account detection is still
+  unbuilt and unverified. It waits on that check, and only matters with several accounts on one
+  Mac. The logs panel's size read, in the same next step, does not depend on the accounts.
 
 ## Alternatives considered
 
 - **Making macOS's detection part of this step.** It cannot be checked here, and whether the
   rest works has to be known first.
 - **A Linux binary for `tower update` to fetch anyway.** It would not run.
-- **A failing macOS job that blocks merging.** Nothing has run there yet, so it would block every
-  change on guesses.
+- **A failing macOS job that blocks merging.** Nothing had run there yet, so it would have blocked
+  every change on guesses.
 
 ## Open items
 
-To check on a real Mac, or from the first CI runs:
+To check on a real Mac, or from the first CI runs. The owner's first use (noted under
+Consequences) showed no problem but did not check these one by one, so they stay open:
 
 - `poll(2)` on a terminal and on a PTY master. tower treats `POLLNVAL` on its terminal as a
   hang-up, so a system that refuses it would make tower exit at once with status 129, and the

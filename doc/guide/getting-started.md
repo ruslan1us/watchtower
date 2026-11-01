@@ -86,8 +86,9 @@ may come later ([0049](../0049-supported-platforms.md)).
 
 ### macOS: build from source for now
 
-There is no macOS release yet, and tower has not been tried on a real Mac. You need Apple's
-command line tools (`xcode-select --install`) and Rust ([rustup](https://rustup.rs)):
+There is no macOS release yet. Tower's owner has built it from source and used it on a real Mac,
+in iTerm2 and Warp, and what they tried worked; that is the only use on a Mac we know of so far.
+You need Apple's command line tools (`xcode-select --install`) and Rust ([rustup](https://rustup.rs)):
 
 ```sh
 git clone https://github.com/ruslan1us/watchtower
