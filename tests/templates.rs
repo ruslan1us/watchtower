@@ -195,8 +195,9 @@ fn large_empty_and_non_utf8_files_are_skipped() {
     write(d, "empty.md", "");
     write(d, "blank.md", "  \n\n\t \n");
     std::fs::write(d.join("latin1.md"), b"caf\xe9\n").unwrap();
+    // macOS refuses a file name that isn't valid UTF-8.
     let bad_name = std::ffi::OsStr::from_bytes(b"bad-\xff.md");
-    std::fs::write(d.join(bad_name), "valid text").unwrap();
+    let has_bad_name = std::fs::write(d.join(bad_name), "valid text").is_ok();
     let list = templates::load(d);
     assert_eq!(names(&list), ["at-limit"]);
     assert_eq!(list.templates[0].text.len(), max);
@@ -204,7 +205,9 @@ fn large_empty_and_non_utf8_files_are_skipped() {
     assert_eq!(reason(&list, "empty.md"), SkipReason::Empty);
     assert_eq!(reason(&list, "blank.md"), SkipReason::Empty);
     assert_eq!(reason(&list, "latin1.md"), SkipReason::NotUtf8);
-    assert_eq!(reason(&list, "bad-\u{fffd}.md"), SkipReason::NotUtf8);
+    if has_bad_name {
+        assert_eq!(reason(&list, "bad-\u{fffd}.md"), SkipReason::NotUtf8);
+    }
 }
 
 #[test]

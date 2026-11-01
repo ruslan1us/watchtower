@@ -76,4 +76,4 @@ jobs:
 
       - name: cargo test
         if: ${{ !cancelled() }}
-        run: cargo test
+        run: cargo test --no-fail-fast
