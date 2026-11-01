@@ -113,6 +113,9 @@ enable immutability, which applies only to future releases. Then `v0.7.0`. The s
   dev-dependencies and are not in the release binary.
 - Checking by hand needs `minisign` on the user's machine. The public keys are in the source and
   in [Getting started](guide/getting-started.md).
+- `v0.7.0-rc.1` pins an earlier backup key that was replaced before `v0.7.0`, and that key's secret
+  half no longer exists. Towers on rc.1 still accept the primary, and `v0.7.0` moves them to the new
+  list.
 
 ## Alternatives considered
 

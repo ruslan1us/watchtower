@@ -52,7 +52,7 @@ pub const SIGNED_SINCE: &str = "0.7.0-rc.1";
 /// plain quoted literal alone on its own line, with no other text there.
 pub const PINNED_KEYS: &[&str] = &[
     "RWS+zpUTdXjkNWD8/tze42z4CklcBNrRULoQXW9fHK6713A3Akbzja1G",
-    "RWQRwacZnT5azR+G+tqgVxkdhQWN59kW1BCg2xaOLuzXxFxt2U41e8Hb",
+    "RWQqbNDvLlUx1dDYHpXxFk3BsVC6/x1MfB5bSQbt3ET9nhA96hJI9iRz",
 ];
 
 /// The web page of the newest (non-draft, non-pre-release) release. GitHub
