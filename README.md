@@ -31,7 +31,7 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 
 ## Requirements
 
-- Linux x86_64 or aarch64, or Windows through WSL. macOS is coming: see [Getting started](doc/guide/getting-started.md).
+- Linux x86_64 or aarch64, macOS on Apple silicon or Intel, or Windows through WSL. Some things are weaker on macOS: see [Getting started](doc/guide/getting-started.md#macos).
 - Claude Code 2.1.300 or newer.
 - `curl`, only for `tower update`.
 - Rust 1.88 or newer, only to build from source.
@@ -41,6 +41,14 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 ```sh
 mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
 ```
+
+On macOS:
+
+```sh
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower.new https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-macos && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
+```
+
+`~/.local/bin` isn't on `PATH` by default there: see [Getting started](doc/guide/getting-started.md#macos).
 
 To update later, run `tower update`.
 
