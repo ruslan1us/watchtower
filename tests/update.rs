@@ -622,6 +622,18 @@ fn binary_check_exit_codes_and_dev_build_refusal() {
             .output()
             .unwrap()
     };
+
+    // macOS has no release yet (doc/0049): `--check` stops before any network
+    // call, so nothing below can happen there.
+    if cfg!(target_os = "macos") {
+        let out = tower(&["update", "--check"]);
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("no release for macOS yet"), "{stderr}");
+        assert!(curl.calls().is_empty(), "refused before any network call");
+        return;
+    }
+
     let current = env!("CARGO_PKG_VERSION");
 
     let out = tower(&["update", "--check"]);

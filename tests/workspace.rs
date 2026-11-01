@@ -587,10 +587,16 @@ fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
     );
     assert!(!tower.screen_text().contains("CLAUDE SCREEN"));
     // The folder, and the same cleaning of the environment as the client's.
+    // Canonical, as the shell prints it: macOS's temp dir is under a symlink.
     tower.send(b"echo [$PWD][$TERM][$TERM_PROGRAM][$TMUX]\r");
     let want = format!(
         "[{}][xterm-256color][][]",
-        tower.tower_dir().join("demo").display()
+        tower
+            .tower_dir()
+            .join("demo")
+            .canonicalize()
+            .unwrap()
+            .display()
     );
     tower.wait_for("its environment", |t| {
         t.screen_text()
