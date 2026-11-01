@@ -18,8 +18,8 @@ use watchtower::config::Account;
 use watchtower::dispatch::{DispatchError, DispatchRequest};
 use watchtower::jobs::JobResult;
 use watchtower::tui::{
-    HungUp, Input, MODE_RESETS, REARM_LIMIT, ReadyEvents, ReadyInput, polls_after, read_ready,
-    take_input, wait_input, wait_key,
+    HungUp, Input, MODE_RESETS, READS_WHEN_IDLE, REARM_LIMIT, ReadyEvents, ReadyInput, idle_events,
+    polls_after, read_ready, take_input, wait_input, wait_key,
 };
 
 fn pipe() -> (OwnedFd, std::fs::File) {
@@ -289,6 +289,32 @@ impl ReadyInput for Stream {
         Ok(vec![press('x')])
     }
     fn rearm(&mut self) {}
+}
+
+/// Outside Linux a resize is taken on a turn without input, so its edge never
+/// uses up the next key's (doc/0049). Linux does not call crossterm then.
+#[test]
+fn a_turn_without_input_reads_only_where_the_system_needs_it() {
+    assert_eq!(READS_WHEN_IDLE, !cfg!(target_os = "linux"));
+
+    let mut resized = EdgeReader {
+        edge: true,
+        resize: true,
+        ..EdgeReader::default()
+    };
+    assert_eq!(idle_events(&mut resized, false), Ok(Vec::new()));
+    assert_eq!(resized.reads, 0, "not called");
+    assert_eq!(
+        idle_events(&mut resized, true),
+        Ok(vec![Event::Resize(110, 36)])
+    );
+    assert_eq!(resized.rearms, 0, "nothing is waiting, nothing is re-armed");
+
+    // The next key then has its own edge, read at once and with no re-arm.
+    resized.typed("n");
+    let read = read_ready(&mut resized).unwrap();
+    assert_eq!(read.events, vec![press('n')]);
+    assert_eq!(resized.rearms, 0);
 }
 
 #[test]

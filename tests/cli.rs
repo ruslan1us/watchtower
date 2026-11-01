@@ -1,6 +1,8 @@
 //! CLI runner tests against a fake `claude` executable (doc/0015).
 
 mod common;
+#[path = "support/process.rs"]
+mod process;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -330,10 +332,9 @@ fn run_in_sets_the_working_directory() {
 #[test]
 fn background_call_runs_in_its_own_process_group() {
     let _g = lock();
-    // Field 5 of /proc/<pid>/stat is the process group: the call leads a
-    // group of its own, so Ctrl+C or Ctrl+Z typed into an attached session
-    // (tower's foreground group) never reaches it.
-    let fake = Fake::new("claude", "echo $$; cut -d' ' -f5 /proc/$$/stat");
+    // The call leads a group of its own, so Ctrl+C or Ctrl+Z typed into an
+    // attached session (tower's foreground group) never reaches it.
+    let fake = Fake::new("claude", &format!("echo $$; {}", process::PRINT_OWN_PGID));
     let out = CliRunner::new()
         .run(&fake.account("claude"), ["x"])
         .unwrap();
@@ -365,20 +366,13 @@ fn timeout_kills_the_whole_process_group() {
         .unwrap();
     // Killed, then reaped by whoever adopted it.
     let deadline = Instant::now() + Duration::from_secs(5);
-    let alive = |pid: libc::pid_t| {
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            !stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim_start()
-                .starts_with('Z')
-        })
-    };
-    while alive(pid) && Instant::now() < deadline {
+    while process::alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!alive(pid), "grandchild {pid} survived the timeout");
+    assert!(
+        !process::alive(pid),
+        "grandchild {pid} survived the timeout"
+    );
 }
 
 #[test]

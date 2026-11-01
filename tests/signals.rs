@@ -3,10 +3,8 @@
 //! terminal is restored without writes after SIGHUP. A separate test binary,
 //! so the process-wide handlers cannot affect other tests.
 
-use std::process::Command;
-
 use signal_hook::consts::{SIGHUP, SIGTERM};
-use watchtower::attach::{TERMINATION_SIGNALS, Termination, signal_exit_status};
+use watchtower::attach::{Termination, signal_exit_status};
 use watchtower::tui::{Exit, exit_for};
 
 #[test]
@@ -22,16 +20,20 @@ fn signals_set_the_flag_instead_of_killing() {
     assert_eq!(Termination::install().unwrap().pending(), Some(SIGHUP));
 
     // A child started now has the default dispositions: handlers are reset
-    // on exec, nothing is inherited as ignored (`SigIgn` bits clear).
-    let out = Command::new("sh")
-        .args(["-c", "grep '^SigIgn:' /proc/self/status"])
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&out.stdout);
-    let hex = text.split_whitespace().nth(1).expect("SigIgn line");
-    let mask = u64::from_str_radix(hex, 16).unwrap();
-    for sig in TERMINATION_SIGNALS {
-        assert_eq!(mask & (1 << (sig - 1)), 0, "signal {sig} ignored in child");
+    // on exec, nothing is inherited as ignored (`SigIgn` bits clear). Only
+    // `/proc` shows that.
+    #[cfg(target_os = "linux")]
+    {
+        let out = std::process::Command::new("sh")
+            .args(["-c", "grep '^SigIgn:' /proc/self/status"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let hex = text.split_whitespace().nth(1).expect("SigIgn line");
+        let mask = u64::from_str_radix(hex, 16).unwrap();
+        for sig in watchtower::attach::TERMINATION_SIGNALS {
+            assert_eq!(mask & (1 << (sig - 1)), 0, "signal {sig} ignored in child");
+        }
     }
 }
 

@@ -12,9 +12,12 @@ use std::sync::{Mutex, MutexGuard};
 use watchtower::args::{self, Command as Cli};
 use watchtower::update::{
     ASSET, Check, EXIT_UPDATE_AVAILABLE, LATEST_API, LATEST_PAGE, Outcome, RELEASE_TAG_PREFIX,
-    RELEASES_PAGE, Request, Updater, Version, looks_like_dev_build, parse_latest_redirect,
-    platform_supported, sha256_hex,
+    RELEASES_PAGE, Request, Updater, Version, looks_like_dev_build, no_release_yet,
+    parse_latest_redirect, platform_supported, sha256_hex,
 };
+
+/// What the fake releases stand in for, whatever system runs the tests.
+const LINUX: (&str, &str) = ("linux", "x86_64");
 
 /// Writing an executable while another thread forks can make the exec fail
 /// with ETXTBSY, so the tests of this binary run one at a time.
@@ -171,6 +174,7 @@ if [ -n "$out" ]; then cp "$f" "$out"; else cat "$f"; fi
             current: v(current),
             path: Some(self.path()),
             require_elf: false,
+            platform: LINUX,
         }
     }
 }
@@ -287,6 +291,55 @@ fn update_alias_and_options_parse() {
     assert!(args::USAGE.contains("--update"));
 }
 
+/// macOS has no release yet, so tower must not download a Linux binary, nor
+/// say that an update is available (doc/0049).
+#[test]
+fn macos_is_refused_before_any_download() {
+    let _guard = lock();
+    assert!(no_release_yet("macos").is_some());
+    assert!(no_release_yet("linux").is_none());
+
+    let curl = FakeCurl::new();
+    curl.serve_latest("v0.3.0");
+    curl.serve_release("v0.3.0", "tower 0.3.0", None);
+    let install = Install::new("0.2.1", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+    for arch in ["aarch64", "x86_64"] {
+        let mac = Updater {
+            platform: ("macos", arch),
+            ..curl.updater("0.2.1")
+        };
+        let (result, _) = run(&mac, &install.target(), &Request::default());
+        let err = result.unwrap_err();
+        assert!(err.contains("no release for macOS yet"), "{err}");
+        assert!(err.contains("build from source"), "{err}");
+        let err = mac.check().unwrap_err().to_string();
+        assert!(err.contains("no release for macOS yet"), "{err}");
+    }
+    assert!(curl.calls().is_empty(), "no network: {:?}", curl.calls());
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+}
+
+/// Other unsupported platforms keep their message, and `--check` still looks.
+#[test]
+fn another_unsupported_platform_keeps_its_refusal() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    curl.serve_latest("v0.3.0");
+    let install = Install::new("0.2.1", 0o755);
+    let arm = Updater {
+        platform: ("linux", "aarch64"),
+        ..curl.updater("0.2.1")
+    };
+    let (result, _) = run(&arm, &install.target(), &Request::default());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("releases exist only for Linux x86_64, not linux aarch64"),
+        "{err}"
+    );
+    assert!(arm.check().is_ok());
+}
+
 #[test]
 fn platforms_and_dev_build_paths() {
     assert!(platform_supported("linux", "x86_64"));
@@ -390,6 +443,7 @@ fn check_network_error_and_bad_answer() {
         current: v("0.2.1"),
         path: Some(OsString::from("/nonexistent-dir")),
         require_elf: false,
+        platform: LINUX,
     };
     let err = missing.check().unwrap_err().to_string();
     assert!(err.contains("`curl` is not installed"), "{err}");

@@ -76,10 +76,49 @@ pub trait EnvironReader {
 /// `/proc/<pid>/stat`, and (as a [`crate::ptysize::TerminalReader`]) the
 /// window size of the session's own `/dev/pts` device with a read-only
 /// `TIOCGWINSZ`: the only OS-level reads tower does (doc/0001, doc/0017,
-/// doc/0025).
+/// doc/0025). Linux only: elsewhere this name is [`NoProcessInfo`] until the
+/// system has reads of its own (doc/0049).
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcEnviron;
 
+#[cfg(not(target_os = "linux"))]
+pub use NoProcessInfo as ProcEnviron;
+
+/// The process reads of a system tower cannot look at yet (doc/0049): every
+/// read fails, as for another user's process on Linux. So rule 1 gives no
+/// evidence and ownership falls through to its other rules, the pid-reuse
+/// guard remembers nothing, and the logs replay infers its size (doc/0009).
+/// Nothing is shown for it: a failed read is an ordinary "no evidence".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoProcessInfo;
+
+fn no_process_info<T>() -> std::io::Result<T> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "tower cannot read process information on this system yet",
+    ))
+}
+
+impl EnvironReader for NoProcessInfo {
+    fn config_dir_var(&self, _pid: u32) -> std::io::Result<Option<OsString>> {
+        no_process_info()
+    }
+
+    fn cmdline(&self, _pid: u32) -> std::io::Result<Vec<u8>> {
+        no_process_info()
+    }
+
+    fn exe(&self, _pid: u32) -> std::io::Result<PathBuf> {
+        no_process_info()
+    }
+
+    fn start_ticks(&self, _pid: u32) -> std::io::Result<u64> {
+        no_process_info()
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl EnvironReader for ProcEnviron {
     fn config_dir_var(&self, pid: u32) -> std::io::Result<Option<OsString>> {
         let bytes = std::fs::read(format!("/proc/{pid}/environ"))?;

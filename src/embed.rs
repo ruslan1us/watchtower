@@ -580,30 +580,23 @@ pub fn hides_from_child(name: &str) -> bool {
     NAMES.contains(&name) || PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
-/// A new master and slave, both close-on-exec from their first moment, so a
-/// process another thread forks meanwhile cannot keep them open (a kept slave
-/// would hide the client's end, a kept master its hang-up). The master does
-/// not block.
+/// A new master and slave, both close-on-exec from their first moment on
+/// Linux, so a process another thread forks meanwhile cannot keep them open (a
+/// kept slave would hide the client's end, a kept master its hang-up). On
+/// other systems the master gets the flag right after it opens
+/// ([`open_master_then_cloexec`]). The master does not block.
 fn open_pty(rows: u16, cols: u16) -> io::Result<(OwnedFd, OwnedFd)> {
-    // SAFETY: posix_openpt returns a new descriptor or -1.
-    let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was just opened and is owned here.
-    let master = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut name = [0 as libc::c_char; 128];
-    // SAFETY: plain calls on our master; `name` is a valid buffer of the
-    // length passed, which ptsname_r NUL-terminates on success.
-    let path_ok = unsafe {
-        libc::grantpt(fd) == 0
-            && libc::unlockpt(fd) == 0
-            && libc::ptsname_r(fd, name.as_mut_ptr(), name.len()) == 0
-    };
+    let master = open_master()?;
+    let fd = master.as_raw_fd();
+    let mut name = [0 as libc::c_char; PTY_NAME_LEN];
+    // SAFETY: plain calls on our master; `name` is a valid buffer, which
+    // `slave_name` NUL-terminates on success.
+    let path_ok =
+        unsafe { libc::grantpt(fd) == 0 && libc::unlockpt(fd) == 0 && slave_name(fd, &mut name) };
     if !path_ok {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: `name` is the NUL-terminated path ptsname_r wrote.
+    // SAFETY: `name` is the NUL-terminated path `slave_name` wrote.
     let slave_fd = unsafe {
         libc::open(
             name.as_ptr(),
@@ -618,6 +611,79 @@ fn open_pty(rows: u16, cols: u16) -> io::Result<(OwnedFd, OwnedFd)> {
     set_nonblocking(fd)?;
     set_winsize(fd, rows, cols)?;
     Ok((master, slave))
+}
+
+/// The size of the buffer for a slave's path: what macOS's `TIOCPTYGNAME`
+/// writes, and more than Linux's `/dev/pts/<n>` needs.
+const PTY_NAME_LEN: usize = 128;
+
+#[cfg(target_os = "linux")]
+fn open_master() -> io::Result<OwnedFd> {
+    // SAFETY: posix_openpt returns a new descriptor or -1.
+    let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and is owned here.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_master() -> io::Result<OwnedFd> {
+    open_master_then_cloexec()
+}
+
+/// A master opened without `O_CLOEXEC`, which `posix_openpt` is only promised
+/// to take on Linux, with the flag set right after. A process another thread
+/// forks in that instant could keep it open.
+#[cfg(any(test, not(target_os = "linux")))]
+fn open_master_then_cloexec() -> io::Result<OwnedFd> {
+    // SAFETY: posix_openpt returns a new descriptor or -1.
+    let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and is owned here.
+    let master = unsafe { OwnedFd::from_raw_fd(fd) };
+    set_cloexec(fd)?;
+    Ok(master)
+}
+
+/// Writes the path of `master`'s slave into `name`; false on failure.
+///
+/// # Safety
+/// `master` must be an open PTY master.
+#[cfg(target_os = "linux")]
+unsafe fn slave_name(master: RawFd, name: &mut [libc::c_char; PTY_NAME_LEN]) -> bool {
+    // SAFETY: `name` is a valid buffer of the length passed.
+    unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) == 0 }
+}
+
+/// Writes the path of `master`'s slave into `name`; false on failure.
+///
+/// # Safety
+/// `master` must be an open PTY master.
+#[cfg(target_os = "macos")]
+unsafe fn slave_name(master: RawFd, name: &mut [libc::c_char; PTY_NAME_LEN]) -> bool {
+    // SAFETY: TIOCPTYGNAME writes a NUL-terminated path of at most 128 bytes,
+    // the size of `name`.
+    unsafe {
+        libc::ioctl(
+            master,
+            libc::c_ulong::from(libc::TIOCPTYGNAME),
+            name.as_mut_ptr(),
+        ) == 0
+    }
+}
+
+#[cfg(any(test, not(target_os = "linux")))]
+fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    // SAFETY: fcntl on a descriptor we own.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
@@ -644,6 +710,31 @@ fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> io::Result<()> {
 }
 
 /// A pipe whose ends are close-on-exec and do not block.
+#[cfg(not(target_os = "linux"))]
+fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    pipe_then_flags()
+}
+
+/// [`pipe`] where there is no `pipe2`: the flags are set right after, so a
+/// process another thread forks in that instant could keep the ends open.
+#[cfg(any(test, not(target_os = "linux")))]
+fn pipe_then_flags() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is a valid out-array of two descriptors.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: both were just opened and are owned here.
+    let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    for fd in fds {
+        set_cloexec(fd)?;
+        set_nonblocking(fd)?;
+    }
+    Ok(ends)
+}
+
+/// A pipe whose ends are close-on-exec and do not block.
+#[cfg(target_os = "linux")]
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: `fds` is a valid out-array of two descriptors.
@@ -1010,7 +1101,7 @@ fn spawn_child(mut line: CommandLine, slave: OwnedFd) -> io::Result<Child> {
     // there can signal tower, nor tower's terminal the child.
     unsafe {
         cmd.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -1177,6 +1268,54 @@ fn hang_up(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_cloexec(fd: RawFd) -> bool {
+        // SAFETY: fcntl on a descriptor the test owns.
+        unsafe { libc::fcntl(fd, libc::F_GETFD) & libc::FD_CLOEXEC != 0 }
+    }
+
+    fn is_nonblocking(fd: RawFd) -> bool {
+        // SAFETY: fcntl on a descriptor the test owns.
+        unsafe { libc::fcntl(fd, libc::F_GETFL) & libc::O_NONBLOCK != 0 }
+    }
+
+    /// The branch for systems whose `posix_openpt` is not promised `O_CLOEXEC`
+    /// (doc/0049), which works on Linux as well.
+    #[test]
+    fn a_master_opened_without_the_flag_gets_it_afterwards() {
+        let master = open_master_then_cloexec().unwrap();
+        assert!(is_cloexec(master.as_raw_fd()));
+    }
+
+    /// The branch for systems without `pipe2` (doc/0049): the same pipe as
+    /// [`pipe`].
+    #[test]
+    fn a_pipe_without_pipe2_has_the_same_flags() {
+        for (read, write) in [pipe_then_flags().unwrap(), pipe().unwrap()] {
+            for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+                assert!(is_cloexec(fd) && is_nonblocking(fd));
+            }
+            poke(&write);
+            let mut byte = [0u8];
+            // SAFETY: reads one byte into a valid buffer.
+            assert_eq!(
+                unsafe { libc::read(read.as_raw_fd(), byte.as_mut_ptr().cast(), 1) },
+                1
+            );
+            // SAFETY: as above; the pipe is empty now and must not block.
+            assert_eq!(
+                unsafe { libc::read(read.as_raw_fd(), byte.as_mut_ptr().cast(), 1) },
+                -1
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_pty_is_close_on_exec_and_its_master_does_not_block() {
+        let (master, slave) = open_pty(24, 80).unwrap();
+        assert!(is_cloexec(master.as_raw_fd()) && is_cloexec(slave.as_raw_fd()));
+        assert!(is_nonblocking(master.as_raw_fd()));
+    }
 
     fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)

@@ -13,7 +13,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 CI runs the same checks on every push to `main` and on pull requests; a pushed `vX.Y.Z` tag
-builds and publishes a release (checklist in [0012](../0012-build-and-distribution.md)).
+builds and publishes a release (checklist in [0012](../0012-build-and-distribution.md)). A macOS
+job runs the first three as well, and may fail for now ([0049](../0049-supported-platforms.md)).
 
 The tests need no Claude Code account: they use sanitized fixtures under `tests/fixtures/`
 and a fake `claude` placed on `PATH` ([0015](../0015-testing-strategy.md)). Nothing

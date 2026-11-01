@@ -9,6 +9,8 @@
 mod common;
 #[path = "support/fake_claude.rs"]
 mod fake_claude;
+#[path = "support/process.rs"]
+mod process;
 mod settings_common;
 
 use std::fs::File;
@@ -190,8 +192,8 @@ impl Tower {
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(rc, 0, "openpty");
@@ -225,7 +227,7 @@ impl Tower {
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
             cmd.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -389,16 +391,6 @@ impl Drop for Tower {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-fn alive(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            stat.rsplit_once(") ")
-                .and_then(|(_, rest)| rest.chars().next())
-        })
-        .is_some_and(|state| state != 'Z')
 }
 
 // ---- the text ---------------------------------------------------------------
@@ -659,7 +651,7 @@ fn a_restart_closes_the_panes_client_first_and_attaches_again() {
             .unwrap()
     };
     let first = pid(0);
-    assert!(alive(first));
+    assert!(process::alive(first));
 
     tower.send(b"U");
     tower.wait_screen("Restart alpha-task");
@@ -673,11 +665,11 @@ fn a_restart_closes_the_panes_client_first_and_attaches_again() {
             "main attach aaaa1111",
         ]
     );
-    tower.wait_for("the old client gone", |_| !alive(first));
+    tower.wait_for("the old client gone", |_| !process::alive(first));
     tower.wait_for("the new client running", |_| {
         std::fs::read_to_string(&pids).unwrap().lines().count() == 2
     });
-    assert!(alive(pid(1)));
+    assert!(process::alive(pid(1)));
     tower.wait_screen("restarted alpha-task");
 }
 

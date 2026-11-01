@@ -94,7 +94,8 @@ Next to the config, in `~/.config/watchtower/`:
 
 ## Known limitations
 
-- Linux x86_64 only.
+- Releases are Linux x86_64 only. On Windows use WSL; macOS builds from source, with weaker
+  account detection for now ([0049](../0049-supported-platforms.md)).
 - Cross-account messaging is unverified: the orchestrator may only reach sessions hosted
   by its own account ([0010](../0010-orchestrator.md)).
 - Claude Code stops idle sessions (the orchestrator too) after about an hour; they wake,

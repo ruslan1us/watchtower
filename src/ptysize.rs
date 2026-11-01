@@ -25,14 +25,12 @@
 //! 4. A size with 0 rows or 0 columns counts as unknown.
 //!
 //! Every failure gives `None`, and the replay falls back to inferring the
-//! size from the stream (doc/0009).
+//! size from the stream (doc/0009). That is always the case on a system
+//! whose reads tower does not have yet ([`NoProcessInfo`], doc/0049).
 
-use std::fs::OpenOptions;
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 
-use crate::merge::{ProcEnviron, parse_start_ticks};
+use crate::merge::{NoProcessInfo, parse_start_ticks};
 
 /// First major number of the Unix98 PTY slaves (`UNIX98_PTY_SLAVE_MAJOR`).
 pub const PTS_MAJOR_FIRST: u32 = 136;
@@ -51,7 +49,7 @@ pub struct TtyProbe {
 }
 
 /// The OS reads behind [`session_size`]. Abstracted so tests can fake
-/// them; the real one is [`ProcEnviron`].
+/// them; the real one is [`crate::merge::ProcEnviron`].
 pub trait TerminalReader: Send + Sync {
     /// The whole `/proc/<pid>/stat` line. `Err` when it cannot be read.
     fn stat(&self, pid: u32) -> io::Result<String>;
@@ -124,44 +122,65 @@ pub fn session_size(reader: &dyn TerminalReader, probe: TtyProbe) -> Option<(u16
     (rows > 0 && cols > 0).then_some((rows, cols))
 }
 
-impl TerminalReader for ProcEnviron {
-    fn stat(&self, pid: u32) -> io::Result<String> {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+impl TerminalReader for NoProcessInfo {
+    fn stat(&self, _pid: u32) -> io::Result<String> {
+        Err(io::ErrorKind::Unsupported.into())
     }
 
-    fn pts_size(&self, pts: u32, major: u32, minor: u32) -> io::Result<(u16, u16)> {
-        // Read-only, never the controlling terminal, no wait for a
-        // carrier, not inherited by children. std adds `O_CLOEXEC` itself;
-        // it is named here as well so the flags read as doc/0025 says.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(format!("/dev/pts/{pts}"))?;
-        let meta = file.metadata()?;
-        let rdev = meta.rdev();
-        if !meta.file_type().is_char_device()
-            || libc::major(rdev) != major
-            || libc::minor(rdev) != minor
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "not the session's terminal device",
-            ));
+    fn pts_size(&self, _pts: u32, _major: u32, _minor: u32) -> io::Result<(u16, u16)> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::fs::OpenOptions;
+    use std::io;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+
+    use super::TerminalReader;
+    use crate::merge::ProcEnviron;
+
+    impl TerminalReader for ProcEnviron {
+        fn stat(&self, pid: u32) -> io::Result<String> {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
         }
-        let mut ws = libc::winsize {
-            ws_row: 0,
-            ws_col: 0,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: `file` keeps the descriptor open for the whole call, and
-        // TIOCGWINSZ writes exactly one `winsize` through the pointer, which
-        // points at a live, properly aligned local of that type.
-        let rc = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
+
+        fn pts_size(&self, pts: u32, major: u32, minor: u32) -> io::Result<(u16, u16)> {
+            // Read-only, never the controlling terminal, no wait for a
+            // carrier, not inherited by children. std adds `O_CLOEXEC` itself;
+            // it is named here as well so the flags read as doc/0025 says.
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(format!("/dev/pts/{pts}"))?;
+            let meta = file.metadata()?;
+            let rdev = meta.rdev();
+            if !meta.file_type().is_char_device()
+                || libc::major(rdev) != major
+                || libc::minor(rdev) != minor
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "not the session's terminal device",
+                ));
+            }
+            let mut ws = libc::winsize {
+                ws_row: 0,
+                ws_col: 0,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: `file` keeps the descriptor open for the whole call, and
+            // TIOCGWINSZ writes exactly one `winsize` through the pointer, which
+            // points at a live, properly aligned local of that type.
+            let rc = unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };
+            if rc != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok((ws.ws_row, ws.ws_col))
         }
-        Ok((ws.ws_row, ws.ws_col))
     }
 }
 
@@ -178,6 +197,10 @@ mod tests {
 
     #[test]
     fn real_reader_rejects_a_missing_device() {
-        assert!(ProcEnviron.pts_size(u32::MAX, 136, u32::MAX).is_err());
+        assert!(
+            crate::merge::ProcEnviron
+                .pts_size(u32::MAX, 136, u32::MAX)
+                .is_err()
+        );
     }
 }

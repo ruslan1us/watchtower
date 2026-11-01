@@ -423,11 +423,37 @@ fn wake_input_readers(fd: RawFd) {
     }
 }
 
+/// Whether a turn without input still asks crossterm for what it has
+/// ([`idle_events`]). Linux needs no such turn: its re-arm in [`read_ready`]
+/// always works.
+pub const READS_WHEN_IDLE: bool = cfg!(not(target_os = "linux"));
+
+/// What a turn without input returns: nothing, or with `reads_when_idle` the
+/// events crossterm has.
+///
+/// Only Linux is known to wake a terminal's readers on a settings change
+/// ([`wake_input_readers`]), and crossterm's reader is edge-triggered on the
+/// other systems too. So there a resize is taken while tower is idle, not
+/// together with the next key, whose readiness it would use up with no re-arm
+/// to bring it back (doc/0049). crossterm is called with a zero timeout, and
+/// only after the input was seen not to have hung up.
+pub fn idle_events(
+    input: &mut impl ReadyInput,
+    reads_when_idle: bool,
+) -> Result<Vec<Event>, HungUp> {
+    if reads_when_idle {
+        input.read()
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 /// Waits up to `timeout` for input and returns the events it carries: none
 /// on a timeout or a signal, `Err` once the terminal is gone. crossterm is
 /// only called when `poll` says input is ready ([`wait_input`]), and then
 /// only with a zero timeout, to read that input and any events it has
-/// already parsed ([`read_ready`]).
+/// already parsed ([`read_ready`]). Outside Linux it is also asked on a turn
+/// without input ([`idle_events`]).
 fn next_events(timeout: Duration) -> Result<Vec<Event>, HungUp> {
     next_events_or_wake(timeout, None)
 }
@@ -440,7 +466,7 @@ fn next_events_or_wake(timeout: Duration, wake: Option<RawFd>) -> Result<Vec<Eve
     };
     match waited {
         Input::HangUp => Err(HungUp),
-        Input::Idle => Ok(Vec::new()),
+        Input::Idle => idle_events(&mut CrosstermInput, READS_WHEN_IDLE),
         Input::Ready => {
             let read = read_ready(&mut CrosstermInput)?;
             if read.stalled && read.events.is_empty() {

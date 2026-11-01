@@ -1,6 +1,6 @@
 # 0023. Self-update command
 
-- Status: Accepted · 2026-10-19 · release lookup amended by [0026](0026-latest-release-from-the-web-redirect.md)
+- Status: Accepted · 2026-10-19 · release lookup amended by [0026](0026-latest-release-from-the-web-redirect.md) · macOS refused, `--check` too, by [0049](0049-supported-platforms.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0012](0012-build-and-distribution.md), [0013](0013-privacy-and-repository-hygiene.md), [0016](0016-do-not-change-claude-code-defaults.md)
 
 ## Context
@@ -49,7 +49,8 @@ through the `claude` CLI and local files ([0001](0001-thin-wrapper-over-claude-c
     and downloads nothing. `--force` reinstalls.
   - When the running version is newer than the latest release, tower refuses unless
     `--force` or `--version` is given.
-  - Tower refuses on anything but Linux x86_64.
+  - Tower refuses on anything but Linux x86_64. *Amended by [0049](0049-supported-platforms.md):* on macOS the
+    refusal says there is no release yet, and `--check` stops the same way, before any network call.
   - When the target's directory is not writable, the error is
     `cannot write <path>: run as its owner (e.g. sudo tower update)`.
 - **Output.** One line per step, ending with

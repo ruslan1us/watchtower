@@ -352,6 +352,15 @@ pub fn platform_supported(os: &str, arch: &str) -> bool {
     os == "linux" && arch == "x86_64"
 }
 
+/// Why `tower update` and `--check` stop at once on an OS tower runs on but has
+/// no release for, however new the latest release is (doc/0049). A Linux binary
+/// would not run there, and "newer release available" would promise an update
+/// that cannot happen.
+pub fn no_release_yet(os: &str) -> Option<&'static str> {
+    (os == "macos")
+        .then_some("no release for macOS yet; build from source (see doc/guide/getting-started.md)")
+}
+
 /// Whether `path` looks like a cargo build output: a file under
 /// `target/debug/`, `target/release/` or `target/<triple>/…`
 /// (e.g. `target/x86_64-unknown-linux-musl/release/`).
@@ -394,6 +403,10 @@ pub struct Updater {
     /// outside tests, which use a shell script as the fake release.
     #[doc(hidden)]
     pub require_elf: bool,
+    /// The OS and architecture to decide for, as in `std::env::consts`. Always
+    /// the real ones outside tests, whose fake releases work on any system.
+    #[doc(hidden)]
+    pub platform: (&'static str, &'static str),
 }
 
 impl Default for Updater {
@@ -402,6 +415,7 @@ impl Default for Updater {
             current: Version::current(),
             path: None,
             require_elf: true,
+            platform: (std::env::consts::OS, std::env::consts::ARCH),
         }
     }
 }
@@ -461,6 +475,9 @@ impl Updater {
 
     /// `tower update --check`: compares the latest release with this binary.
     pub fn check(&self) -> Result<Check, UpdateError> {
+        if let Some(refusal) = no_release_yet(self.platform.0) {
+            return err(refusal);
+        }
         Ok(Check {
             current: self.current.clone(),
             latest: self.latest()?,
@@ -475,10 +492,13 @@ impl Updater {
         request: &Request,
         out: &mut dyn Write,
     ) -> Result<Outcome, UpdateError> {
-        use std::env::consts::{ARCH, OS};
-        if !platform_supported(OS, ARCH) {
+        let (os, arch) = self.platform;
+        if let Some(refusal) = no_release_yet(os) {
+            return err(refusal);
+        }
+        if !platform_supported(os, arch) {
             return err(format!(
-                "releases exist only for Linux x86_64, not {OS} {ARCH}; build from source instead"
+                "releases exist only for Linux x86_64, not {os} {arch}; build from source instead"
             ));
         }
         if !request.force && looks_like_dev_build(target) {

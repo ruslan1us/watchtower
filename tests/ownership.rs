@@ -552,6 +552,7 @@ fn environ_block_parsing() {
     assert_eq!(find_var(b"", "CLAUDE_CONFIG_DIR"), None);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn proc_environ_reads_own_process() {
     use watchtower::merge::ProcEnviron;
@@ -1182,6 +1183,7 @@ fn proc_stat_parsing() {
     assert_eq!(parse_start_ticks("garbage"), None);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn proc_reads_of_own_process() {
     use watchtower::merge::{ProcEnviron, looks_like_claude};
@@ -1197,6 +1199,72 @@ fn proc_reads_of_own_process() {
     assert!(ProcEnviron.start_ticks(u32::MAX).is_err());
     assert!(ProcEnviron.cmdline(u32::MAX).is_err());
     assert!(ProcEnviron.exe(u32::MAX).is_err());
+}
+
+/// A system tower has no process reads for yet (doc/0049): a live row gives no
+/// rule-1 evidence and no remembered process, and the other rules decide.
+#[test]
+fn without_process_information_the_other_rules_decide() {
+    use watchtower::merge::NoProcessInfo;
+    for read in [
+        NoProcessInfo.config_dir_var(1).map(|_| ()),
+        NoProcessInfo.cmdline(1).map(|_| ()),
+        NoProcessInfo.exe(1).map(|_| ()),
+        NoProcessInfo.start_ticks(1).map(|_| ()),
+    ] {
+        assert_eq!(read.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    }
+
+    let home = Home::new();
+    let rows = listing("after-stop-all.json").sessions;
+    let row = |name: &str| {
+        let found = rows.iter().find(|r| r.name.as_deref() == Some(name));
+        found.unwrap_or_else(|| panic!("no {name}")).clone()
+    };
+    let (a, b) = (row("print-date"), row("run-test-suite"));
+    assert!(a.pid.is_some() && b.pid.is_some(), "live rows");
+
+    // Rule 2: each listed by exactly one account.
+    let separate = [
+        al("main", Some(vec![a.clone()])),
+        al("alt", Some(vec![b.clone()])),
+    ];
+    let mut resolver = Resolver::new(&home.accounts, home.path(), &NoProcessInfo);
+    let merged = resolver.merge(&separate, &Sidecar::default());
+    assert_eq!(
+        owner(&merged, "print-date"),
+        known("main", AccountSource::List)
+    );
+    assert_eq!(
+        owner(&merged, "run-test-suite"),
+        known("alt", AccountSource::List)
+    );
+    assert!(resolver.known().is_empty(), "nothing remembered");
+
+    // Shared lists: rule 3, the sidecar's record, or `?`.
+    let shared = vec![a.clone(), b];
+    let lists = [al("main", Some(shared.clone())), al("alt", Some(shared))];
+    let mut sidecar = Sidecar::default();
+    sidecar.record_answer(a.key().unwrap(), "alt");
+    let mut resolver = Resolver::new(&home.accounts, home.path(), &NoProcessInfo);
+    let merged = resolver.merge(&lists, &sidecar);
+    assert_eq!(
+        owner(&merged, "print-date"),
+        known("alt", AccountSource::Asked)
+    );
+    assert_eq!(
+        owner(&merged, "run-test-suite"),
+        Ownership::Unknown { config_dir: None }
+    );
+
+    // One account owns everything.
+    let only = &home.accounts[..1];
+    let merged = Resolver::new(only, home.path(), &NoProcessInfo)
+        .merge(&[al("main", Some(vec![a]))], &Sidecar::default());
+    assert_eq!(
+        owner(&merged, "print-date"),
+        known("main", AccountSource::Implicit)
+    );
 }
 
 // ---- the reviewer's scenarios through the app ----------------------------

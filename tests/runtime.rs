@@ -397,7 +397,7 @@ fn editor_round_trip_through_a_private_temp_file() {
     let ed = Fake::new(
         "fake-editor",
         "f=\"$2\"\n\
-         stat -c %a \"$f\" > \"$(dirname \"$0\")/mode.txt\"\n\
+         { stat -c %a \"$f\" 2>/dev/null || stat -f %Lp \"$f\"; } > \"$(dirname \"$0\")/mode.txt\"\n\
          echo \"$f\" > \"$(dirname \"$0\")/path.txt\"\n\
          printf '\\nedited in the editor\\n' >> \"$f\"",
     );

@@ -10,6 +10,8 @@
 
 #[path = "support/fake_claude.rs"]
 mod fake_claude;
+#[path = "support/process.rs"]
+mod process;
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -194,8 +196,8 @@ impl Tower {
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(rc, 0, "openpty");
@@ -221,7 +223,7 @@ impl Tower {
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
             cmd.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -335,7 +337,7 @@ impl Tower {
 
     /// This tower's children that are zombies.
     fn zombies(&self) -> Vec<i32> {
-        children_of(self.child.id() as i32)
+        process::children_of(self.child.id() as i32)
             .into_iter()
             .filter(|(_, state)| *state == 'Z')
             .map(|(pid, _)| pid)
@@ -371,50 +373,6 @@ fn wait_child(child: &mut Child) -> Option<i32> {
     }
     let _ = child.kill();
     child.wait().ok().and_then(|s| s.code())
-}
-
-/// Every child of `parent`, with its state.
-fn children_of(parent: i32) -> Vec<(i32, char)> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(") ") else {
-            continue;
-        };
-        let mut fields = rest.split(' ');
-        let state = fields.next().and_then(|s| s.chars().next()).unwrap_or('?');
-        let ppid: i32 = fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        if ppid == parent {
-            out.push((pid, state));
-        }
-    }
-    out
-}
-
-/// Whether the process is there and not a zombie.
-fn alive(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            stat.rsplit_once(") ")
-                .and_then(|(_, rest)| rest.chars().next())
-        })
-        .is_some_and(|state| state != 'Z')
-}
-
-fn cpu_ticks(pid: u32) -> u64 {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-    let fields: Vec<&str> = stat.rsplit_once(") ").unwrap().1.split(' ').collect();
-    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
 }
 
 fn other(id: &str) -> &'static str {
@@ -483,7 +441,7 @@ fn the_start_attaches_nothing_until_a_row_is_chosen() {
     tower.send(&mouse(0, 4, 1, 'm'));
     tower.wait_screen("Home");
     thread::sleep(PAUSE);
-    assert!(alive(pid), "Home closes nothing");
+    assert!(process::alive(pid), "Home closes nothing");
     assert_eq!(tower.attaches().len(), 1);
     assert!(!tower.screen_text().contains("ATTACHED"));
 
@@ -492,7 +450,7 @@ fn the_start_attaches_nothing_until_a_row_is_chosen() {
     tower.wait_screen(&format!("ATTACHED {ALPHA}"));
     thread::sleep(PAUSE);
     assert_eq!(tower.attaches().len(), 1);
-    assert!(alive(pid));
+    assert!(process::alive(pid));
 }
 
 /// The foreground attach would leave the alternate screen; the pane never does.
@@ -525,13 +483,13 @@ fn o_opens_the_orchestrator_in_the_pane_with_the_keys() {
     // Ctrl+Z returns to the list and the client stays.
     tower.send(b"\x1a");
     tower.wait_screen(" LIST ");
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     // `o` again only gives it the keys.
     tower.send(b"o");
     tower.wait_screen(" TERMINAL ");
     thread::sleep(PAUSE);
     assert_eq!(tower.attaches().len(), 1);
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     // Claude Code's Ctrl+C reaches it here; tower does not quit.
     tower.send(b"\x03");
     tower.wait_keys(ORCHESTRATOR, b"typed\x03");
@@ -587,7 +545,7 @@ fn start_and_attach_opens_the_new_session_in_the_pane_with_the_keys() {
     tower.wait_keys(STARTED, b"hello");
     tower.send(b"\x1a");
     tower.wait_screen(" LIST ");
-    assert!(alive(pid));
+    assert!(process::alive(pid));
 }
 
 /// The pid of the shell in the pane: it prints it, and this reads the screen.
@@ -621,8 +579,8 @@ fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
     });
     tower.wait_screen("CLAUDE SCREEN");
     let pid = shell_terminal(&mut tower);
-    assert!(alive(pid));
-    assert!(alive(client), "beside the client");
+    assert!(process::alive(pid));
+    assert!(process::alive(client), "beside the client");
     assert!(
         !tower.wrote(LEFT_THE_SCREEN),
         "the terminal is not handed over"
@@ -647,7 +605,7 @@ fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
     // Ctrl+Z returns to the list; the shell is not stopped.
     tower.send(b"\x1a");
     tower.wait_screen(" LIST ");
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     // `!` shows Claude, `!` again the shell, with the keys.
     tower.send(b"!");
     tower.wait_screen("CLAUDE SCREEN");
@@ -663,7 +621,7 @@ fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
     move_to_other(&mut tower, &id);
     let (other_id, _) = tower.wait_attaches(2);
     tower.wait_for("the other row", |t| !t.screen_text().contains("typed42"));
-    assert!(alive(pid), "the shell outlives browsing");
+    assert!(process::alive(pid), "the shell outlives browsing");
     move_to_other(&mut tower, &other_id);
     tower.wait_screen("typed42");
     tower.wait_screen("shell  ~/demo");
@@ -674,7 +632,7 @@ fn the_shell_opens_toggles_survives_browsing_and_ends_with_exit() {
     tower.send(b"\r");
     tower.wait_screen(" TERMINAL ");
     tower.send(b"exit\r");
-    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_for("the shell is gone", |_| !process::alive(pid));
     tower.wait_screen(" LIST ");
     tower.wait_for("the shell's title goes", |t| {
         !t.screen_text().contains("shell  ~/demo")
@@ -692,13 +650,13 @@ fn the_shell_on_another_row_replaces_the_old_one() {
     move_to_other(&mut tower, &id);
     tower.send(b"!");
     tower.wait_screen("closed the shell in ~/demo");
-    tower.wait_for("the old shell is gone", |_| !alive(first));
+    tower.wait_for("the old shell is gone", |_| !process::alive(first));
     tower.wait_for("the old shell's screen goes", |t| {
         pid_on(&t.screen_text()).is_none()
     });
     let second = shell_pid(&mut tower);
     assert_ne!(first, second);
-    assert!(alive(second));
+    assert!(process::alive(second));
     tower.wait_for("no zombie", |t| t.zombies().is_empty());
 }
 
@@ -708,8 +666,8 @@ fn quitting_ends_the_shell_with_no_zombie() {
     let pid = shell_terminal(&mut tower);
     let code = tower.stop();
     assert_eq!(code, Some(128 + libc::SIGTERM));
-    assert!(!alive(pid), "the shell ended with tower");
-    assert!(!alive(client), "the client too");
+    assert!(!process::alive(pid), "the shell ended with tower");
+    assert!(!process::alive(client), "the client too");
     // `q` from the list as well.
     let (mut tower, _id, _client) = attached(Options::default());
     let pid = shell_terminal(&mut tower);
@@ -717,7 +675,7 @@ fn quitting_ends_the_shell_with_no_zombie() {
     tower.wait_screen(" LIST ");
     tower.send(b"q");
     let deadline = Instant::now() + WAIT;
-    while alive(pid) {
+    while process::alive(pid) {
         assert!(Instant::now() < deadline, "the shell outlived tower");
         thread::sleep(Duration::from_millis(20));
     }
@@ -750,7 +708,7 @@ fn the_shell_on_a_stopped_row_does_not_wake_it() {
     tower.send(b"!");
     tower.wait_screen("shell  ~/demo");
     let pid = shell_pid(&mut tower);
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     thread::sleep(PAUSE);
     assert!(tower.attaches().is_empty(), "nothing wakes it");
     let calls = tower.fake.all_argv();
@@ -761,7 +719,7 @@ fn the_shell_on_a_stopped_row_does_not_wake_it() {
         "{calls:?}"
     );
     tower.send(b"exit\r");
-    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_for("the shell is gone", |_| !process::alive(pid));
     tower.wait_screen("Enter wakes it here");
     thread::sleep(PAUSE);
     assert!(tower.attaches().is_empty());
@@ -804,14 +762,21 @@ fn a_burst_of_the_wheel_ends_on_one_client_for_the_row_it_stopped_on() {
     tower.wait_screen("▼");
     let burst: Vec<u8> = (0..30).flat_map(|_| mouse(65, 5, 10, 'M')).collect();
     tower.send(&burst);
-    let settled = |t: &Tower| t.attaches().last().is_some_and(|(_, pid)| alive(*pid));
+    let settled = |t: &Tower| {
+        t.attaches()
+            .last()
+            .is_some_and(|(_, pid)| process::alive(*pid))
+    };
     tower.wait_for("an attach", settled);
     thread::sleep(PAUSE);
     // Load decides how many starts the burst allows; the rest is the point:
     // far fewer than the notches, and one left, for the selected card.
     let attaches = tower.attaches();
     assert!(attaches.len() < 30, "{attaches:?}");
-    let live: Vec<_> = attaches.iter().filter(|(_, pid)| alive(*pid)).collect();
+    let live: Vec<_> = attaches
+        .iter()
+        .filter(|(_, pid)| process::alive(*pid))
+        .collect();
     assert_eq!(live.len(), 1, "{attaches:?}");
     let (id, _) = live[0];
     let text = tower.screen_text();
@@ -844,7 +809,7 @@ fn selection_attaches_once_with_a_clean_environment_and_the_sessions_folder() {
     let (tower, id, pid) = attached(Options::default());
     thread::sleep(PAUSE);
     assert_eq!(tower.attaches().len(), 1, "attached more than once");
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     assert_eq!(
         tower.screen_text().matches("ATTACHED").count(),
         1,
@@ -881,9 +846,9 @@ fn switching_replaces_the_client_and_leaves_no_zombie() {
     let (second, second_pid) = tower.wait_attaches(2);
     assert_eq!(second, other(&first));
     tower.wait_screen(&format!("ATTACHED {second}"));
-    tower.wait_for("the first client is gone", |_| !alive(first_pid));
+    tower.wait_for("the first client is gone", |_| !process::alive(first_pid));
     tower.wait_for("no zombie", |t| t.zombies().is_empty());
-    assert!(alive(second_pid));
+    assert!(process::alive(second_pid));
     assert!(!tower.screen_text().contains(&format!("ATTACHED {first}")));
 }
 
@@ -900,7 +865,7 @@ fn ctrl_z_and_f12_give_the_list_the_keys_and_the_client_stays() {
         tower.wait_keys(&id, b"mark");
         tower.send(back);
         tower.wait_screen(" LIST ");
-        assert!(alive(pid));
+        assert!(process::alive(pid));
     }
     // Neither key went to the child, and back in the list letters do not.
     tower.send(b"?");
@@ -1063,7 +1028,7 @@ fn a_dialog_draws_over_the_pane_and_takes_the_keys() {
     tower.wait_screen("typed-into-the-dialog");
     thread::sleep(PAUSE);
     assert!(tower.keys_of(&id).is_empty());
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     // Esc asks first when the task has text; n keeps the dialog's question
     // closed; here it simply closes when nothing was dispatched.
     tower.send(b"\x1b");
@@ -1141,13 +1106,13 @@ fn a_narrow_terminal_gets_the_dashboard_and_nothing_attaches() {
     tower.wait_screen("Home");
     tower.send(b"j");
     let (_, pid) = tower.wait_attaches(1);
-    assert!(alive(pid));
+    assert!(process::alive(pid));
     tower.wait_for("capture on", |t| t.wrote(b"\x1b[?1000h"));
     // It shrinks: the client goes, and the capture.
     let mark = tower.raw_len();
     set_size(tower.master.as_raw_fd(), 40, 90);
     tower.screen.lock().unwrap().screen_mut().set_size(40, 90);
-    tower.wait_for("the client ended", |_| !alive(pid));
+    tower.wait_for("the client ended", |_| !process::alive(pid));
     tower.wait_for("capture off", |t| t.wrote_since(mark, b"\x1b[?1000l"));
     tower.send(b"j");
     let _ = &mut tower;
@@ -1167,7 +1132,7 @@ fn a_client_that_fails_leaves_its_message_and_the_keys_on_the_list() {
     tower.wait_for("exit reported", |t| {
         t.screen_text().contains("exited with code 1")
     });
-    tower.wait_for("reaped", |_| !alive(pid));
+    tower.wait_for("reaped", |_| !process::alive(pid));
     thread::sleep(PAUSE);
     assert_eq!(tower.attaches().len(), 1, "a failed client is not retried");
     tower.wait_screen(" LIST ");
@@ -1178,21 +1143,21 @@ fn a_client_that_fails_leaves_its_message_and_the_keys_on_the_list() {
 fn tower_uses_almost_no_cpu_while_idle() {
     let (tower, _id, pid) = attached(Options::default());
     thread::sleep(PAUSE);
-    let before = cpu_ticks(tower.child.id());
+    let before = process::cpu_ticks(tower.child.id());
     thread::sleep(Duration::from_secs(2));
-    let used = cpu_ticks(tower.child.id()) - before;
+    let used = process::cpu_ticks(tower.child.id()) - before;
     assert!(
         used < 40,
         "tower used {used} ticks of CPU in 2 s while idle"
     );
-    assert!(alive(pid));
+    assert!(process::alive(pid));
 }
 
 #[test]
 fn quitting_ends_the_client_and_keeps_tower_clean() {
     let (mut tower, _id, pid) = attached(Options::default());
     tower.send(b"q");
-    tower.wait_for("the client ended", |_| !alive(pid));
+    tower.wait_for("the client ended", |_| !process::alive(pid));
     let code = wait_child(&mut tower.child);
     assert_eq!(code, Some(0));
     assert!(tower.wrote(b"\x1b[?1000l"), "capture off on the way out");
@@ -1203,7 +1168,7 @@ fn quitting_ends_the_client_and_keeps_tower_clean() {
 fn a_termination_signal_ends_the_client_too() {
     let (tower, _id, pid) = attached(Options::default());
     assert_eq!(tower.stop(), Some(128 + libc::SIGTERM));
-    assert!(!alive(pid));
+    assert!(!process::alive(pid));
 }
 
 #[test]
@@ -1214,7 +1179,7 @@ fn a_hang_up_of_the_terminal_ends_the_client_too() {
     // SAFETY: plain kill of the child this test started.
     unsafe { libc::kill(tower.child.id() as i32, libc::SIGHUP) };
     let deadline = Instant::now() + WAIT;
-    while alive(pid) {
+    while process::alive(pid) {
         assert!(Instant::now() < deadline, "the client outlived tower");
         thread::sleep(Duration::from_millis(20));
     }
@@ -1298,7 +1263,7 @@ fn background(tower: &Tower, row: u16, col: u16) -> vt100::Color {
 
 /// The size of the terminal a process has as its stdin, rows and columns.
 fn size_of(pid: i32) -> Option<(u16, u16)> {
-    let tty = File::open(format!("/proc/{pid}/fd/0")).ok()?;
+    let tty = process::terminal_of(pid)?;
     let mut size = libc::winsize {
         ws_row: 0,
         ws_col: 0,
@@ -1519,12 +1484,7 @@ fn the_history_stops_at_its_limit_and_stays_small() {
     tower.send(b"\x1b[6;2~");
     tower.wait_screen("↑ 9964 lines");
     // At the pane's width a line is about 4 KiB: what the limit promises.
-    let status = std::fs::read_to_string(format!("/proc/{}/status", tower.child.id())).unwrap();
-    let rss_kb: u64 = status
-        .lines()
-        .find_map(|l| l.strip_prefix("VmRSS:"))
-        .and_then(|v| v.split_whitespace().next()?.parse().ok())
-        .unwrap();
+    let rss_kb = process::rss_kib(tower.child.id());
     assert!(rss_kb < 150 * 1024, "{rss_kb} kB");
 }
 
@@ -1612,7 +1572,7 @@ fn zoom_ends_with_the_shell() {
     tower.send(F2);
     tower.wait_screen(" ZOOM ");
     tower.send(b"exit\r");
-    tower.wait_for("the shell is gone", |_| !alive(pid));
+    tower.wait_for("the shell is gone", |_| !process::alive(pid));
     tower.wait_screen(" LIST ");
     assert!(!tower.screen_text().contains(" ZOOM "));
 }
@@ -1634,5 +1594,5 @@ fn below_the_width_zoom_opens_the_terminal_in_the_whole_window() {
     tower.wait_for("the window's size", |_| size_of(pid) == Some((19, 80)));
     tower.send(F2);
     tower.wait_for("the dashboard", |t| !t.screen_text().contains(" ZOOM "));
-    tower.wait_for("the client is closed", |_| !alive(pid));
+    tower.wait_for("the client is closed", |_| !process::alive(pid));
 }

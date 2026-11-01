@@ -1,6 +1,6 @@
 # 0025. The session terminal's real size for the logs replay
 
-- Status: Accepted · 2026-10-19
+- Status: Accepted · 2026-10-19 · Linux's form of the read, macOS infers the size for now, by [0049](0049-supported-platforms.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0009](0009-stop-remove-and-logs.md), [0013](0013-privacy-and-repository-hygiene.md), [0015](0015-testing-strategy.md), [0017](0017-ownership-evidence-rules.md), [reference](reference/claude-code-cli.md#claude-logs-output)
 
 ## Context

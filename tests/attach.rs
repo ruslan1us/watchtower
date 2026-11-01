@@ -3,6 +3,9 @@
 //! the terminal is released before and reclaimed after, and tower survives
 //! SIGINT/SIGQUIT/SIGTSTP while the child runs.
 
+#[path = "support/process.rs"]
+mod process;
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -10,7 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use watchtower::app::AttachRequest;
 use watchtower::attach::{
-    Handover, InheritSpawner, SignalGuard, Spawner, Termination, announcement, attach, printable,
+    Handover, InheritSpawner, Spawner, Termination, announcement, attach, printable,
 };
 use watchtower::config::Account;
 
@@ -237,12 +240,14 @@ fn tower_survives_signals_while_attached() {
     assert_eq!(outcome.result, Ok(Some(0)));
 }
 
+// Only `/proc` shows a process's ignored signals.
+#[cfg(target_os = "linux")]
 #[test]
 fn child_gets_default_signal_dispositions() {
     let _l = lock();
     // While the guard is active the child must not inherit an ignored
     // SIGINT: `SigIgn` in /proc/self/status has bit 1 (SIGINT) clear.
-    let _guard = SignalGuard::install().unwrap();
+    let _guard = watchtower::attach::SignalGuard::install().unwrap();
     let out = Command::new("sh")
         .args(["-c", "grep '^SigIgn:' /proc/self/status"])
         .output()
@@ -405,10 +410,9 @@ fn ctrl_z_through_a_wrapper_resumes_the_whole_group() {
 #[test]
 fn foreground_child_stays_in_towers_process_group() {
     let _l = lock();
-    // Field 5 of /proc/<pid>/stat is the process group.
     let fake = Fake::new(
         "claude",
-        "cut -d' ' -f5 /proc/$$/stat > \"$(dirname \"$0\")/pgid\"",
+        &format!("{} > \"$(dirname \"$0\")/pgid\"", process::PRINT_OWN_PGID),
     );
     let mut term = FakeTerm::default();
     let outcome = attach(

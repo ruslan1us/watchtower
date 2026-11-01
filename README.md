@@ -31,7 +31,7 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 
 ## Requirements
 
-- Linux x86_64.
+- Linux x86_64, or Windows through WSL. macOS is coming: see [Getting started](doc/guide/getting-started.md).
 - Claude Code 2.1.300 or newer.
 - `curl`, only for `tower update`.
 - Rust 1.88 or newer, only to build from source.

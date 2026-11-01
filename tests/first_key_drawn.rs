@@ -14,12 +14,13 @@
 
 #[path = "support/fake_claude.rs"]
 mod fake_claude;
+#[path = "support/process.rs"]
+mod process;
 
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -105,8 +106,8 @@ impl Pty {
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(rc, 0, "openpty");
@@ -134,7 +135,7 @@ impl Pty {
         // is its foreground process group and gets its SIGWINCH.
         unsafe {
             cmd.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -242,14 +243,6 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// A process's CPU time in clock ticks (user + system), from `/proc`.
-fn cpu_ticks(pid: u32) -> u64 {
-    let stat =
-        std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).unwrap();
-    let fields: Vec<&str> = stat.rsplit_once(") ").unwrap().1.split(' ').collect();
-    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
-}
-
 #[test]
 fn an_idle_key_is_drawn_at_once() {
     let mut pty = Pty::start();
@@ -271,9 +264,9 @@ fn the_first_key_after_a_resize_at_start_is_drawn_at_once() {
         "n after a resize was not drawn until another key"
     );
     // And tower does not spin while it waits for the next key.
-    let before = cpu_ticks(pty.child.id());
+    let before = process::cpu_ticks(pty.child.id());
     thread::sleep(Duration::from_secs(1));
-    let used = cpu_ticks(pty.child.id()) - before;
+    let used = process::cpu_ticks(pty.child.id()) - before;
     assert!(
         used < 30,
         "tower used {used} ticks of CPU in 1 s while idle"

@@ -71,7 +71,8 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-alt" exec claude "$@"
 `config_dir` (default `~/.claude`) is how tower recognises which account hosts a
 running session: it reads `CLAUDE_CONFIG_DIR` from the session process's
 `/proc/<pid>/environ` and compares paths. Every account needs its own `config_dir`;
-two accounts on the same directory are rejected.
+two accounts on the same directory are rejected. macOS has no such read yet
+([0049](../0049-supported-platforms.md)).
 
 ## Shared lists
 

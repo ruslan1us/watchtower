@@ -4,7 +4,9 @@ Requirements, every way to install and update tower, and the first steps. Back t
 
 ## Requirements
 
-- Linux x86_64 (account detection reads `/proc`).
+- Linux x86_64 (account detection reads `/proc`), or Windows through
+  [WSL](#on-windows-use-wsl). macOS is coming: [build from source](#macos-build-from-source-for-now)
+  for now.
 - Claude Code 2.1.300 or newer, with background sessions and agent view (`claude --bg`,
   `claude agents`); see [doc/reference/claude-code-cli.md](../reference/claude-code-cli.md).
 - `curl`, only for `tower update`.
@@ -72,6 +74,34 @@ install -m 755 target/x86_64-unknown-linux-musl/release/tower ~/.local/bin/
 ```
 
 For another host, copy that one file into its `~/.local/bin` (e.g. with `scp`).
+
+### On Windows: use WSL
+
+Tower runs inside WSL as on any Linux. In PowerShell run `wsl --install` once and restart if
+asked, open the Ubuntu terminal it adds, install Claude Code there (a `claude` on the Windows
+side is another installation, with its own sessions) and install tower as under
+[Install from a release](#install-from-a-release). Run everything from that terminal, and keep
+your projects in the Linux file system (`~/workspace`, not `/mnt/c`). A native Windows version
+may come later ([0049](../0049-supported-platforms.md)).
+
+### macOS: build from source for now
+
+There is no macOS release yet, and tower has not been tried on a real Mac. You need Apple's
+command line tools (`xcode-select --install`) and Rust ([rustup](https://rustup.rs)):
+
+```sh
+git clone https://github.com/ruslan1us/watchtower
+cd watchtower
+cargo build --release
+mkdir -p ~/.local/bin
+install -m 755 target/release/tower ~/.local/bin/
+```
+
+Until tower can read process information on macOS, some things are weaker
+([0049](../0049-supported-platforms.md)): with several accounts, a session tower did not
+start or hand off may show `?` and ask for its account once, and the logs panel guesses the session's
+terminal size, so it may look garbled. `tower update` refuses; to update, run `git pull` and
+build again.
 
 ## Quick start
 

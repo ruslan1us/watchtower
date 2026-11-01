@@ -20,7 +20,7 @@ use watchtower::cli::CliRunner;
 use watchtower::config::Config;
 use watchtower::logfollow::{FollowSettings, FollowSpec, Follower};
 use watchtower::logview::{self, DEFAULT_COLS, DEFAULT_ROWS, MAX_COLS, MAX_ROWS};
-use watchtower::merge::EnvironReader;
+use watchtower::merge::{EnvironReader, NoProcessInfo};
 use watchtower::ptysize::{
     TerminalReader, TtyProbe, decode_dev, parse_tty_nr, pts_number, session_size,
 };
@@ -315,6 +315,14 @@ fn fetch_with(terminal: FakeTerminal, probe: Option<TtyProbe>) -> (u16, u16) {
 fn the_fetch_replays_at_the_real_size() {
     let t = FakeTerminal::new(Some(stat_line(4290, 34819, 123_456)), Ok((57, 231)));
     assert_eq!(fetch_with(t, Some(PROBE)), (57, 231));
+}
+
+/// A system tower has no process reads for yet (doc/0049): the size is
+/// unknown, so the logs panel infers it.
+#[test]
+fn without_process_information_the_size_is_unknown() {
+    assert_eq!(session_size(&NoProcessInfo, PROBE), None);
+    assert!(NoProcessInfo.pts_size(3, 136, 3).is_err());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # 0005. Attaching to and detaching from a session
 
-- Status: Accepted · 2026-10-18 · input still waiting after a read re-arms crossterm's reader, amended 2026-10-28 · a split view with an own PTY taken up, for the opt-in workspace style only, by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-18 · input still waiting after a read re-arms crossterm's reader, amended 2026-10-28 · a split view with an own PTY taken up, for the opt-in workspace style only, by [0045](0045-workspace-style.md) · a read on idle turns outside Linux by [0049](0049-supported-platforms.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0007](0007-visual-only-attention.md), [0011](0011-keybindings.md), [0016](0016-do-not-change-claude-code-defaults.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -173,6 +173,9 @@ and Linux wakes a terminal's readers on every settings change. At most 64
 re-arms per read (a long paste goes on in the next turn); if a re-arm reads
 nothing while input is still waiting, tower waits the turn's timeout
 instead of spinning.
+*Amended by [0049](0049-supported-platforms.md):* that wake is only known of
+Linux. Elsewhere a turn without input also asks crossterm for what it has, so
+a resize is taken before the next key arrives.
 
 The same procedure is used by dispatch-and-attach in the new-session dialog
 ([0008](0008-new-session-dialog.md)), by the orchestrator key

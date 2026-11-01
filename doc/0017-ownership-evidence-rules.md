@@ -1,6 +1,6 @@
 # 0017. Ownership evidence rules
 
-- Status: Accepted · 2026-10-18 · `/proc` reads (section 7) amended by [0025](0025-session-terminal-size-for-logs.md)
+- Status: Accepted · 2026-10-18 · `/proc` reads (section 7) amended by [0025](0025-session-terminal-size-for-logs.md) and, per system, by [0049](0049-supported-platforms.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0004](0004-account-hand-off.md), [0008](0008-new-session-dialog.md), [CLI reference](reference/claude-code-cli.md)
 
 ## Context
@@ -66,6 +66,8 @@ Config load fails when two accounts have the same `config_dir`, compared as in s
 This amends the exception in [0001](0001-thin-wrapper-over-claude-cli.md): for a listed `pid`, tower reads `/proc/<pid>/environ`, `/proc/<pid>/cmdline`, the `/proc/<pid>/exe` link and field 22 of `/proc/<pid>/stat` (no `btime`). All are operating-system process information, not Claude Code files.
 
 *Amended by [0025](0025-session-terminal-size-for-logs.md):* for a pid this guard accepted, the logs job also reads field 7 (`tty_nr`) of the same `stat` and the window size of that PTY device (a read-only `TIOCGWINSZ` after an `fstat` check), and nothing else.
+
+*Amended by [0049](0049-supported-platforms.md):* this is Linux's form of these reads; another system may read the same information through what it offers. Until macOS has that, every read there fails, so rule 1 gives no evidence and the other rules decide, as for an unreadable process.
 
 ### 8. Several tower instances on one sidecar
 

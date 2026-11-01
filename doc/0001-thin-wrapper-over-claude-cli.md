@@ -1,6 +1,6 @@
 # 0001. Thin wrapper over the Claude Code CLI
 
-- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md) · the plan usage probe added by [0043](0043-plan-usage-display.md) · a PTY client for the opt-in workspace style allowed by [0045](0045-workspace-style.md)
+- Status: Accepted · 2026-10-18 · `/proc` exception amended by [0025](0025-session-terminal-size-for-logs.md) · subagent hooks added by [0029](0029-tracking-subagents.md) · `git status` of a session's folder added by [0037](0037-git-summary-and-shell.md) · skill and command files and `plugin list --json` for the task field's suggestions added by [0042](0042-slash-command-suggestions.md) · the plan usage probe added by [0043](0043-plan-usage-display.md) · a PTY client for the opt-in workspace style allowed by [0045](0045-workspace-style.md) · process information per system by [0049](0049-supported-platforms.md)
 - Related: [reference](reference/claude-code-cli.md), [0002](0002-tech-stack-and-files.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0016](0016-do-not-change-claude-code-defaults.md), [0018](0018-account-groups-and-handoff-guard.md)
 
 ## Context
@@ -86,7 +86,10 @@ from the `claude` CLI, and everything it does to them goes through the CLI:
   reused pid. *Amended by [0025](0025-session-terminal-size-for-logs.md):*
   for the logs replay, tower also takes field 7 (`tty_nr`) of that `stat`
   and asks the session's PTY device for its size with a read-only
-  `TIOCGWINSZ`, nothing else.
+  `TIOCGWINSZ`, nothing else. *Amended by [0049](0049-supported-platforms.md):* this is Linux's form of
+  the exception. Another system may read the same process information through
+  what it offers; until macOS has that, its reads give nothing and tower falls
+  back as for an unreadable process.
 
 *Amended by [0029](0029-tracking-subagents.md):* subagents, which the JSON
 lacks, come from Claude Code's official hooks: tower passes observe-only hooks
