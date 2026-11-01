@@ -1,5 +1,6 @@
-# Publishes a signed release for a version tag (doc/0050). Two jobs:
-# - build: one native static musl binary per architecture, no secrets.
+# Publishes a signed release for a version tag (doc/0050, doc/0051). Two jobs:
+# - build: one native binary per system and CPU, no secrets. Static musl on Linux,
+#   thin Mach-O on macOS.
 # - publish: checksums, the minisign signature, a draft release, then publishing.
 #   Nothing from the repository runs here, and the binaries are only hashed.
 # The release checklist is in doc/guide/development.md.
@@ -39,11 +40,19 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             asset: tower-aarch64-linux-musl
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            asset: tower-arm64-macos
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+            asset: tower-x86_64-macos
     env:
       TARGET: ${{ matrix.target }}
       ASSET: ${{ matrix.asset }}
       # Read for the aarch64 target only: the default cc fails to link it there.
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+      # Read for the macOS targets only, so the oldest macOS does not follow the image.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,11 +72,16 @@ jobs:
           echo "Releasing $GITHUB_REF_NAME"
 
       # The ARM image's page lists Rust but does not name rustup, so install it if missing.
+      # The installer here is Linux's. The macOS images list rustup, so its absence is an error.
       - name: Install the stable toolchain
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           if ! command -v rustup >/dev/null; then
+            if [ "$RUNNER_OS" != Linux ]; then
+              echo "::error::no rustup on this $RUNNER_OS runner"
+              exit 1
+            fi
             curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/rustup-init" \
               "https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init"
             chmod +x "$RUNNER_TEMP/rustup-init"
@@ -79,6 +93,7 @@ jobs:
           rustc --version
 
       - name: Make sure file is installed
+        if: ${{ runner.os == 'Linux' }}
         run: |
           if ! command -v file >/dev/null; then
             sudo apt-get update -qq
@@ -100,16 +115,79 @@ jobs:
           cargo test --test update -- --ignored --exact pinned_keys_are_ready_for_release | tee "$RUNNER_TEMP/keys-test.txt"
           grep -q 'test result: ok\. 1 passed' "$RUNNER_TEMP/keys-test.txt"
 
-      - name: Static musl release build
+      - name: Release build
         run: cargo build --release --target "$TARGET"
 
-      - name: Check the binary
+      - name: Copy the binary
         run: |
           mkdir dist
           cp "target/$TARGET/release/tower" "dist/$ASSET"
           chmod 755 "dist/$ASSET"
-          file "dist/$ASSET" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
-          test "$("./dist/$ASSET" --version)" = "tower ${GITHUB_REF_NAME#v}"
+
+      - name: Check the binary is static
+        if: ${{ runner.os == 'Linux' }}
+        run: file "dist/$ASSET" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+
+      # macOS runners have bash 3.2. grep -q reads from a here-string, because with
+      # pipefail, stopping early could fail a pipe. /usr/bin/file because Homebrew's
+      # prints another format.
+      - name: Check the Mach-O binary
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          binary="dist/$ASSET"
+          cpu=${ASSET#tower-}
+          cpu=${cpu%-macos}
+
+          # Tests and --version only mean something on the CPU the binary is for.
+          if [ "$(uname -m)" != "$cpu" ]; then
+            echo "::error::$ASSET was built on $(uname -m), not natively"
+            exit 1
+          fi
+
+          # Thin, not universal, for this CPU.
+          format=$(/usr/bin/file -b "$binary")
+          echo "$format"
+          if [ "$format" != "Mach-O 64-bit executable $cpu" ]; then
+            echo "::error::$ASSET is not a 64-bit Mach-O executable for $cpu"
+            exit 1
+          fi
+
+          # The oldest macOS it runs on.
+          load_commands=$(otool -l "$binary")
+          if ! grep -Eq "^ *minos $MACOSX_DEPLOYMENT_TARGET\$" <<< "$load_commands"; then
+            echo "::error::$ASSET does not name macOS $MACOSX_DEPLOYMENT_TARGET as its minimum"
+            grep -E '^ *(minos|version) ' <<< "$load_commands" || true
+            exit 1
+          fi
+
+          # Only system libraries, so nothing from Homebrew leaks in.
+          libraries=$(otool -L "$binary" | tail -n +2)
+          echo "$libraries"
+          if echo "$libraries" | grep -Ev '^[[:space:]]*(/usr/lib/|/System/Library/)'; then
+            echo "::error::$ASSET links a library from outside the system (above)"
+            exit 1
+          fi
+
+          # Apple silicon refuses an unsigned binary, and its linker signs ad hoc.
+          # The linker leaves Intel code unsigned by default, and Intel runs it so,
+          # but a signature that is there must be valid.
+          if signature=$(codesign -dv "$binary" 2>&1); then
+            echo "$signature"
+            codesign --verify --verbose "$binary"
+            if [ "$cpu" = arm64 ] && ! grep -q '^Signature=adhoc$' <<< "$signature"; then
+              echo "::error::$ASSET has a signature that is not ad hoc"
+              exit 1
+            fi
+          elif [ "$cpu" = x86_64 ] && grep -q 'not signed at all' <<< "$signature"; then
+            echo "Not signed, the linker's default on Intel"
+          else
+            echo "$signature"
+            echo "::error::$ASSET has no valid signature"
+            exit 1
+          fi
+
+      - name: Check the version
+        run: test "$("./dist/$ASSET" --version)" = "tower ${GITHUB_REF_NAME#v}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -128,7 +206,7 @@ jobs:
     permissions:
       contents: write
     env:
-      BINARIES: tower-x86_64-linux-musl tower-aarch64-linux-musl
+      BINARIES: tower-x86_64-linux-musl tower-aarch64-linux-musl tower-arm64-macos tower-x86_64-macos
       # Version and SHA-256 of minisign-<version>-linux.tar.gz from jedisct1/minisign.
       MINISIGN_VERSION: "0.12"
       MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
@@ -225,6 +303,17 @@ jobs:
           curl -fLo ~/.local/bin/tower $url/tower-\$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
           \`\`\`
 
+          On macOS 11 or newer, Apple silicon or Intel. This renames a new file over the old one, because
+          overwriting a signed binary in place can get it killed:
+
+          \`\`\`sh
+          mkdir -p ~/.local/bin
+          curl -fLo ~/.local/bin/tower.new $url/tower-\$(uname -m)-macos && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
+          \`\`\`
+
+          The macOS binaries are not signed by Apple. A browser download may be quarantined; a \`curl\` one is not.
+          See Getting started in the docs.
+
           To check the download by hand first, with [minisign](https://jedisct1.github.io/minisign/):
 
           \`\`\`sh
@@ -233,6 +322,16 @@ jobs:
           curl -fL -O $url/\$asset -O $url/SHA256SUMS -O $url/SHA256SUMS.minisig
           minisign -Vm SHA256SUMS -P $PRIMARY_KEY
           grep " \$asset\\\$" SHA256SUMS | sha256sum -c - && install -m 755 \$asset ~/.local/bin/tower
+          \`\`\`
+
+          On macOS, the same with the macOS asset and \`shasum\`:
+
+          \`\`\`sh
+          cd "\$(mktemp -d)"
+          asset=tower-\$(uname -m)-macos
+          curl -fL -O $url/\$asset -O $url/SHA256SUMS -O $url/SHA256SUMS.minisig
+          minisign -Vm SHA256SUMS -P $PRIMARY_KEY
+          grep " \$asset\\\$" SHA256SUMS | shasum -a 256 -c - && rm -f ~/.local/bin/tower && install -m 755 \$asset ~/.local/bin/tower
           \`\`\`
 
           The trusted comment minisign prints must say \`watchtower $GITHUB_REF_NAME\`.

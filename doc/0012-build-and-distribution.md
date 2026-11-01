@@ -1,6 +1,6 @@
 # 0012. Static musl build and distribution
 
-- Status: Accepted · 2026-10-18 · a macOS CI job that may fail added by [0049](0049-supported-platforms.md) · the release job, its assets and checklist, signing, immutable releases and an aarch64 build by [0050](0050-signed-releases-and-arm.md)
+- Status: Accepted · 2026-10-18 · a macOS CI job that may fail added by [0049](0049-supported-platforms.md) · the release job, its assets and checklist, signing, immutable releases and an aarch64 build by [0050](0050-signed-releases-and-arm.md) · macOS release assets, per-OS checks and a required macOS CI job by [0051](0051-macos-release-downloads.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md), [0026](0026-latest-release-from-the-web-redirect.md), [0050](0050-signed-releases-and-arm.md)
 
 ## Context

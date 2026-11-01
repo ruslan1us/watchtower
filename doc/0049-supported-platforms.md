@@ -1,6 +1,6 @@
 # 0049. Supported platforms
 
-- Status: Accepted · 2026-11-01 · an aarch64 Linux release and a split `release.yml` by [0050](0050-signed-releases-and-arm.md) · first use on a real Mac noted 2026-11-01
+- Status: Accepted · 2026-11-01 · an aarch64 Linux release and a split `release.yml` by [0050](0050-signed-releases-and-arm.md) · first use on a real Mac noted 2026-11-01 · macOS release assets, `tower update` there and a required CI job by [0051](0051-macos-release-downloads.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0005](0005-attach-and-detach.md), [0009](0009-stop-remove-and-logs.md), [0012](0012-build-and-distribution.md), [0014](0014-v1-scope.md), [0015](0015-testing-strategy.md), [0017](0017-ownership-evidence-rules.md), [0023](0023-self-update.md), [0025](0025-session-terminal-size-for-logs.md), [0045](0045-workspace-style.md)
 - Supersedes: the non-goal "Platforms other than Linux x86_64" of [0014](0014-v1-scope.md)
 - Amends: [0012](0012-build-and-distribution.md), and the `/proc` rules of [0001](0001-thin-wrapper-over-claude-cli.md), [0017](0017-ownership-evidence-rules.md) and [0025](0025-session-terminal-size-for-logs.md)

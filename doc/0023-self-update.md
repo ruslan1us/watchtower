@@ -1,6 +1,6 @@
 # 0023. Self-update command
 
-- Status: Accepted · 2026-10-19 · release lookup amended by [0026](0026-latest-release-from-the-web-redirect.md) · macOS refused, `--check` too, by [0049](0049-supported-platforms.md) · signature check, `--allow-unsigned`, aarch64 and the missing-`curl` message by [0050](0050-signed-releases-and-arm.md)
+- Status: Accepted · 2026-10-19 · release lookup amended by [0026](0026-latest-release-from-the-web-redirect.md) · macOS refused, `--check` too, by [0049](0049-supported-platforms.md) · signature check, `--allow-unsigned`, aarch64 and the missing-`curl` message by [0050](0050-signed-releases-and-arm.md) · macOS updates, no longer refused from `0.7.1-rc.1` on, by [0051](0051-macos-release-downloads.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0012](0012-build-and-distribution.md), [0013](0013-privacy-and-repository-hygiene.md), [0016](0016-do-not-change-claude-code-defaults.md), [0050](0050-signed-releases-and-arm.md)
 
 ## Context

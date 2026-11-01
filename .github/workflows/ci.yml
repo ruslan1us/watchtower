@@ -47,14 +47,12 @@ jobs:
       - name: Static musl release build
         run: cargo build --release --target x86_64-unknown-linux-musl
 
-  # macOS is being brought up (doc/0049): a failure here shows on this job and
-  # does not turn the run red. Later steps run after a failed one, so one run
-  # says all it can. Hung terminal tests are the likely way to fail, hence the
-  # limit.
+  # Releases include macOS (doc/0051), so a failure here turns the run red. Later
+  # steps run after a failed one, so one run says all it can. Hung terminal tests
+  # are the likely way to fail, hence the limit.
   macos:
-    name: macOS fmt, clippy, test (allowed to fail)
+    name: macOS fmt, clippy, test
     runs-on: macos-latest
-    continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

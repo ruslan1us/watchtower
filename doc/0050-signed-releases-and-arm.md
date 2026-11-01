@@ -1,6 +1,6 @@
 # 0050. Signed releases, immutable releases and an ARM build
 
-- Status: Accepted · 2026-11-01
+- Status: Accepted · 2026-11-01 · macOS assets and the build job's macOS checks by [0051](0051-macos-release-downloads.md)
 - Related: [0002](0002-tech-stack-and-files.md), [0012](0012-build-and-distribution.md), [0013](0013-privacy-and-repository-hygiene.md), [0015](0015-testing-strategy.md), [0026](0026-latest-release-from-the-web-redirect.md), [0049](0049-supported-platforms.md)
 - Amends: [0012](0012-build-and-distribution.md) (the release job, its assets, the checklist), [0023](0023-self-update.md) (what `tower update` checks, the missing-`curl` message), [0049](0049-supported-platforms.md) (the Linux row, `release.yml`)
 
