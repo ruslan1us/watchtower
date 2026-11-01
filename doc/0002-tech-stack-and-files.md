@@ -1,6 +1,6 @@
 # 0002. Tech stack, config and state files
 
-- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md) · more theme names added by [0046](0046-more-colour-themes.md) · `[ui] tab_title` and the `pins` of the state file added by [0047](0047-tab-title-pinning-and-restart.md) · a first start's file by [0048](0048-first-run-welcome.md)
+- Status: Accepted · 2026-10-18 · config writing allowed by [0022](0022-tower-writes-its-own-config.md) · subagent files added by [0029](0029-tracking-subagents.md) · templates folder added by [0036](0036-prompt-templates.md) · config listing amended by [0038](0038-light-and-16-colour-themes.md) · `[usage]` table and `usage/` folder added by [0043](0043-plan-usage-display.md) · `[ui] mouse`, `list_width`, `card_size`, `card_gap` and the `workspace` style added by [0045](0045-workspace-style.md) · more theme names added by [0046](0046-more-colour-themes.md) · `[ui] tab_title` and the `pins` of the state file added by [0047](0047-tab-title-pinning-and-restart.md) · a first start's file by [0048](0048-first-run-welcome.md) · `minisign-verify` added by [0050](0050-signed-releases-and-arm.md)
 - Related: [0001](0001-thin-wrapper-over-claude-cli.md), [0003](0003-accounts-and-session-ownership.md), [0006](0006-session-states-and-grouping.md), [0007](0007-visual-only-attention.md), [0008](0008-new-session-dialog.md), [0010](0010-orchestrator.md), [0012](0012-build-and-distribution.md), [0017](0017-ownership-evidence-rules.md), [0018](0018-account-groups-and-handoff-guard.md), [0020](0020-visual-styles.md), [0021](0021-dashboard-themes.md), [0036](0036-prompt-templates.md)
 
 ## Context
@@ -21,6 +21,8 @@ expose.
   the config.
 - `vt100` to replay `claude logs` output, its screen converted to ratatui
   lines by tower ([0009](0009-stop-remove-and-logs.md)).
+- `minisign-verify` to check release signatures in `tower update`, added by
+  [0050](0050-signed-releases-and-arm.md). It is pure Rust.
 - `std::process::Command` for every CLI call. Worker threads and
   `std::sync::mpsc` channels, no async runtime.
 - Further dependencies only where they replace real code (e.g. path or XDG

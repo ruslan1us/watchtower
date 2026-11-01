@@ -29,7 +29,7 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 |---|---|---|
 | — | [Claude Code CLI behaviour Watchtower relies on](reference/claude-code-cli.md) | Reference |
 | 0001 | [Thin wrapper over the Claude Code CLI](0001-thin-wrapper-over-claude-cli.md) | Accepted (`/proc` exception amended by 0025, subagent hooks by 0029, `git status` by 0037, skill and command files and `plugin list` by 0042, the usage probe by 0043; a PTY client for the workspace style by 0045; process information per system by 0049) |
-| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038; `[usage]` and the `usage/` folder by 0043; `[ui] mouse`, `list_width`, `card_size` and `card_gap` by 0045; more theme names by 0046; `[ui] tab_title` and `pins` by 0047; a first start's file by 0048) |
+| 0002 | [Tech stack, config and state files](0002-tech-stack-and-files.md) | Accepted (config writing allowed by 0022, subagent files by 0029, templates folder by 0036; theme names and `[ui] color_depth` by 0038; `[usage]` and the `usage/` folder by 0043; `[ui] mouse`, `list_width`, `card_size` and `card_gap` by 0045; more theme names by 0046; `[ui] tab_title` and `pins` by 0047; a first start's file by 0048; `minisign-verify` by 0050) |
 | 0003 | [Multiple accounts and session ownership](0003-accounts-and-session-ownership.md) | Accepted (`rm` routing amended by 0034) |
 | 0004 | [Continue a session under another account](0004-account-hand-off.md) | Accepted (empty prompt allowed by 0033) |
 | 0005 | [Attaching to and detaching from a session](0005-attach-and-detach.md) | Accepted (input still waiting after a read re-arms crossterm's reader, 2026-10-28; the split view taken up for the workspace style only by 0045; a read on idle turns outside Linux by 0049) |
@@ -39,7 +39,7 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 | 0009 | [Stop, remove and the logs panel](0009-stop-remove-and-logs.md) | Accepted (emulator size amended by 0025; scrolling amended by 0028; fetching and replay amended by 0030; remove fallback added by 0034) |
 | 0010 | [Orchestrator session](0010-orchestrator.md) | Accepted (`--settings` and `subagents` field added by 0029; role, rules and updating an unedited instruction file amended by 0044; `o` in the pane by 0045) |
 | 0011 | [Keybindings](0011-keybindings.md) | Accepted (rename key added by 0027; logs panel keys amended by 0028; template key by 0036; quick reply key by 0040; `!` shell key by 0037; slash-command menu keys by 0042; `r` refreshes usage by 0043; the workspace's terminal keys, `h`, `z` and `F2` by 0045; `P`, `U`, `Ctrl+U` by 0047; the welcome window's keys by 0048) |
-| 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted (a macOS CI job that may fail by 0049) |
+| 0012 | [Static musl build and distribution](0012-build-and-distribution.md) | Accepted (a macOS CI job that may fail by 0049; the release job, assets and checklist, signing, immutable releases and aarch64 by 0050; distro coverage noted 2026-11-01) |
 | 0013 | [No personal information in the repository](0013-privacy-and-repository-hygiene.md) | Accepted |
 | 0014 | [Scope of v1 and non-goals](0014-v1-scope.md) | Accepted (usage display non-goal superseded by 0043; PTY handling for the workspace style by 0045; pinning in tower's own list by 0047; platforms other than Linux x86_64 superseded by 0049) |
 | 0015 | [Testing strategy](0015-testing-strategy.md) | Accepted |
@@ -50,7 +50,7 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 | 0020 | [Visual styles: dashboard and minimal](0020-visual-styles.md) | Accepted (colour section superseded by 0021; spinner rule amended by 0032; `git` line and four-line strip by 0037; minimal columns and window titles fitted to the width, 2026-10-21; values wrap, titles cut and a two-row key line by 0041; group separators and the status line fitted to the width, 2026-10-21; plan usage by 0043; the opt-in workspace style by 0045; the terminal's title by 0047) |
 | 0021 | [Dashboard colour themes](0021-dashboard-themes.md) | Accepted (light themes, `ansi16` and the colour depth added by 0038; the workspace's selected card painted whole by 0045; published palettes by 0046) |
 | 0022 | [Tower writes its own config](0022-tower-writes-its-own-config.md) | Accepted (`[sessions] track_subagents` added by 0029; `logs_follow_secs` by 0031; `[ui] color_depth` by 0038; `[usage]` by 0043; `[ui] card_size` and `card_gap` by 0045; a first start's file by 0048) |
-| 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026; macOS refused, `--check` too, by 0049) |
+| 0023 | [Self-update command](0023-self-update.md) | Accepted (release lookup amended by 0026; macOS refused, `--check` too, by 0049; signature check, `--allow-unsigned`, aarch64 and the missing-`curl` message by 0050) |
 | 0024 | [Settings window](0024-settings-window.md) | Accepted (logs-follow row added by 0031; empty hand-off prompt by 0033; colour-depth row by 0038; detail-panel values wrap inside a padding column, 2026-10-21; usage rows by 0043; `workspace` among the styles, `card size` and `gap between cards` by 0045; the pick list scrolls with the cursor near its middle by 0046; the `terminal tab title` row by 0047; the welcome window on top of it by 0048) |
 | 0025 | [The session terminal's real size for the logs replay](0025-session-terminal-size-for-logs.md) | Accepted (Linux's form of the read by 0049) |
 | 0026 | [Latest release from the web redirect, the API as fallback](0026-latest-release-from-the-web-redirect.md) | Accepted |
@@ -76,7 +76,8 @@ How to install and use tower is in [`guide/`](guide/getting-started.md), linked 
 | 0046 | [Colour themes from published palettes](0046-more-colour-themes.md) | Accepted |
 | 0047 | [Attention in the tab title, pinned sessions, restart after an update](0047-tab-title-pinning-and-restart.md) | Accepted |
 | 0048 | [First start: the welcome window and `tower setup`](0048-first-run-welcome.md) | Accepted |
-| 0049 | [Supported platforms](0049-supported-platforms.md) | Accepted |
+| 0049 | [Supported platforms](0049-supported-platforms.md) | Accepted (an aarch64 Linux release and a split `release.yml` by 0050) |
+| 0050 | [Signed releases, immutable releases and an ARM build](0050-signed-releases-and-arm.md) | Accepted |
 
 The reference document collects observed and documented Claude Code CLI
 behaviour (commands, JSON fields, output formats, exit codes). Decision files

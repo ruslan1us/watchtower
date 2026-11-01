@@ -24,7 +24,7 @@ jobs:
     name: fmt, clippy, test, musl build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install the stable toolchain
         run: |
@@ -33,7 +33,7 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           rustc --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: cargo fmt --check
         run: cargo fmt --check
@@ -57,7 +57,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install the stable toolchain
         run: |
@@ -65,7 +65,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: cargo fmt --check
         run: cargo fmt --check
@@ -77,3 +77,63 @@ jobs:
       - name: cargo test
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+
+  # ARM is new (doc/0050): the release builds it too, so a failure here warns of
+  # a failing release, without turning this run red. Same limit as macOS.
+  linux-arm:
+    name: Linux aarch64 fmt, clippy, test, musl build (allowed to fail)
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      TARGET: aarch64-unknown-linux-musl
+      # The default cc fails to link this target.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The image's page lists Rust but does not name rustup, so install it if missing.
+      - name: Install the stable toolchain
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/rustup-init" \
+              "https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init"
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain none
+          fi
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add "$TARGET"
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast
+
+      - name: Static musl release build
+        id: musl
+        if: ${{ !cancelled() }}
+        run: cargo build --release --target "$TARGET"
+
+      - name: Check the binary
+        if: ${{ !cancelled() && steps.musl.outcome == 'success' }}
+        run: |
+          if ! command -v file >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq file
+          fi
+          binary="target/$TARGET/release/tower"
+          file "$binary" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "$("$binary" --version)" = "tower $version"

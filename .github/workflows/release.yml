@@ -1,6 +1,8 @@
-# Publishes a release for a version tag (doc/0012): the static musl binary
-# under a stable name, so releases/latest/download/<name> always works, plus
-# its checksum. The release checklist is in doc/0012.
+# Publishes a signed release for a version tag (doc/0050). Two jobs:
+# - build: one native static musl binary per architecture, no secrets.
+# - publish: checksums, the minisign signature, a draft release, then publishing.
+#   Nothing from the repository runs here, and the binaries are only hashed.
+# The release checklist is in doc/guide/development.md.
 name: Release
 
 on:
@@ -8,24 +10,44 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  TARGET: x86_64-unknown-linux-musl
-  ASSET: tower-x86_64-linux-musl
 
 jobs:
-  release:
-    name: Build and publish
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: tower-x86_64-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: tower-aarch64-linux-musl
+    env:
+      TARGET: ${{ matrix.target }}
+      ASSET: ${{ matrix.asset }}
+      # Read for the aarch64 target only: the default cc fails to link it there.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check the tag matches Cargo.toml
         run: |
@@ -40,14 +62,28 @@ jobs:
           fi
           echo "Releasing $GITHUB_REF_NAME"
 
+      # The ARM image's page lists Rust but does not name rustup, so install it if missing.
       - name: Install the stable toolchain
         run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/rustup-init" \
+              "https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init"
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain none
+          fi
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
           rustup target add "$TARGET"
           rustc --version
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Make sure file is installed
+        run: |
+          if ! command -v file >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq file
+          fi
 
       - name: cargo fmt --check
         run: cargo fmt --check
@@ -58,55 +94,221 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # A renamed test would match nothing and still exit 0, so require that it ran.
+      - name: The pinned keys are ready
+        run: |
+          cargo test --test update -- --ignored --exact pinned_keys_are_ready_for_release | tee "$RUNNER_TEMP/keys-test.txt"
+          grep -q 'test result: ok\. 1 passed' "$RUNNER_TEMP/keys-test.txt"
+
       - name: Static musl release build
         run: cargo build --release --target "$TARGET"
 
-      - name: Prepare the assets
+      - name: Check the binary
         run: |
           mkdir dist
           cp "target/$TARGET/release/tower" "dist/$ASSET"
           chmod 755 "dist/$ASSET"
           file "dist/$ASSET" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
           test "$("./dist/$ASSET" --version)" = "tower ${GITHUB_REF_NAME#v}"
-          cd dist
-          sha256sum "$ASSET" > "$ASSET.sha256"
-          cat "$ASSET.sha256"
-          sha256sum -c "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # The signing secrets are in the `release` environment, open to v* tags only.
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    env:
+      BINARIES: tower-x86_64-linux-musl tower-aarch64-linux-musl
+      # Version and SHA-256 of minisign-<version>-linux.tar.gz from jedisct1/minisign.
+      MINISIGN_VERSION: "0.12"
+      MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+    steps:
+      # Only for reading the pinned keys from src/update.rs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install minisign
+        run: |
+          dir="$RUNNER_TEMP/minisign"
+          mkdir -p "$dir"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$dir/minisign.tar.gz" \
+            "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/minisign-$MINISIGN_VERSION-linux.tar.gz"
+          echo "$MINISIGN_SHA256  $dir/minisign.tar.gz" | sha256sum -c -
+          tar -xzf "$dir/minisign.tar.gz" -C "$dir" minisign-linux/x86_64/minisign
+          echo "$dir/minisign-linux/x86_64" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tower-*
+          merge-multiple: true
+          path: dist
+
+      - name: Write the checksums
+        working-directory: dist
+        run: |
+          read -ra binaries <<< "$BINARIES"
+          for binary in "${binaries[@]}"; do
+            sha256sum "$binary" > "$binary.sha256"
+          done
+          sha256sum "${binaries[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      # minisign reads the password from standard input when that is not a terminal.
+      # The here-string keeps it off every command line, and the key stays in a file.
+      - name: Sign SHA256SUMS
+        working-directory: dist
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m SHA256SUMS \
+            -t "watchtower $GITHUB_REF_NAME" <<< "$MINISIGN_PASSWORD"
+
+      - name: Delete the key file
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+
+      # One of the keys tower trusts must accept it, the way tower checks it: not
+      # legacy, and with this tag in the trusted comment. A secret that does not
+      # match the pinned keys stops the release here.
+      - name: Verify the signature with the pinned keys
+        id: verify
+        run: |
+          mapfile -t keys < <(grep -oE '^\s*"RW[A-Za-z0-9+/]{54}",?\s*$' src/update.rs | grep -oE 'RW[A-Za-z0-9+/]{54}')
+          if [ "${#keys[@]}" -eq 0 ]; then
+            echo "::error::no pinned public keys found in src/update.rs"
+            exit 1
+          fi
+          verified=
+          for key in "${keys[@]}"; do
+            if comment=$(minisign -V -H -Q -m dist/SHA256SUMS -P "$key" 2>/dev/null); then
+              if [ "$comment" != "watchtower $GITHUB_REF_NAME" ]; then
+                echo "::error::the trusted comment is '$comment', expected 'watchtower $GITHUB_REF_NAME'"
+                exit 1
+              fi
+              verified=$key
+              break
+            fi
+          done
+          if [ -z "$verified" ]; then
+            echo "::error::the signature does not verify with any of the ${#keys[@]} pinned keys in src/update.rs"
+            exit 1
+          fi
+          echo "Verified with pinned key $verified"
+          echo "primary-key=${keys[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Write the release notes
+        env:
+          PRIMARY_KEY: ${{ steps.verify.outputs.primary-key }}
         run: |
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
           cat > notes.md <<NOTES
           ## Install
 
-          A static x86_64 Linux binary that runs whatever the glibc version:
+          A static Linux binary for x86_64 or aarch64 that runs whatever the glibc version:
 
           \`\`\`sh
           mkdir -p ~/.local/bin
-          curl -Lo ~/.local/bin/tower $url/$ASSET && chmod +x ~/.local/bin/tower
+          curl -fLo ~/.local/bin/tower $url/tower-\$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
           \`\`\`
 
-          To check the download against its checksum first:
+          To check the download by hand first, with [minisign](https://jedisct1.github.io/minisign/):
 
           \`\`\`sh
           cd "\$(mktemp -d)"
-          curl -LO $url/$ASSET -LO $url/$ASSET.sha256
-          sha256sum -c $ASSET.sha256 && install -m 755 $ASSET ~/.local/bin/tower
+          asset=tower-\$(uname -m)-linux-musl
+          curl -fL -O $url/\$asset -O $url/SHA256SUMS -O $url/SHA256SUMS.minisig
+          minisign -Vm SHA256SUMS -P $PRIMARY_KEY
+          grep " \$asset\\\$" SHA256SUMS | sha256sum -c - && install -m 755 \$asset ~/.local/bin/tower
           \`\`\`
 
-          \`releases/latest/download/$ASSET\` always points at the newest release; see the README.
+          The trusted comment minisign prints must say \`watchtower $GITHUB_REF_NAME\`.
+
+          \`releases/latest/download/<name>\` always points at the newest release; see the README.
           NOTES
           cat notes.md
 
-      - name: Create the GitHub release
+      # A run repeated after a failure finds its own draft and starts over. A
+      # published release is never touched.
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if is_draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$is_draft" != true ]; then
+              echo "::error::release $GITHUB_REF_NAME is already published"
+              exit 1
+            fi
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          flags=()
+          case "$GITHUB_REF_NAME" in
+            *-*) flags+=(--prerelease) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md \
             --generate-notes \
             --verify-tag \
-            --latest \
-            "dist/$ASSET" "dist/$ASSET.sha256"
+            --draft \
+            "${flags[@]}"
+
+      - name: Upload the assets
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -ra binaries <<< "$BINARIES"
+          files=(SHA256SUMS SHA256SUMS.minisig)
+          for binary in "${binaries[@]}"; do
+            files+=("$binary" "$binary.sha256")
+          done
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${files[@]}"
+
+      - name: Confirm the draft has every asset
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -ra binaries <<< "$BINARIES"
+          files=(SHA256SUMS SHA256SUMS.minisig)
+          for binary in "${binaries[@]}"; do
+            files+=("$binary" "$binary.sha256")
+          done
+          expected=$(for file in "${files[@]}"; do echo "$file $(stat -c %s "$file")"; done | sort)
+          actual=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | select(.state == "uploaded") | "\(.name) \(.size)"' | sort)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::the draft's assets are not the expected ones"
+            echo "expected:"
+            echo "$expected"
+            echo "found:"
+            echo "$actual"
+            exit 1
+          fi
+          echo "$actual"
+
+      # With release immutability on, this is the point of no return.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) latest=--latest=false ;;
+            *) latest=--latest ;;
+          esac
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false "$latest"

@@ -1,7 +1,7 @@
 # 0012. Static musl build and distribution
 
-- Status: Accepted · 2026-10-18 · a macOS CI job that may fail added by [0049](0049-supported-platforms.md)
-- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md), [0026](0026-latest-release-from-the-web-redirect.md)
+- Status: Accepted · 2026-10-18 · a macOS CI job that may fail added by [0049](0049-supported-platforms.md) · the release job, its assets and checklist, signing, immutable releases and an aarch64 build by [0050](0050-signed-releases-and-arm.md)
+- Related: [0002](0002-tech-stack-and-files.md), [0015](0015-testing-strategy.md), [0023](0023-self-update.md), [0026](0026-latest-release-from-the-web-redirect.md), [0050](0050-signed-releases-and-arm.md)
 
 ## Context
 
@@ -72,6 +72,9 @@ glibc, so a binary built on the development machine may fail on the target with
   holds little data.
 - The binary runs on any x86_64 Linux regardless of glibc version.
 - Other architectures (e.g. aarch64) are not built in v1 but need only another target.
+- *Noted 2026-11-01:* the static binary was tested in containers on one 5.15 kernel with a fake
+  `claude`: Alpine 3.20, Debian 13, Ubuntu 22.04, Fedora 44, Rocky 9, Alma 8, CentOS 7, openSUSE
+  Leap 16, Arch, Amazon Linux 2023, BusyBox and an empty image.
 
 ## Alternatives considered
 
