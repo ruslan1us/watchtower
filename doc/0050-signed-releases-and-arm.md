@@ -92,6 +92,11 @@ tests and `--version` really run on that architecture. It links with `rust-lld` 
 default `cc` failed, which gives a non-PIE static binary. `ci.yml` has a matching job with
 `continue-on-error: true`. It warns only: the same failure in `release.yml` stops the release.
 
+A real CI run on 2026-11-01 confirmed this. The image has no `rustup`, so the workflows' step
+installed its own. All tests passed natively (1,629 passed, 0 failed), and the build is
+`statically linked`, non-PIE. The two tests that failed in an earlier local run under emulation
+pass natively, so that was the emulator.
+
 **Rollout.** First a dry run with `v0.7.0-rc.1`, before immutability, so it can be redone. Then
 enable immutability, which applies only to future releases. Then `v0.7.0`. The steps are in
 [Development](guide/development.md).
@@ -125,8 +130,6 @@ enable immutability, which applies only to future releases. Then `v0.7.0`. The s
 
 ## Open items
 
-Only a real workflow run can show these:
+Only a real release run can show this:
 
 - The `release` environment's tag rule, and `gh`'s draft, upload and publish calls.
-- Whether `ubuntu-24.04-arm` has `rustup` and `file`. The workflows install them if not.
-- Whether all tests pass on ARM. They have not run there yet.

@@ -1502,10 +1502,9 @@ fn the_elf_machine_must_be_the_running_arch() {
         let err = attempt(elf(wrong));
         assert!(err.contains(says), "{arch}: {err}");
         let err = attempt(elf(machine));
-        assert!(
-            err.contains("cannot run the downloaded binary"),
-            "{arch}: {err}"
-        );
+        // Linux refuses to exec the bare header; macOS runs it through `sh`, which prints nothing.
+        assert!(err.contains("the downloaded binary"), "{arch}: {err}");
+        assert!(!err.contains("Linux executable"), "{arch}: {err}");
     }
 }
 
