@@ -15,8 +15,8 @@ pub enum Command {
     Version,
     /// `--help` / `-h`.
     Help,
-    /// `tower update [--check | --version vX.Y.Z] [--force]`, also spelled
-    /// `tower --update …` (doc/0023).
+    /// `tower update [--check | --version vX.Y.Z] [--force] [--allow-unsigned]`,
+    /// also spelled `tower --update …` (doc/0023).
     Update {
         /// `--check`: only compare with the latest release.
         check: bool,
@@ -24,6 +24,8 @@ pub enum Command {
         version: Option<crate::update::Version>,
         /// `--force`: replace a cargo build output or the same version.
         force: bool,
+        /// `--allow-unsigned`: install a release from before signatures.
+        allow_unsigned: bool,
     },
     /// `tower hook [--dir <config dir>]`: internal, run by the Claude Code
     /// hooks tower passes to the sessions it starts (doc/0029). Reads one
@@ -87,7 +89,7 @@ Usage: tower [--version | --help]
        tower dispatch --project <dir> [--account <name>] [--name <name>]
                       [--model <m>] [--effort <e>] [--mode <p>] [--json] [--] <task>
        tower wake <id or name> [--account <name>] [--text <text> | -- <text>]
-       tower update [--check | --version vX.Y.Z] [--force]
+       tower update [--check | --version vX.Y.Z] [--force] [--allow-unsigned]
 
 A terminal UI over Claude Code background sessions.
 Run without arguments to start it. Press ? inside for the keys.
@@ -113,10 +115,14 @@ Commands:
                  or config, 3 folder not trusted, 4 refused (not found,
                  still running, owner unknown or another account)
   update         Replace this binary with the latest GitHub release, after
-                 checking its checksum and that it runs (also `--update`)
+                 checking its signature, its checksum and that it runs
+                 (also `--update`)
     --check            Only report: exit 0 up to date, 10 newer release, 1 error
     --version vX.Y.Z   Install that release, also to reinstall or downgrade
-    --force            Also replace a cargo build output or the same version
+    --force            Also replace a cargo build output or the same version;
+                       skips no check
+    --allow-unsigned   Also install a release older than v0.7.0-rc.1, which has
+                       no signature, on its checksum alone
                  Only `update` uses the network (through curl), never on its own.
   hook           Internal: run by the hooks tower passes to the sessions it
                  starts, to list their subagents; prints nothing
@@ -353,7 +359,7 @@ fn parse_hook(rest: &[&str]) -> Command {
 
 fn parse_update(rest: &[&str]) -> Result<Command, String> {
     use crate::update::Version;
-    let (mut check, mut force) = (false, false);
+    let (mut check, mut force, mut allow_unsigned) = (false, false, false);
     let mut version: Option<Version> = None;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
@@ -366,7 +372,13 @@ fn parse_update(rest: &[&str]) -> Result<Command, String> {
                 force = true;
                 continue;
             }
-            "--check" | "--force" => return Err(format!("`{arg}` given twice")),
+            "--allow-unsigned" if !allow_unsigned => {
+                allow_unsigned = true;
+                continue;
+            }
+            "--check" | "--force" | "--allow-unsigned" => {
+                return Err(format!("`{arg}` given twice"));
+            }
             "--help" | "-h" => return Ok(Command::Help),
             "--version" => match args.next() {
                 Some(value) => *value,
@@ -385,13 +397,14 @@ fn parse_update(rest: &[&str]) -> Result<Command, String> {
                 .ok_or_else(|| format!("`{value}` is not a version (e.g. v1.2.3)"))?,
         );
     }
-    if check && (version.is_some() || force) {
+    if check && (version.is_some() || force || allow_unsigned) {
         return Err("`--check` takes no other options".to_owned());
     }
     Ok(Command::Update {
         check,
         version,
         force,
+        allow_unsigned,
     })
 }
 
@@ -430,6 +443,7 @@ mod tests {
             check: false,
             version: None,
             force: false,
+            allow_unsigned: false,
         };
         assert_eq!(parse(["update"]), Ok(plain.clone()));
         assert_eq!(parse(["--update"]), Ok(plain));
@@ -439,6 +453,16 @@ mod tests {
                 check: false,
                 version: Version::parse("1.2.3"),
                 force: true,
+                allow_unsigned: false,
+            })
+        );
+        assert_eq!(
+            parse(["update", "--version", "v0.6.1", "--allow-unsigned"]),
+            Ok(Command::Update {
+                check: false,
+                version: Version::parse("0.6.1"),
+                force: false,
+                allow_unsigned: true,
             })
         );
         assert_eq!(
@@ -450,6 +474,8 @@ mod tests {
         assert!(parse(["update", "--version", "latest"]).is_err());
         assert!(parse(["update", "--check", "--force"]).is_err());
         assert!(parse(["update", "--check", "--check"]).is_err());
+        assert!(parse(["update", "--check", "--allow-unsigned"]).is_err());
+        assert!(parse(["update", "--allow-unsigned", "--allow-unsigned"]).is_err());
         assert!(parse(["update", "--now"]).is_err());
     }
 

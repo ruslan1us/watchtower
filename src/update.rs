@@ -9,12 +9,18 @@
 //! HTTPS-only, TLS 1.2+ options and `-q`, so a `~/.curlrc` cannot weaken
 //! them. Tower links no HTTP or TLS code.
 //!
-//! An update downloads the release asset and its `.sha256` into a fresh
-//! temp dir next to the target binary, verifies the SHA-256, checks that the
-//! file is an x86-64 ELF executable and that it runs and prints the expected
+//! An update works in a fresh temp dir next to the target binary. From
+//! [`SIGNED_SINCE`] on it downloads `SHA256SUMS` and its minisign signature,
+//! verifies the signature against [`PINNED_KEYS`] and that the signature's
+//! trusted comment names exactly this release, and only then downloads the
+//! binary and compares it with its line in `SHA256SUMS`. An older release has
+//! no signature and is refused unless `--allow-unsigned` asks for its
+//! `.sha256` alone. Either way it then checks that the file is an ELF
+//! executable for this architecture, and that it runs and prints the expected
 //! `tower X.Y.Z`, and only then gives it the old binary's mode and owner and
-//! renames it over the target, so the swap is atomic. On any failure the
-//! old binary is untouched and the temp dir is removed.
+//! renames it over the target, so the swap is atomic. Nothing downloaded runs
+//! before those checks pass. On any failure the old binary is untouched and
+//! the temp dir is removed.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -26,8 +32,25 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-/// The release asset: the static musl binary (doc/0012).
-pub const ASSET: &str = "tower-x86_64-linux-musl";
+/// The release's checksum manifest: plain `sha256sum` lines for its binaries.
+pub const MANIFEST: &str = "SHA256SUMS";
+
+/// The minisign signature of [`MANIFEST`].
+pub const MANIFEST_SIGNATURE: &str = "SHA256SUMS.minisig";
+
+/// The first version whose release is signed. This one and everything semver
+/// orders after it must have a good signature; anything before it has none.
+pub const SIGNED_SINCE: &str = "0.7.0-rc.1";
+
+/// The public keys a release signature may come from. Two exist so that one
+/// can be rotated out: a signature from either is accepted. An empty list
+/// fails closed, and the release workflow refuses to ship with fewer than two
+/// (`pinned_keys_are_ready_for_release` in tests/update.rs). It stays empty
+/// until the owner generates the keys.
+///
+/// The release workflow reads this list with a grep, so each key must stay a
+/// plain quoted literal alone on its own line, with no other text there.
+pub const PINNED_KEYS: &[&str] = &[];
 
 /// The web page of the newest (non-draft, non-pre-release) release. GitHub
 /// answers it with a redirect to `<RELEASE_TAG_PREFIX><tag>`, or to
@@ -48,9 +71,9 @@ pub const LATEST_API: &str = "https://api.github.com/repos/ruslan1us/watchtower/
 /// Versioned downloads live under `<DOWNLOAD_BASE>/vX.Y.Z/<asset>`.
 pub const DOWNLOAD_BASE: &str = "https://github.com/ruslan1us/watchtower/releases/download";
 
-/// The stable URL of the newest release's binary, for the manual command.
+/// The stable URLs of the newest release's files are `<LATEST_DOWNLOAD>/<asset>`.
 pub const LATEST_DOWNLOAD: &str =
-    "https://github.com/ruslan1us/watchtower/releases/latest/download/tower-x86_64-linux-musl";
+    "https://github.com/ruslan1us/watchtower/releases/latest/download";
 
 /// Exit code of `tower update --check` when a newer release exists.
 pub const EXIT_UPDATE_AVAILABLE: u8 = 10;
@@ -63,6 +86,10 @@ const RUN_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Mode for the new binary when the old one's cannot be read.
 const DEFAULT_MODE: u32 = 0o755;
+
+/// The most `SHA256SUMS` or its signature may hold: they are read into memory
+/// before anything vouches for them, and both are a few lines long.
+const MAX_SIGNED_FILE_BYTES: u64 = 64 * 1024;
 
 /// The arguments `curl` gets before `-o` and the URL: `-q` first (ignore
 /// `~/.curlrc`), fail on HTTP errors, quiet but show errors, follow
@@ -129,14 +156,22 @@ pub fn parse_latest_redirect(url: &str) -> Result<Version, String> {
     }
 }
 
-/// The URL of a release file (`ASSET` or `ASSET.sha256`) of version `v`.
+/// The URL of a release file (an asset, `SHA256SUMS`, …) of version `v`.
 pub fn download_url(v: &Version, file: &str) -> String {
     format!("{DOWNLOAD_BASE}/{}/{file}", v.tag())
 }
 
-/// The manual install command from the README, writing to `target`.
-pub fn manual_command(target: &str) -> String {
-    format!("curl -Lo {target} {LATEST_DOWNLOAD} && chmod +x {target}")
+/// What to do without `curl` on this platform. The way around it must not
+/// need `curl` either.
+fn curl_missing(os: &str, arch: &str) -> String {
+    let install = "`curl` is not installed or not on PATH; install it and run this again";
+    match asset_for(os, arch) {
+        Some(asset) => format!(
+            "{install}, or download {LATEST_DOWNLOAD}/{asset} some other way, \
+             save it as ~/.local/bin/tower and `chmod +x` it"
+        ),
+        None => install.to_owned(),
+    }
 }
 
 // ---- versions ------------------------------------------------------------
@@ -328,8 +363,11 @@ pub struct Request {
     /// allowed); `None` means the latest.
     pub version: Option<Version>,
     /// `--force`: replace a cargo build output, or reinstall the version
-    /// already running.
+    /// already running. It never skips a verification.
     pub force: bool,
+    /// `--allow-unsigned`: install a release older than [`SIGNED_SINCE`] on
+    /// its `.sha256` alone. No effect on a release that must be signed.
+    pub allow_unsigned: bool,
 }
 
 /// What `tower update` did.
@@ -347,9 +385,23 @@ pub enum Outcome {
 
 // ---- the target ----------------------------------------------------------
 
-/// Whether this OS and architecture have a release binary (Linux x86_64).
+/// The release binary for this OS and architecture, as in `std::env::consts`.
+pub fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some("tower-x86_64-linux-musl"),
+        ("linux", "aarch64") => Some("tower-aarch64-linux-musl"),
+        _ => None,
+    }
+}
+
+/// Whether this OS and architecture have a release binary.
 pub fn platform_supported(os: &str, arch: &str) -> bool {
-    os == "linux" && arch == "x86_64"
+    asset_for(os, arch).is_some()
+}
+
+/// Whether a release must be signed: [`SIGNED_SINCE`] and everything after it.
+pub fn is_signed(v: &Version) -> bool {
+    Version::parse(SIGNED_SINCE).is_some_and(|since| *v >= since)
 }
 
 /// Why `tower update` and `--check` stop at once on an OS tower runs on but has
@@ -399,14 +451,18 @@ pub struct Updater {
     pub current: Version,
     /// `PATH` for finding `curl`; `None` inherits tower's.
     pub path: Option<OsString>,
-    /// Whether the download must be an x86-64 ELF executable. Always on
-    /// outside tests, which use a shell script as the fake release.
+    /// Whether the download must be an ELF executable for this architecture.
+    /// Always on outside tests, which use a shell script as the fake release.
     #[doc(hidden)]
     pub require_elf: bool,
     /// The OS and architecture to decide for, as in `std::env::consts`. Always
     /// the real ones outside tests, whose fake releases work on any system.
     #[doc(hidden)]
     pub platform: (&'static str, &'static str),
+    /// The keys a release signature may come from. Always [`PINNED_KEYS`]
+    /// outside tests, which sign with throwaway keys.
+    #[doc(hidden)]
+    pub keys: Vec<String>,
 }
 
 impl Default for Updater {
@@ -416,6 +472,7 @@ impl Default for Updater {
             path: None,
             require_elf: true,
             platform: (std::env::consts::OS, std::env::consts::ARCH),
+            keys: PINNED_KEYS.iter().map(|k| (*k).to_owned()).collect(),
         }
     }
 }
@@ -432,7 +489,7 @@ impl Updater {
     pub fn latest(&self) -> Result<Version, UpdateError> {
         let web = match self.run_curl(&lookup_args(), LATEST_PAGE) {
             Ok(out) => parse_latest_redirect(&String::from_utf8_lossy(&out)),
-            // The API needs curl too: report this once, with the manual way.
+            // The API needs curl too: report this once, with the way around it.
             Err(CurlError::NotInstalled(e)) => {
                 return err(format!("cannot look up the latest release: {e}"));
             }
@@ -496,11 +553,12 @@ impl Updater {
         if let Some(refusal) = no_release_yet(os) {
             return err(refusal);
         }
-        if !platform_supported(os, arch) {
+        let Some(asset) = asset_for(os, arch) else {
             return err(format!(
-                "releases exist only for Linux x86_64, not {os} {arch}; build from source instead"
+                "releases exist only for Linux x86_64 and aarch64, not {os} {arch}; \
+                 build from source instead"
             ));
-        }
+        };
         if !request.force && looks_like_dev_build(target) {
             return err(format!(
                 "{} looks like a cargo build output; rebuild it with cargo, \
@@ -535,6 +593,27 @@ impl Updater {
                 latest
             }
         };
+        let signed = is_signed(&to);
+        if signed && self.keys.is_empty() {
+            return err(format!(
+                "this build has no release signing keys, so it cannot verify {}; \
+                 nothing was changed",
+                to.tag()
+            ));
+        }
+        if !signed && arch != "x86_64" {
+            return err(format!(
+                "{} has no {arch} build, the first is v{SIGNED_SINCE}; nothing was changed",
+                to.tag()
+            ));
+        }
+        if !signed && !request.allow_unsigned {
+            return err(format!(
+                "{} has no signature, signed releases start at v{SIGNED_SINCE}; \
+                 pass --allow-unsigned to install it on its checksum alone; nothing was changed",
+                to.tag()
+            ));
+        }
 
         let tmp = TempDir::create(dir).map_err(|e| {
             if is_permission_error(&e) {
@@ -559,28 +638,22 @@ impl Updater {
         };
         let _ = writeln!(out, "Downloading tower {}{note}…", to.tag());
 
-        let sum_name = format!("{ASSET}.sha256");
-        let sum_path = tmp.path().join(&sum_name);
-        let new_path = tmp.path().join(ASSET);
         let unchanged = |e: String| UpdateError(format!("{e}; nothing was changed"));
-        self.curl(&download_url(&to, &sum_name), Some(&sum_path))
-            .map_err(|e| unchanged(format!("cannot download {} {sum_name}: {e}", to.tag())))?;
-        self.curl(&download_url(&to, ASSET), Some(&new_path))
-            .map_err(|e| unchanged(format!("cannot download {} {ASSET}: {e}", to.tag())))?;
-
-        let sum_text = fs::read_to_string(&sum_path)
-            .map_err(|e| unchanged(format!("cannot read {sum_name}: {e}")))?;
-        let expected = parse_checksum(&sum_text, ASSET).map_err(unchanged)?;
-        let actual = sha256_file(&new_path)
-            .map_err(|e| unchanged(format!("cannot read the download: {e}")))?;
-        if actual != expected {
-            return Err(unchanged(format!(
-                "checksum mismatch for {} {ASSET}: expected {expected}, got {actual}",
+        let new_path = tmp.path().join(asset);
+        if signed {
+            self.fetch_signed(&to, asset, tmp.path(), out)
+                .map_err(unchanged)?;
+        } else {
+            let _ = writeln!(
+                out,
+                "{} has no signature: checking only its checksum, as --allow-unsigned asks.",
                 to.tag()
-            )));
+            );
+            self.fetch_unsigned(&to, asset, tmp.path())
+                .map_err(unchanged)?;
         }
         if self.require_elf {
-            check_elf(&new_path).map_err(unchanged)?;
+            check_elf(&new_path, arch).map_err(unchanged)?;
         }
         set_mode(&new_path, 0o700)
             .map_err(|e| unchanged(format!("cannot make the download executable: {e}")))?;
@@ -624,9 +697,14 @@ impl Updater {
         }
         drop(tmp);
 
+        let verified = if signed {
+            "signature and checksum OK"
+        } else {
+            "no signature, checksum OK"
+        };
         let _ = writeln!(
             out,
-            "tower {current} → {to}{note}: downloaded, checksum OK, installed to {}",
+            "tower {current} → {to}{note}: downloaded, {verified}, installed to {}",
             target.display()
         );
         let _ = writeln!(
@@ -638,6 +716,50 @@ impl Updater {
             to,
             path: target.to_owned(),
         })
+    }
+
+    /// Downloads `SHA256SUMS` and its signature into `dir`, verifies them, and
+    /// only then downloads `asset` and compares it with its line there.
+    fn fetch_signed(
+        &self,
+        to: &Version,
+        asset: &str,
+        dir: &Path,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        let manifest_path = dir.join(MANIFEST);
+        let signature_path = dir.join(MANIFEST_SIGNATURE);
+        self.download(to, MANIFEST, &manifest_path)?;
+        self.download(to, MANIFEST_SIGNATURE, &signature_path)?;
+        let manifest = read_signed_file(&manifest_path, MANIFEST)?;
+        let signature = read_signed_file(&signature_path, MANIFEST_SIGNATURE)?;
+        verify_manifest(&self.keys, &manifest, &signature, to)?;
+        let _ = writeln!(out, "Signature OK for {}.", to.tag());
+
+        let text = std::str::from_utf8(&manifest)
+            .map_err(|_| format!("{MANIFEST} of {} is not text", to.tag()))?;
+        let expected = manifest_hash(text, asset)?;
+        self.download(to, asset, &dir.join(asset))?;
+        check_hash(&dir.join(asset), &expected, to, asset)
+    }
+
+    /// Downloads `asset` and its `.sha256` into `dir` and compares them.
+    fn fetch_unsigned(&self, to: &Version, asset: &str, dir: &Path) -> Result<(), String> {
+        let sum_name = format!("{asset}.sha256");
+        let sum_path = dir.join(&sum_name);
+        self.download(to, &sum_name, &sum_path)?;
+        self.download(to, asset, &dir.join(asset))?;
+        let sum_text =
+            fs::read_to_string(&sum_path).map_err(|e| format!("cannot read {sum_name}: {e}"))?;
+        let expected = parse_checksum(&sum_text, asset)?;
+        check_hash(&dir.join(asset), &expected, to, asset)
+    }
+
+    /// Downloads a file of release `to` to `dest`.
+    fn download(&self, to: &Version, file: &str, dest: &Path) -> Result<(), String> {
+        self.curl(&download_url(to, file), Some(dest))
+            .map(|_| ())
+            .map_err(|e| format!("cannot download {} {file}: {e}", to.tag()))
     }
 
     /// Runs `curl <curl_args> [-o dest] url`. Without `dest`, returns the
@@ -669,10 +791,8 @@ impl Updater {
         let output = match cmd.output() {
             Ok(output) => output,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(CurlError::NotInstalled(format!(
-                    "`curl` is not installed or not on PATH; install it, or update by hand:\n  {}",
-                    manual_command("~/.local/bin/tower")
-                )));
+                let (os, arch) = self.platform;
+                return Err(CurlError::NotInstalled(curl_missing(os, arch)));
             }
             Err(e) => {
                 return Err(CurlError::Failed {
@@ -703,7 +823,7 @@ impl Updater {
 /// Why a `curl` run failed.
 #[derive(Debug)]
 enum CurlError {
-    /// No `curl` on `PATH`; the message has the manual install command.
+    /// No `curl` on `PATH`; the message says how to do without it.
     NotInstalled(String),
     /// curl ran and failed; `status` is the HTTP status `-f` reported.
     Failed {
@@ -768,24 +888,157 @@ pub fn parse_checksum(text: &str, name: &str) -> Result<String, String> {
     Ok(hash.to_ascii_lowercase())
 }
 
-/// The ELF header of an x86-64 executable (`ET_EXEC`, or `ET_DYN` for a
-/// static PIE), 64-bit little-endian.
-pub fn is_elf_x86_64(header: &[u8]) -> bool {
+/// The hash on the line of a `SHA256SUMS` manifest that names exactly `name`.
+/// Unlike a one-file `.sha256`, where [`parse_checksum`] allows a bare hash,
+/// the manifest holds several binaries, so the name is required, whole. A
+/// name given twice is refused. The errors quote nothing from the manifest.
+pub fn manifest_hash(text: &str, name: &str) -> Result<String, String> {
+    let mut found = None;
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(hash), Some(file), None) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        if file.strip_prefix('*').unwrap_or(file) != name {
+            continue;
+        }
+        if found.is_some() {
+            return Err(format!("{MANIFEST} has more than one line for {name}"));
+        }
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("{MANIFEST} has no valid SHA-256 for {name}"));
+        }
+        found = Some(hash.to_ascii_lowercase());
+    }
+    found.ok_or_else(|| format!("{MANIFEST} has no line for {name}"))
+}
+
+/// Compares the file at `path` with `expected`, a hash already checked to be
+/// plain hex.
+fn check_hash(path: &Path, expected: &str, to: &Version, asset: &str) -> Result<(), String> {
+    let actual = sha256_file(path).map_err(|e| format!("cannot read the download: {e}"))?;
+    if actual != expected {
+        return Err(format!(
+            "checksum mismatch for {} {asset}: expected {expected}, got {actual}",
+            to.tag()
+        ));
+    }
+    Ok(())
+}
+
+/// Reads `SHA256SUMS` or its signature, refusing what is far too long for one.
+fn read_signed_file(path: &Path, name: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|f| f.take(MAX_SIGNED_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("cannot read {name}: {e}"))?;
+    if bytes.len() as u64 > MAX_SIGNED_FILE_BYTES {
+        return Err(format!("{name} is too long"));
+    }
+    Ok(bytes)
+}
+
+/// Verifies `signature` over `manifest` with any of `keys`, strictly (no legacy
+/// signatures), and then that its trusted comment names exactly release `to`,
+/// so that an old release's signed manifest cannot be replayed under a newer
+/// tag. The comment is checked only here, after the signature covers it.
+fn verify_manifest(
+    keys: &[String],
+    manifest: &[u8],
+    signature: &[u8],
+    to: &Version,
+) -> Result<(), String> {
+    use minisign_verify::{Error, PublicKey, Signature};
+    let tag = to.tag();
+    let signature = std::str::from_utf8(signature)
+        .ok()
+        .and_then(|text| Signature::decode(text).ok())
+        .ok_or_else(|| format!("{MANIFEST_SIGNATURE} of {tag} is not a minisign signature"))?;
+
+    let keys = keys
+        .iter()
+        .map(|key| PublicKey::from_base64(key))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "a release signing key of this build does not parse".to_owned())?;
+
+    let mut why = None;
+    let mut verified = false;
+    for key in &keys {
+        match key.verify(manifest, &signature, false) {
+            Ok(()) => {
+                verified = true;
+                break;
+            }
+            // Another key's signature: the next key may be the one.
+            Err(Error::UnexpectedKeyId) => {}
+            Err(Error::UnexpectedAlgorithm) => why = Some("uses the legacy format"),
+            Err(_) => why = Some("does not match"),
+        }
+    }
+    if !verified {
+        return Err(match why {
+            Some(why) => format!("the signature of {MANIFEST} for {tag} {why}"),
+            None => format!("the signature of {MANIFEST} for {tag} is from an unknown key"),
+        });
+    }
+
+    let want = format!("watchtower {tag}");
+    if signature.trusted_comment() != want {
+        return Err(format!(
+            "the signature of {MANIFEST} is not for this release: expected `{want}`, found `{}`",
+            sanitized(signature.trusted_comment())
+        ));
+    }
+    Ok(())
+}
+
+/// Remote text cut short and reduced to plain ASCII, for an error message.
+fn sanitized(text: &str) -> String {
+    const LIMIT: usize = 40;
+    let mut short: String = text
+        .chars()
+        .take(LIMIT)
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    if text.chars().count() > LIMIT {
+        short.push('…');
+    }
+    short
+}
+
+/// The ELF machine number (`e_machine`) of an architecture with a release.
+pub fn elf_machine(arch: &str) -> Option<u16> {
+    match arch {
+        "x86_64" => Some(62),
+        "aarch64" => Some(183),
+        _ => None,
+    }
+}
+
+/// Whether `header` starts an ELF executable for `machine` (`ET_EXEC`, or
+/// `ET_DYN` for a static PIE), 64-bit little-endian.
+pub fn is_elf_executable(header: &[u8], machine: u16) -> bool {
     header.len() >= 20
         && header[..4] == *b"\x7fELF"
         && header[4] == 2
         && header[5] == 1
         && matches!(u16::from_le_bytes([header[16], header[17]]), 2 | 3)
-        && u16::from_le_bytes([header[18], header[19]]) == 62
+        && u16::from_le_bytes([header[18], header[19]]) == machine
 }
 
-fn check_elf(path: &Path) -> Result<(), String> {
+fn check_elf(path: &Path, arch: &str) -> Result<(), String> {
     let mut header = [0u8; 20];
-    let read = fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut header))
-        .map_err(|e| format!("cannot read the download: {e}"));
-    if read.is_err() || !is_elf_x86_64(&header) {
-        return Err("the download is not an x86-64 Linux executable".to_owned());
+    let read = fs::File::open(path).and_then(|mut f| f.read_exact(&mut header));
+    let right = elf_machine(arch).is_some_and(|machine| is_elf_executable(&header, machine));
+    if read.is_err() || !right {
+        let name = if arch == "x86_64" { "x86-64" } else { arch };
+        return Err(format!("the download is not an {name} Linux executable"));
     }
     Ok(())
 }
@@ -888,12 +1141,14 @@ mod tests {
         h[5] = 1;
         h[16] = 3;
         h[18] = 62;
-        assert!(is_elf_x86_64(&h));
+        assert!(is_elf_executable(&h, 62));
         h[16] = 2;
-        assert!(is_elf_x86_64(&h));
+        assert!(is_elf_executable(&h, 62));
+        assert!(!is_elf_executable(&h, 183));
         h[18] = 183; // aarch64
-        assert!(!is_elf_x86_64(&h));
-        assert!(!is_elf_x86_64(b"#!/bin/sh\necho tower 1"));
+        assert!(is_elf_executable(&h, 183));
+        assert!(!is_elf_executable(&h, 62));
+        assert!(!is_elf_executable(b"#!/bin/sh\necho tower 1", 62));
     }
 
     #[test]
@@ -905,6 +1160,8 @@ mod tests {
         assert_eq!(http_status("curl: (6) Could not resolve host: x"), None);
         assert_eq!(http_status("returned error: 40"), None);
     }
+
+    const ASSET: &str = "tower-x86_64-linux-musl";
 
     #[test]
     fn checksum_lines() {
@@ -920,5 +1177,48 @@ mod tests {
         assert!(parse_checksum(&format!("{hash}  other\n"), ASSET).is_err());
         assert!(parse_checksum("abc  x\n", ASSET).is_err());
         assert!(parse_checksum("", ASSET).is_err());
+    }
+
+    #[test]
+    fn manifest_lines_match_the_whole_name_only() {
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let other = "tower-aarch64-linux-musl";
+        let both = format!("{b}  {other}\n{a}  {ASSET}\n");
+        assert_eq!(manifest_hash(&both, ASSET), Ok(a.clone()));
+        assert_eq!(manifest_hash(&both, other), Ok(b.clone()));
+        assert_eq!(
+            manifest_hash(&format!("{}  *{ASSET}\n", a.to_uppercase()), ASSET),
+            Ok(a.clone())
+        );
+
+        // Near misses of the name, or none at all.
+        for line in [
+            format!("{b}  {ASSET}.sha256"),
+            format!("{b}  x{ASSET}"),
+            format!("{b}  ./{ASSET}"),
+            format!("{b}  **{ASSET}"),
+            format!("{b}  {ASSET} extra"),
+            b.clone(),
+            String::new(),
+        ] {
+            let err = manifest_hash(&line, ASSET).unwrap_err();
+            assert!(err.contains("no line for"), "{line}: {err}");
+        }
+        // The name twice, even with one hash, or with something that is no hash.
+        let err = manifest_hash(&format!("{a}  {ASSET}\n{b}  {ASSET}\n"), ASSET).unwrap_err();
+        assert!(err.contains("more than one line"), "{err}");
+        for hash in ["abc", "\u{1b}[31m"] {
+            let err = manifest_hash(&format!("{hash}  {ASSET}\n"), ASSET).unwrap_err();
+            assert!(err.contains("no valid SHA-256"), "{err}");
+            assert!(!err.contains(hash), "quotes nothing: {err}");
+        }
+    }
+
+    #[test]
+    fn sanitized_text_is_short_plain_ascii() {
+        assert_eq!(sanitized("watchtower v1.0.0"), "watchtower v1.0.0");
+        assert_eq!(sanitized("a\u{1b}[31m\u{202e}b"), "a?[31m?b");
+        let long = sanitized(&"x".repeat(100));
+        assert_eq!(long, format!("{}…", "x".repeat(40)));
     }
 }

@@ -40,7 +40,8 @@ fn main() -> ExitCode {
             check,
             version,
             force,
-        }) => return update(check, version, force),
+            allow_unsigned,
+        }) => return update(check, version, force, allow_unsigned),
         Ok(Command::Version) => {
             println!("tower {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -224,7 +225,12 @@ fn hook(raw: &[std::ffi::OsString]) -> ExitCode {
 /// `tower update` (doc/0023). With `check`, prints whether a newer release
 /// exists: exit 0 up to date, 10 available, 1 error. Otherwise replaces the
 /// running binary: exit 0 when updated or already up to date, 1 on error.
-fn update(check: bool, version: Option<update::Version>, force: bool) -> ExitCode {
+fn update(
+    check: bool,
+    version: Option<update::Version>,
+    force: bool,
+    allow_unsigned: bool,
+) -> ExitCode {
     let updater = update::Updater::new();
     if check {
         return match updater.check() {
@@ -239,7 +245,11 @@ fn update(check: bool, version: Option<update::Version>, force: bool) -> ExitCod
         };
     }
     let result = update::current_target().and_then(|target| {
-        let request = update::Request { version, force };
+        let request = update::Request {
+            version,
+            force,
+            allow_unsigned,
+        };
         updater.update(&target, &request, &mut std::io::stdout())
     });
     match result {

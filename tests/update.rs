@@ -1,7 +1,9 @@
 //! `tower update` (doc/0023) against a fake `curl` on `PATH` that serves
 //! files from a temp dir, and a fake release that is a shell script (the
 //! ELF check is relaxed for it through the hidden `require_elf` hook).
-//! Replacement only ever targets a temp copy, never `current_exe`.
+//! Replacement only ever targets a temp copy, never `current_exe`. Signed
+//! releases use minisign keys made at run time, trusted through the hidden
+//! `keys` field.
 
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
@@ -9,15 +11,22 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 
+use ct_codecs::{Base64, Encoder};
+use minisign_verify::Signature;
 use watchtower::args::{self, Command as Cli};
 use watchtower::update::{
-    ASSET, Check, EXIT_UPDATE_AVAILABLE, LATEST_API, LATEST_PAGE, Outcome, RELEASE_TAG_PREFIX,
-    RELEASES_PAGE, Request, Updater, Version, looks_like_dev_build, no_release_yet,
+    Check, EXIT_UPDATE_AVAILABLE, LATEST_API, LATEST_PAGE, Outcome, PINNED_KEYS,
+    RELEASE_TAG_PREFIX, RELEASES_PAGE, Request, SIGNED_SINCE, Updater, Version, asset_for,
+    elf_machine, is_elf_executable, is_signed, looks_like_dev_build, no_release_yet,
     parse_latest_redirect, platform_supported, sha256_hex,
 };
 
 /// What the fake releases stand in for, whatever system runs the tests.
 const LINUX: (&str, &str) = ("linux", "x86_64");
+
+/// The release binaries of [`LINUX`] and of Linux on ARM.
+const ASSET: &str = "tower-x86_64-linux-musl";
+const ARM_ASSET: &str = "tower-aarch64-linux-musl";
 
 /// Writing an executable while another thread forks can make the exec fail
 /// with ETXTBSY, so the tests of this binary run one at a time.
@@ -175,6 +184,7 @@ if [ -n "$out" ]; then cp "$f" "$out"; else cat "$f"; fi
             path: Some(self.path()),
             require_elf: false,
             platform: LINUX,
+            keys: Vec::new(),
         }
     }
 }
@@ -230,6 +240,14 @@ fn run(updater: &Updater, target: &Path, request: &Request) -> (Result<Outcome, 
 
 const RELEASE_BASE: &str = "https://github.com/ruslan1us/watchtower/releases/download";
 
+/// The latest release, on the old unsigned way.
+fn unsigned() -> Request {
+    Request {
+        allow_unsigned: true,
+        ..Request::default()
+    }
+}
+
 // ---- versions and arguments ---------------------------------------------
 
 #[test]
@@ -265,6 +283,7 @@ fn update_alias_and_options_parse() {
         check: false,
         version: None,
         force: false,
+        allow_unsigned: false,
     };
     assert_eq!(args::parse(["update"]), Ok(plain.clone()));
     assert_eq!(args::parse(["--update"]), Ok(plain));
@@ -274,6 +293,7 @@ fn update_alias_and_options_parse() {
             check: true,
             version: None,
             force: false,
+            allow_unsigned: false,
         })
     );
     assert_eq!(
@@ -282,12 +302,27 @@ fn update_alias_and_options_parse() {
             check: false,
             version: Some(v("0.3.0")),
             force: true,
+            allow_unsigned: false,
         })
     );
+    assert_eq!(
+        args::parse(["update", "--version", "v0.3.0", "--allow-unsigned"]),
+        Ok(Cli::Update {
+            check: false,
+            version: Some(v("0.3.0")),
+            force: false,
+            allow_unsigned: true,
+        })
+    );
+    assert!(args::parse(["update", "--check", "--allow-unsigned"]).is_err());
     assert_eq!(args::parse(["--update", "--help"]), Ok(Cli::Help));
     assert!(args::parse(["--update", "--check", "--version", "v1.0.0"]).is_err());
     assert!(args::parse(["update", "--version", "next"]).is_err());
-    assert!(args::USAGE.contains("tower update [--check | --version vX.Y.Z] [--force]"));
+    assert!(
+        args::USAGE
+            .contains("tower update [--check | --version vX.Y.Z] [--force] [--allow-unsigned]")
+    );
+    assert!(args::USAGE.contains(&format!("older than v{SIGNED_SINCE}")));
     assert!(args::USAGE.contains("--update"));
 }
 
@@ -327,23 +362,23 @@ fn another_unsupported_platform_keeps_its_refusal() {
     let curl = FakeCurl::new();
     curl.serve_latest("v0.3.0");
     let install = Install::new("0.2.1", 0o755);
-    let arm = Updater {
-        platform: ("linux", "aarch64"),
+    let riscv = Updater {
+        platform: ("linux", "riscv64"),
         ..curl.updater("0.2.1")
     };
-    let (result, _) = run(&arm, &install.target(), &Request::default());
+    let (result, _) = run(&riscv, &install.target(), &Request::default());
     let err = result.unwrap_err();
     assert!(
-        err.contains("releases exist only for Linux x86_64, not linux aarch64"),
+        err.contains("releases exist only for Linux x86_64 and aarch64, not linux riscv64"),
         "{err}"
     );
-    assert!(arm.check().is_ok());
+    assert!(riscv.check().is_ok());
 }
 
 #[test]
 fn platforms_and_dev_build_paths() {
     assert!(platform_supported("linux", "x86_64"));
-    assert!(!platform_supported("linux", "aarch64"));
+    assert!(platform_supported("linux", "aarch64"));
     assert!(!platform_supported("macos", "x86_64"));
     for dev in [
         "/home/user/watchtower/target/debug/tower",
@@ -440,10 +475,8 @@ fn check_network_error_and_bad_answer() {
     );
 
     let missing = Updater {
-        current: v("0.2.1"),
         path: Some(OsString::from("/nonexistent-dir")),
-        require_elf: false,
-        platform: LINUX,
+        ..curl.updater("0.2.1")
     };
     let err = missing.check().unwrap_err().to_string();
     assert!(err.contains("`curl` is not installed"), "{err}");
@@ -671,7 +704,13 @@ fn binary_check_exit_codes_and_dev_build_refusal() {
     let out = tower(&["update", "--help"]);
     assert_eq!(out.status.code(), Some(0));
     let help = String::from_utf8_lossy(&out.stdout);
-    for option in ["--check", "--version vX.Y.Z", "--force", "--update"] {
+    for option in [
+        "--check",
+        "--version vX.Y.Z",
+        "--force",
+        "--allow-unsigned",
+        "--update",
+    ] {
         assert!(help.contains(option), "{option}: {help}");
     }
 }
@@ -686,11 +725,7 @@ fn update_replaces_the_file_and_keeps_its_mode() {
     let binary = curl.serve_release("v0.3.0", "tower 0.3.0", None);
     let install = Install::new("0.2.1", 0o750);
 
-    let (result, out) = run(
-        &curl.updater("0.2.1"),
-        &install.target(),
-        &Request::default(),
-    );
+    let (result, out) = run(&curl.updater("0.2.1"), &install.target(), &unsigned());
     assert_eq!(
         result,
         Ok(Outcome::Installed {
@@ -704,7 +739,7 @@ fn update_replaces_the_file_and_keeps_its_mode() {
     assert_eq!(install.bin_entries(), ["tower"], "no temp leftovers");
     assert!(
         out.contains(&format!(
-            "tower 0.2.1 → 0.3.0: downloaded, checksum OK, installed to {}",
+            "tower 0.2.1 → 0.3.0: downloaded, no signature, checksum OK, installed to {}",
             install.target().display()
         )),
         "{out}"
@@ -753,8 +788,8 @@ fn update_when_up_to_date_downloads_nothing_unless_forced() {
     assert_eq!(std::fs::read(install.target()).unwrap(), before);
 
     let forced = Request {
-        version: None,
         force: true,
+        ..unsigned()
     };
     let (result, out) = run(&curl.updater("0.2.1"), &install.target(), &forced);
     assert!(
@@ -773,11 +808,7 @@ fn checksum_mismatch_leaves_the_file_untouched() {
     let install = Install::new("0.2.1", 0o755);
     let before = std::fs::read(install.target()).unwrap();
 
-    let (result, _) = run(
-        &curl.updater("0.2.1"),
-        &install.target(),
-        &Request::default(),
-    );
+    let (result, _) = run(&curl.updater("0.2.1"), &install.target(), &unsigned());
     let err = result.unwrap_err();
     assert!(err.contains("checksum mismatch"), "{err}");
     assert!(err.contains("nothing was changed"), "{err}");
@@ -796,7 +827,7 @@ fn explicit_version_uses_its_url_and_checks_what_runs() {
     let before = std::fs::read(install.target()).unwrap();
     let request = Request {
         version: Some(v("v0.2.0")),
-        force: false,
+        ..unsigned()
     };
 
     let (result, _) = run(&curl.updater("0.2.1"), &install.target(), &request);
@@ -826,12 +857,12 @@ fn explicit_version_uses_its_url_and_checks_what_runs() {
 
     // A release that does not exist.
     let missing = Request {
-        version: Some(v("v9.9.9")),
-        force: false,
+        version: Some(v("v0.2.9")),
+        ..unsigned()
     };
     let (result, _) = run(&curl.updater("0.2.1"), &install.target(), &missing);
     let err = result.unwrap_err();
-    assert!(err.contains("cannot download v9.9.9"), "{err}");
+    assert!(err.contains("cannot download v0.2.9"), "{err}");
     assert_eq!(std::fs::read(install.target()).unwrap(), binary);
     assert_eq!(install.bin_entries(), ["tower"]);
 }
@@ -854,8 +885,8 @@ fn dev_build_path_is_refused_unless_forced() {
     assert!(curl.calls().is_empty(), "refused before any network call");
 
     let forced = Request {
-        version: None,
         force: true,
+        ..unsigned()
     };
     let (result, _) = run(&curl.updater("0.2.1"), &target, &forced);
     assert!(
@@ -880,11 +911,7 @@ fn unwritable_directory_is_a_clear_error() {
     let bin = install.target().parent().unwrap().to_owned();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-    let (result, _) = run(
-        &curl.updater("0.2.1"),
-        &install.target(),
-        &Request::default(),
-    );
+    let (result, _) = run(&curl.updater("0.2.1"), &install.target(), &unsigned());
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     let err = result.unwrap_err();
     assert_eq!(
@@ -912,9 +939,1017 @@ fn elf_check_is_enforced_by_default() {
     };
     assert!(Updater::new().require_elf);
 
-    let (result, _) = run(&strict, &install.target(), &Request::default());
+    let (result, _) = run(&strict, &install.target(), &unsigned());
     let err = result.unwrap_err();
     assert!(err.contains("not an x86-64 Linux executable"), "{err}");
     assert_eq!(std::fs::read(install.target()).unwrap(), before);
     assert_eq!(install.bin_entries(), ["tower"]);
+}
+
+// ---- signed releases -------------------------------------------------------
+
+/// A throwaway minisign key pair, made at test run time. No private key,
+/// even a test one, is ever written to the repository.
+struct Signer(minisign::KeyPair);
+
+impl Signer {
+    fn new() -> Signer {
+        Signer(minisign::KeyPair::generate_unencrypted_keypair().unwrap())
+    }
+
+    fn public(&self) -> String {
+        self.0.pk.to_base64()
+    }
+
+    /// A `.minisig` over `data`, as `minisign -S -t <comment>` writes it.
+    fn sign(&self, data: &[u8], comment: &str) -> String {
+        minisign::sign(
+            None,
+            &self.0.sk,
+            data,
+            Some(comment),
+            Some("throwaway test key"),
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    /// A valid legacy `.minisig` over `data`: Ed25519 over the data itself,
+    /// not over its hash. The minisign crate only writes the prehashed form,
+    /// so this signs with the same secret key directly.
+    fn sign_legacy(&self, data: &[u8], comment: &str) -> String {
+        // Algorithms (6), salt (32), limits (16) and key id (8) come first.
+        let secret = &self.0.sk.to_bytes()[62..126];
+        let secret = ed25519_compact::SecretKey::from_slice(secret).unwrap();
+        let signature = secret.sign(data, None);
+        let global = secret.sign([&signature[..], comment.as_bytes()].concat(), None);
+        let line = [b"Ed", self.0.pk.keynum(), &signature[..]].concat();
+        let text = format!(
+            "untrusted comment: throwaway test key\n{}\ntrusted comment: {comment}\n{}\n",
+            Base64::encode_to_string(line).unwrap(),
+            Base64::encode_to_string(&global[..]).unwrap(),
+        );
+        // Genuine: only the strict mode can be what refuses it.
+        minisign_verify::PublicKey::from_base64(&self.public())
+            .unwrap()
+            .verify(data, &Signature::decode(&text).unwrap(), true)
+            .expect("a valid legacy signature");
+        text
+    }
+}
+
+/// A served release of `version`, signed by `signer`.
+struct SignedRelease {
+    base: String,
+    asset: &'static str,
+    binary: Vec<u8>,
+    manifest: Vec<u8>,
+}
+
+impl SignedRelease {
+    fn manifest_url(&self) -> String {
+        format!("{}/SHA256SUMS", self.base)
+    }
+
+    fn signature_url(&self) -> String {
+        format!("{}/SHA256SUMS.minisig", self.base)
+    }
+
+    fn binary_url(&self) -> String {
+        format!("{}/{}", self.base, self.asset)
+    }
+
+    fn sha256_url(&self) -> String {
+        format!("{}/{}.sha256", self.base, self.asset)
+    }
+}
+
+impl FakeCurl {
+    /// A release binary that leaves a mark when run, so a test can tell that
+    /// nothing downloaded ran.
+    fn marking_binary(&self, prints: &str) -> Vec<u8> {
+        format!(
+            "#!/bin/sh\necho ran >> '{}'\necho '{prints}'\n",
+            self.ran_mark().display()
+        )
+        .into_bytes()
+    }
+
+    fn ran_mark(&self) -> PathBuf {
+        self.dir.path().join("ran")
+    }
+
+    fn ran(&self) -> bool {
+        self.ran_mark().exists()
+    }
+
+    /// `sha256sum` lines for both binaries, the other architecture's first.
+    fn manifest_for(asset: &str, binary: &[u8]) -> Vec<u8> {
+        let other = if asset == ASSET { ARM_ASSET } else { ASSET };
+        format!(
+            "{}  {other}\n{}  {asset}\n",
+            sha256_hex(b"the other architecture"),
+            sha256_hex(binary)
+        )
+        .into_bytes()
+    }
+
+    /// Serves a whole release as the release workflow publishes it, including
+    /// the old `.sha256` beside the binary, which a signed update must ignore.
+    fn serve_signed(&self, version: &str, signer: &Signer, asset: &'static str) -> SignedRelease {
+        let base = format!("{RELEASE_BASE}/v{version}");
+        let binary = self.marking_binary(&format!("tower {version}"));
+        let manifest = Self::manifest_for(asset, &binary);
+        let release = SignedRelease {
+            base,
+            asset,
+            binary,
+            manifest,
+        };
+        self.serve(&release.binary_url(), &release.binary);
+        self.serve(
+            &release.sha256_url(),
+            format!("{}  {asset}\n", sha256_hex(&release.binary)).as_bytes(),
+        );
+        self.serve(&release.manifest_url(), &release.manifest);
+        let signature = signer.sign(&release.manifest, &format!("watchtower v{version}"));
+        self.serve(&release.signature_url(), signature.as_bytes());
+        release
+    }
+
+    fn trusting(&self, current: &str, signers: &[&Signer]) -> Updater {
+        Updater {
+            keys: signers.iter().map(|s| s.public()).collect(),
+            ..self.updater(current)
+        }
+    }
+}
+
+fn exactly(version: &str) -> Request {
+    Request {
+        version: Some(v(version)),
+        ..Request::default()
+    }
+}
+
+#[test]
+fn a_good_signature_installs() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    curl.serve_latest("v0.7.0");
+    let release = curl.serve_signed("0.7.0", &signer, ASSET);
+    let install = Install::new("0.6.1", 0o750);
+
+    let (result, out) = run(
+        &curl.trusting("0.6.1", &[&signer]),
+        &install.target(),
+        &Request::default(),
+    );
+    assert_eq!(
+        result,
+        Ok(Outcome::Installed {
+            from: v("0.6.1"),
+            to: v("0.7.0"),
+            path: install.target(),
+        })
+    );
+    assert_eq!(std::fs::read(install.target()).unwrap(), release.binary);
+    assert_eq!(install.mode(), 0o750);
+    assert_eq!(install.bin_entries(), ["tower"], "no temp leftovers");
+    assert!(curl.ran(), "the run check ran it, so `ran` can tell");
+    assert!(out.contains("Signature OK for v0.7.0."), "{out}");
+    assert!(
+        out.contains(&format!(
+            "tower 0.6.1 → 0.7.0: downloaded, signature and checksum OK, installed to {}",
+            install.target().display()
+        )),
+        "{out}"
+    );
+    // The binary comes last, after the signature, and the old `.sha256` is
+    // never asked for. Every call keeps the safe curl options.
+    assert_eq!(
+        curl.urls(),
+        [
+            LATEST_PAGE.to_owned(),
+            release.manifest_url(),
+            release.signature_url(),
+            release.binary_url(),
+        ]
+    );
+    for call in &curl.calls()[1..] {
+        assert_eq!(call[0], "-q", "{call:?}");
+        assert!(call.windows(2).any(|w| w == ["--proto", "=https"]));
+    }
+}
+
+/// How a release can be wrong, what the error must say, and whether the
+/// binary may have been downloaded by then.
+type Fault = (
+    &'static str,
+    fn(&FakeCurl, &SignedRelease, &Signer),
+    &'static str,
+    bool,
+);
+
+const FAULTS: &[Fault] = &[
+    (
+        "tampered manifest",
+        |curl, release, _| {
+            let mut manifest = release.manifest.clone();
+            manifest[0] = if manifest[0] == b'0' { b'1' } else { b'0' };
+            curl.serve(&release.manifest_url(), &manifest);
+        },
+        "does not match",
+        false,
+    ),
+    (
+        "manifest and binary swapped together",
+        |curl, release, _| {
+            let evil = curl.marking_binary("tower 0.7.0\necho evil");
+            curl.serve(&release.binary_url(), &evil);
+            curl.serve(
+                &release.manifest_url(),
+                &FakeCurl::manifest_for(release.asset, &evil),
+            );
+        },
+        "does not match",
+        false,
+    ),
+    (
+        "tampered binary",
+        |curl, release, _| {
+            let evil = curl.marking_binary("tower 0.7.0\necho evil");
+            curl.serve(&release.binary_url(), &evil);
+        },
+        "checksum mismatch",
+        true,
+    ),
+    (
+        "signature from an unknown key",
+        |curl, release, _| {
+            let stranger = Signer::new();
+            let forged = stranger.sign(&release.manifest, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), forged.as_bytes());
+        },
+        "unknown key",
+        false,
+    ),
+    (
+        "legacy signature",
+        |curl, release, signer| {
+            let legacy = signer.sign_legacy(&release.manifest, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), legacy.as_bytes());
+        },
+        "legacy format",
+        false,
+    ),
+    (
+        "an older release's signature, replayed",
+        |curl, release, signer| {
+            let replay = signer.sign(&release.manifest, "watchtower v0.6.9");
+            curl.serve(&release.signature_url(), replay.as_bytes());
+        },
+        "expected `watchtower v0.7.0`, found `watchtower v0.6.9`",
+        false,
+    ),
+    (
+        "trusted comment edited after signing",
+        |curl, release, signer| {
+            let good = signer.sign(&release.manifest, "watchtower v0.6.9");
+            let edited = good.replace("watchtower v0.6.9", "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), edited.as_bytes());
+        },
+        "does not match",
+        false,
+    ),
+    (
+        "missing signature",
+        |curl, release, _| {
+            std::fs::remove_file(
+                curl.dir
+                    .path()
+                    .join("served")
+                    .join(FakeCurl::key(&release.signature_url())),
+            )
+            .unwrap();
+        },
+        "cannot download v0.7.0 SHA256SUMS.minisig",
+        false,
+    ),
+    (
+        "missing manifest",
+        |curl, release, _| {
+            curl.fail(&release.manifest_url(), 404);
+        },
+        "cannot download v0.7.0 SHA256SUMS",
+        false,
+    ),
+    (
+        "signature that is not one",
+        |curl, release, _| {
+            curl.serve(
+                &release.signature_url(),
+                b"<html>not a signature\x1b[31m</html>",
+            );
+        },
+        "SHA256SUMS.minisig of v0.7.0 is not a minisign signature",
+        false,
+    ),
+    (
+        "signature that is not text",
+        |curl, release, _| {
+            curl.serve(&release.signature_url(), &[0xff, 0xfe, 0x00]);
+        },
+        "is not a minisign signature",
+        false,
+    ),
+    (
+        "far too long a manifest",
+        |curl, release, signer| {
+            let long = vec![b'\n'; 64 * 1024 + 1];
+            curl.serve(&release.manifest_url(), &long);
+            let signature = signer.sign(&long, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), signature.as_bytes());
+        },
+        "SHA256SUMS is too long",
+        false,
+    ),
+    (
+        "signed manifest without this binary",
+        |curl, release, signer| {
+            let other = format!("{}  {ARM_ASSET}\n", sha256_hex(b"other")).into_bytes();
+            curl.serve(&release.manifest_url(), &other);
+            let signature = signer.sign(&other, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), signature.as_bytes());
+        },
+        "SHA256SUMS has no line for tower-x86_64-linux-musl",
+        false,
+    ),
+    (
+        "signed manifest naming the binary only in part",
+        |curl, release, signer| {
+            let hash = sha256_hex(&release.binary);
+            let near = format!("{hash}  {ASSET}.sha256\n{hash}  x{ASSET}\n").into_bytes();
+            curl.serve(&release.manifest_url(), &near);
+            let signature = signer.sign(&near, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), signature.as_bytes());
+        },
+        "SHA256SUMS has no line for tower-x86_64-linux-musl",
+        false,
+    ),
+];
+
+/// Every fault is refused with any flags: the binary stays byte-identical,
+/// nothing downloaded runs, and no temp dir stays behind. `--force` and
+/// `--allow-unsigned` skip none of it, and nothing falls back to `.sha256`.
+#[test]
+fn a_bad_release_is_refused_whatever_the_flags() {
+    let _guard = lock();
+    for (name, fault, says, binary_fetched) in FAULTS {
+        for (force, allow_unsigned) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let context = format!("{name} (force {force}, allow-unsigned {allow_unsigned})");
+            let curl = FakeCurl::new();
+            let signer = Signer::new();
+            let release = curl.serve_signed("0.7.0", &signer, ASSET);
+            fault(&curl, &release, &signer);
+            let install = Install::new("0.6.1", 0o755);
+            let before = std::fs::read(install.target()).unwrap();
+            let request = Request {
+                force,
+                allow_unsigned,
+                ..exactly("v0.7.0")
+            };
+
+            let (result, _) = run(
+                &curl.trusting("0.6.1", &[&signer]),
+                &install.target(),
+                &request,
+            );
+            let err = result.unwrap_err();
+            assert!(err.contains(says), "{context}: {err}");
+            assert!(err.ends_with("nothing was changed"), "{context}: {err}");
+            assert!(
+                err.chars().all(|c| !c.is_control()),
+                "{context}: no raw control characters: {err:?}"
+            );
+            assert_eq!(
+                std::fs::read(install.target()).unwrap(),
+                before,
+                "{context}"
+            );
+            assert_eq!(install.mode(), 0o755, "{context}");
+            assert_eq!(install.bin_entries(), ["tower"], "{context}: no leftovers");
+            assert!(!curl.ran(), "{context}: nothing downloaded may run");
+            let urls = curl.urls();
+            assert_eq!(
+                urls.contains(&release.binary_url()),
+                *binary_fetched,
+                "{context}: {urls:?}"
+            );
+            assert!(
+                !urls.contains(&release.sha256_url()),
+                "{context}: no fallback to the .sha256: {urls:?}"
+            );
+        }
+    }
+}
+
+/// The trusted comment must be the exact text: nothing around it, and the
+/// raw bytes of a wrong one never reach the terminal.
+#[test]
+fn the_trusted_comment_must_match_exactly_and_is_not_echoed() {
+    let _guard = lock();
+    for comment in [
+        "",
+        "v0.7.0",
+        "watchtower 0.7.0",
+        "watchtower v0.7.0 ",
+        " watchtower v0.7.0",
+        "watchtower v0.7.0-rc.1",
+        "watchtower v0.7.00",
+        "watchtower v0.7.0\tprehashed",
+        "Watchtower v0.7.0",
+        "not-watchtower v0.7.0",
+        "\u{1b}]0;owned\u{7}\u{1b}[2J\u{202e}watchtower v0.7.0",
+    ] {
+        let curl = FakeCurl::new();
+        let signer = Signer::new();
+        let release = curl.serve_signed("0.7.0", &signer, ASSET);
+        let signature = signer.sign(&release.manifest, comment);
+        curl.serve(&release.signature_url(), signature.as_bytes());
+        let install = Install::new("0.6.1", 0o755);
+        let before = std::fs::read(install.target()).unwrap();
+
+        let (result, out) = run(
+            &curl.trusting("0.6.1", &[&signer]),
+            &install.target(),
+            &exactly("v0.7.0"),
+        );
+        let err = result.unwrap_err();
+        assert!(err.contains("expected `watchtower v0.7.0`"), "{err}");
+        assert!(
+            err.chars()
+                .all(|c| c == '…' || c.is_ascii_graphic() || c == ' '),
+            "{comment:?}: {err:?}"
+        );
+        assert!(!out.contains("Signature OK"), "{out}");
+        assert_eq!(std::fs::read(install.target()).unwrap(), before);
+        assert!(!curl.ran());
+        assert!(!curl.urls().contains(&release.binary_url()));
+    }
+}
+
+/// The checks after the signature still hold: the binary must report the
+/// right version, and be an ELF for this architecture before it may run.
+#[test]
+fn a_signed_release_still_gets_the_elf_and_run_checks() {
+    let _guard = lock();
+    let signer = Signer::new();
+
+    // Signed and matching, but it says it is something else when run.
+    let curl = FakeCurl::new();
+    let release = curl.serve_signed("0.7.0", &signer, ASSET);
+    let liar = curl.marking_binary("tower 0.6.9");
+    curl.serve(&release.binary_url(), &liar);
+    let manifest = FakeCurl::manifest_for(ASSET, &liar);
+    curl.serve(&release.manifest_url(), &manifest);
+    let signature = signer.sign(&manifest, "watchtower v0.7.0");
+    curl.serve(&release.signature_url(), signature.as_bytes());
+    let install = Install::new("0.6.1", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+    let (result, _) = run(
+        &curl.trusting("0.6.1", &[&signer]),
+        &install.target(),
+        &exactly("v0.7.0"),
+    );
+    let err = result.unwrap_err();
+    assert!(err.contains("reports `tower 0.6.9`"), "{err}");
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
+
+    // A shell script is no ELF: refused before it can run.
+    for (arch, asset, says) in [
+        ("x86_64", ASSET, "not an x86-64 Linux executable"),
+        ("aarch64", ARM_ASSET, "not an aarch64 Linux executable"),
+    ] {
+        let curl = FakeCurl::new();
+        curl.serve_signed("0.7.0", &signer, asset);
+        let strict = Updater {
+            require_elf: true,
+            platform: ("linux", arch),
+            ..curl.trusting("0.6.1", &[&signer])
+        };
+        let (result, _) = run(&strict, &install.target(), &exactly("v0.7.0"));
+        let err = result.unwrap_err();
+        assert!(err.contains(says), "{err}");
+        assert!(!curl.ran(), "not run");
+        assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    }
+}
+
+/// An ELF for the other architecture, with its checksum right, is refused;
+/// the right one passes that check (and then cannot run, being a header).
+#[test]
+fn the_elf_machine_must_be_the_running_arch() {
+    let _guard = lock();
+    assert_eq!(elf_machine("x86_64"), Some(62));
+    assert_eq!(elf_machine("aarch64"), Some(183));
+    assert_eq!(elf_machine("riscv64"), None);
+
+    let elf = |machine: u16| {
+        let mut header = [0u8; 20];
+        header[..4].copy_from_slice(b"\x7fELF");
+        (header[4], header[5], header[16]) = (2, 1, 3);
+        header[18..20].copy_from_slice(&machine.to_le_bytes());
+        header
+    };
+    assert!(is_elf_executable(&elf(62), 62));
+    assert!(is_elf_executable(&elf(183), 183));
+    assert!(!is_elf_executable(&elf(183), 62));
+    assert!(!is_elf_executable(&elf(62), 183));
+
+    let signer = Signer::new();
+    for (arch, asset, machine, wrong, says) in [
+        ("x86_64", ASSET, 62, 183, "not an x86-64 Linux executable"),
+        (
+            "aarch64",
+            ARM_ASSET,
+            183,
+            62,
+            "not an aarch64 Linux executable",
+        ),
+    ] {
+        let attempt = |header: [u8; 20]| {
+            let curl = FakeCurl::new();
+            let release = curl.serve_signed("0.7.0", &signer, asset);
+            curl.serve(&release.binary_url(), &header);
+            let manifest = FakeCurl::manifest_for(asset, &header);
+            curl.serve(&release.manifest_url(), &manifest);
+            let signature = signer.sign(&manifest, "watchtower v0.7.0");
+            curl.serve(&release.signature_url(), signature.as_bytes());
+            let strict = Updater {
+                require_elf: true,
+                platform: ("linux", arch),
+                ..curl.trusting("0.6.1", &[&signer])
+            };
+            let install = Install::new("0.6.1", 0o755);
+            run(&strict, &install.target(), &exactly("v0.7.0"))
+                .0
+                .unwrap_err()
+        };
+        let err = attempt(elf(wrong));
+        assert!(err.contains(says), "{arch}: {err}");
+        let err = attempt(elf(machine));
+        assert!(
+            err.contains("cannot run the downloaded binary"),
+            "{arch}: {err}"
+        );
+    }
+}
+
+#[test]
+fn either_of_two_keys_is_accepted() {
+    let _guard = lock();
+    let (first, second) = (Signer::new(), Signer::new());
+    for signer in [&first, &second] {
+        for keys in [[&first, &second], [&second, &first]] {
+            let curl = FakeCurl::new();
+            let release = curl.serve_signed("0.7.0", signer, ASSET);
+            let install = Install::new("0.6.1", 0o755);
+            let (result, out) = run(
+                &curl.trusting("0.6.1", &keys),
+                &install.target(),
+                &exactly("v0.7.0"),
+            );
+            assert!(
+                matches!(result, Ok(Outcome::Installed { .. })),
+                "{result:?}"
+            );
+            assert!(out.contains("Signature OK"), "{out}");
+            assert_eq!(std::fs::read(install.target()).unwrap(), release.binary);
+        }
+    }
+}
+
+/// No keys, or a key that does not parse, verifies nothing at all.
+#[test]
+fn empty_or_broken_keys_fail_closed() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    let release = curl.serve_signed("0.7.0", &signer, ASSET);
+    let install = Install::new("0.6.1", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+
+    for request in [
+        exactly("v0.7.0"),
+        Request {
+            force: true,
+            allow_unsigned: true,
+            ..exactly("v0.7.0")
+        },
+    ] {
+        let (result, _) = run(&curl.trusting("0.6.1", &[]), &install.target(), &request);
+        let err = result.unwrap_err();
+        assert!(err.contains("no release signing keys"), "{err}");
+        assert!(err.contains("cannot verify v0.7.0"), "{err}");
+        assert!(err.ends_with("nothing was changed"), "{err}");
+        assert!(curl.calls().is_empty(), "refused before any download");
+    }
+
+    for keys in [
+        vec![signer.public(), "not a key".to_owned()],
+        vec!["not a key".to_owned(), signer.public()],
+    ] {
+        let broken = Updater {
+            keys,
+            ..curl.updater("0.6.1")
+        };
+        let (result, _) = run(&broken, &install.target(), &exactly("v0.7.0"));
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("signing key of this build does not parse"),
+            "{err}"
+        );
+    }
+    assert!(!curl.urls().contains(&release.binary_url()));
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
+    assert!(!curl.ran());
+}
+
+/// [`SIGNED_SINCE`] splits the versions where the contract says it does.
+#[test]
+fn signed_since_orders_pre_releases() {
+    assert_eq!(SIGNED_SINCE, "0.7.0-rc.1");
+    for signed in [
+        "0.7.0-rc.1",
+        "0.7.0-rc.2",
+        "0.7.0-rc.10",
+        "0.7.0",
+        "0.7.1-alpha.1",
+        "0.7.1",
+        "0.8.0",
+        "1.0.0-rc.1",
+        "1.0.0",
+    ] {
+        assert!(is_signed(&v(signed)), "{signed}");
+    }
+    for unsigned in [
+        "0.6.1",
+        "0.6.99",
+        "0.7.0-alpha.1",
+        "0.7.0-beta.9",
+        "0.7.0-rc",
+        "0.7.0-rc.0",
+        "0.1.0",
+    ] {
+        assert!(!is_signed(&v(unsigned)), "{unsigned}");
+    }
+    assert_eq!(v(SIGNED_SINCE).tag(), "v0.7.0-rc.1");
+}
+
+/// The first signed version takes the signed way with its full tag.
+#[test]
+fn the_first_signed_version_is_signed_under_its_pre_release_tag() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    let release = curl.serve_signed("0.7.0-rc.1", &signer, ASSET);
+    let install = Install::new("0.6.1", 0o755);
+    let (result, out) = run(
+        &curl.trusting("0.6.1", &[&signer]),
+        &install.target(),
+        &exactly("v0.7.0-rc.1"),
+    );
+    assert!(
+        matches!(result, Ok(Outcome::Installed { .. })),
+        "{result:?}"
+    );
+    assert!(out.contains("Signature OK for v0.7.0-rc.1."), "{out}");
+    assert_eq!(std::fs::read(install.target()).unwrap(), release.binary);
+    assert!(!curl.urls().contains(&release.sha256_url()));
+}
+
+/// Older than `SIGNED_SINCE`: refused, by name of the flag, before any network
+/// call, `--force` or not. An old release through the lookup is no way round.
+#[test]
+fn an_old_target_needs_allow_unsigned() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    curl.serve_release("v0.6.1", "tower 0.6.1", None);
+    let install = Install::new("0.7.0", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+    let updater = curl.trusting("0.7.0", &[&signer]);
+
+    for request in [
+        exactly("v0.6.1"),
+        Request {
+            force: true,
+            ..exactly("v0.6.1")
+        },
+    ] {
+        let (result, _) = run(&updater, &install.target(), &request);
+        let err = result.unwrap_err();
+        assert_eq!(
+            err,
+            "v0.6.1 has no signature, signed releases start at v0.7.0-rc.1; pass \
+             --allow-unsigned to install it on its checksum alone; nothing was changed"
+        );
+    }
+    assert!(curl.calls().is_empty(), "no network: {:?}", curl.calls());
+
+    // `--force` with the lookup naming an old release, on a newer binary.
+    curl.serve_latest("v0.6.1");
+    let forced = Request {
+        force: true,
+        ..Request::default()
+    };
+    let (result, _) = run(&updater, &install.target(), &forced);
+    assert!(result.unwrap_err().contains("--allow-unsigned"));
+    assert_eq!(curl.urls(), [LATEST_PAGE]);
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
+}
+
+/// With the flag an old release takes the old `.sha256` way, and says so.
+#[test]
+fn allow_unsigned_uses_the_sha256_and_says_so() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let binary = curl.serve_release("v0.6.1", "tower 0.6.1", None);
+    let install = Install::new("0.7.0", 0o755);
+    let request = Request {
+        allow_unsigned: true,
+        ..exactly("v0.6.1")
+    };
+
+    // The keys do not matter here: there is nothing for them to verify.
+    let (result, out) = run(&curl.trusting("0.7.0", &[]), &install.target(), &request);
+    assert!(
+        matches!(result, Ok(Outcome::Installed { .. })),
+        "{result:?}"
+    );
+    assert!(
+        out.contains("v0.6.1 has no signature: checking only its checksum"),
+        "{out}"
+    );
+    assert!(
+        out.contains("0.7.0 → 0.6.1 (downgrade): downloaded, no signature, checksum OK"),
+        "{out}"
+    );
+    assert!(!out.contains("Signature OK"), "{out}");
+    assert_eq!(std::fs::read(install.target()).unwrap(), binary);
+    let base = format!("{RELEASE_BASE}/v0.6.1");
+    assert_eq!(
+        curl.urls(),
+        [format!("{base}/{ASSET}.sha256"), format!("{base}/{ASSET}")]
+    );
+
+    // The checksum still counts.
+    let curl = FakeCurl::new();
+    curl.serve_release("v0.6.1", "tower 0.6.1", Some(&"0".repeat(64)));
+    let install = Install::new("0.7.0", 0o755);
+    let (result, _) = run(&curl.updater("0.7.0"), &install.target(), &request);
+    assert!(result.unwrap_err().contains("checksum mismatch"));
+}
+
+/// `--allow-unsigned` does nothing for a release that must be signed: a good
+/// one is verified as ever, and [`FAULTS`] covers a bad one with the flag.
+#[test]
+fn allow_unsigned_has_no_effect_on_a_signed_release() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    let release = curl.serve_signed("0.7.0", &signer, ASSET);
+    let install = Install::new("0.6.1", 0o755);
+    let request = Request {
+        allow_unsigned: true,
+        ..exactly("v0.7.0")
+    };
+    let (result, out) = run(
+        &curl.trusting("0.6.1", &[&signer]),
+        &install.target(),
+        &request,
+    );
+    assert!(
+        matches!(result, Ok(Outcome::Installed { .. })),
+        "{result:?}"
+    );
+    assert!(out.contains("Signature OK"), "{out}");
+    assert!(!out.contains("no signature"), "{out}");
+    assert!(!curl.urls().contains(&release.sha256_url()));
+}
+
+#[test]
+fn assets_per_platform() {
+    assert_eq!(
+        asset_for("linux", "x86_64"),
+        Some("tower-x86_64-linux-musl")
+    );
+    assert_eq!(
+        asset_for("linux", "aarch64"),
+        Some("tower-aarch64-linux-musl")
+    );
+    for (os, arch) in [
+        ("macos", "aarch64"),
+        ("macos", "x86_64"),
+        ("linux", "riscv64"),
+        ("linux", "arm"),
+        ("windows", "x86_64"),
+    ] {
+        assert_eq!(asset_for(os, arch), None, "{os} {arch}");
+        assert!(!platform_supported(os, arch), "{os} {arch}");
+    }
+}
+
+/// The aarch64 binary is what an aarch64 tower asks for and looks up.
+#[test]
+fn the_aarch64_asset_is_requested_on_aarch64() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    let signer = Signer::new();
+    curl.serve_latest("v0.7.0");
+    let release = curl.serve_signed("0.7.0", &signer, ARM_ASSET);
+    let install = Install::new("0.6.1", 0o755);
+    let arm = Updater {
+        platform: ("linux", "aarch64"),
+        ..curl.trusting("0.6.1", &[&signer])
+    };
+    let (result, _) = run(&arm, &install.target(), &Request::default());
+    assert!(
+        matches!(result, Ok(Outcome::Installed { .. })),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read(install.target()).unwrap(), release.binary);
+    let urls = curl.urls();
+    assert_eq!(
+        urls.last().unwrap(),
+        &format!("{RELEASE_BASE}/v0.7.0/{ARM_ASSET}")
+    );
+    assert!(!urls.iter().any(|u| u.ends_with(ASSET)), "{urls:?}");
+}
+
+/// No release before `SIGNED_SINCE` has an aarch64 binary, so naming the flag
+/// there would only lead to a 404.
+#[test]
+fn an_old_target_has_no_aarch64_build() {
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    curl.serve_release("v0.6.1", "tower 0.6.1", None);
+    let install = Install::new("0.7.0", 0o755);
+    let arm = Updater {
+        platform: ("linux", "aarch64"),
+        ..curl.updater("0.7.0")
+    };
+    let request = Request {
+        allow_unsigned: true,
+        ..exactly("v0.6.1")
+    };
+    for request in [exactly("v0.6.1"), request] {
+        let (result, _) = run(&arm, &install.target(), &request);
+        let err = result.unwrap_err();
+        assert_eq!(
+            err,
+            "v0.6.1 has no aarch64 build, the first is v0.7.0-rc.1; nothing was changed"
+        );
+    }
+    assert!(curl.calls().is_empty());
+}
+
+/// Without curl the way around it must not need curl, and names this
+/// platform's binary.
+#[test]
+fn the_missing_curl_message_does_not_suggest_curl() {
+    let _guard = lock();
+    let no_curl = |arch: &'static str| Updater {
+        path: Some(OsString::from("/nonexistent-dir")),
+        platform: ("linux", arch),
+        keys: vec![Signer::new().public()],
+        current: v("0.6.1"),
+        require_elf: false,
+    };
+
+    let err = no_curl("aarch64").check().unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "cannot look up the latest release: `curl` is not installed or not on PATH; install it \
+         and run this again, or download \
+         https://github.com/ruslan1us/watchtower/releases/latest/download/tower-aarch64-linux-musl \
+         some other way, save it as ~/.local/bin/tower and `chmod +x` it"
+    );
+
+    // No binary to name on a platform without one.
+    let err = no_curl("riscv64").check().unwrap_err().to_string();
+    assert!(err.ends_with("install it and run this again"), "{err}");
+
+    // `tower update --version` meets it at the first download.
+    let install = Install::new("0.6.1", 0o755);
+    let before = std::fs::read(install.target()).unwrap();
+    let (result, _) = run(&no_curl("x86_64"), &install.target(), &exactly("v0.7.0"));
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("cannot download v0.7.0 SHA256SUMS: `curl` is not"),
+        "{err}"
+    );
+    assert!(
+        err.contains("download/tower-x86_64-linux-musl some other way"),
+        "{err}"
+    );
+    assert!(!err.contains("curl -"), "{err}");
+    assert!(err.ends_with("nothing was changed"), "{err}");
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
+}
+
+/// The real binary, copied out of `target/` so it is no cargo build output: an
+/// old release is refused by flag name, and the flag reaches the update. Its
+/// real ELF check then stops the fake release, so nothing is replaced.
+#[test]
+fn binary_passes_allow_unsigned_through() {
+    if !(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64")) {
+        eprintln!("skipped: no release older than the signed ones for this platform");
+        return;
+    }
+    let _guard = lock();
+    let curl = FakeCurl::new();
+    curl.serve_release("v0.6.1", "tower 0.6.1", None);
+    let install = Install::new("0.6.1", 0o755);
+    std::fs::copy(env!("CARGO_BIN_EXE_tower"), install.target()).unwrap();
+    let before = std::fs::read(install.target()).unwrap();
+    let tower = |args: &[&str]| {
+        Command::new(install.target())
+            .args(args)
+            .env_clear()
+            .env("PATH", curl.path())
+            .env("HOME", curl.dir.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    let out = tower(&["update", "--version", "v0.6.1"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--allow-unsigned"), "{stderr}");
+    assert!(curl.calls().is_empty(), "no network: {:?}", curl.calls());
+
+    let out = tower(&["update", "--version", "v0.6.1", "--allow-unsigned"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("v0.6.1 has no signature"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not an x86-64 Linux executable"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read(install.target()).unwrap(), before);
+    assert_eq!(install.bin_entries(), ["tower"]);
+}
+
+// ---- the pinned keys -------------------------------------------------------
+
+/// The keys a real build trusts are the pinned ones.
+#[test]
+fn the_default_updater_trusts_the_pinned_keys() {
+    assert_eq!(Updater::new().keys, PINNED_KEYS);
+}
+
+/// The lines the release workflow's grep finds in the source (a quoted literal
+/// alone on its line) are exactly the pinned keys.
+fn key_lines_in_the_source() -> Vec<String> {
+    include_str!("../src/update.rs")
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("\"RW"))
+        .map(|line| line.trim_end_matches(',').trim_matches('"').to_owned())
+        .collect()
+}
+
+#[test]
+fn pinned_keys_keep_the_form_the_release_workflow_reads() {
+    assert_eq!(key_lines_in_the_source(), PINNED_KEYS);
+}
+
+/// The release gate: the release workflow runs this by name, so no release
+/// ships without both keys.
+#[test]
+#[ignore = "fails until the owner pins the keys; the release workflow runs it"]
+fn pinned_keys_are_ready_for_release() {
+    assert_eq!(
+        PINNED_KEYS.len(),
+        2,
+        "src/update.rs must pin exactly two release signing keys"
+    );
+    let mut ids = Vec::new();
+    for key in PINNED_KEYS {
+        minisign_verify::PublicKey::from_base64(key).expect("a pinned key parses");
+        let parsed = minisign::PublicKey::from_base64(key).expect("a pinned key parses");
+        ids.push(parsed.keynum().to_vec());
+    }
+    assert_ne!(ids[0], ids[1], "the two pinned keys need distinct key ids");
+    assert_eq!(key_lines_in_the_source(), PINNED_KEYS);
 }
