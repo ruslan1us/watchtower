@@ -45,12 +45,15 @@ pub const SIGNED_SINCE: &str = "0.7.0-rc.1";
 /// The public keys a release signature may come from. Two exist so that one
 /// can be rotated out: a signature from either is accepted. An empty list
 /// fails closed, and the release workflow refuses to ship with fewer than two
-/// (`pinned_keys_are_ready_for_release` in tests/update.rs). It stays empty
-/// until the owner generates the keys.
+/// (`pinned_keys_are_ready_for_release` in tests/update.rs). The first is the
+/// primary and the second the backup, whose secret half is kept outside GitHub.
 ///
 /// The release workflow reads this list with a grep, so each key must stay a
 /// plain quoted literal alone on its own line, with no other text there.
-pub const PINNED_KEYS: &[&str] = &[];
+pub const PINNED_KEYS: &[&str] = &[
+    "RWS+zpUTdXjkNWD8/tze42z4CklcBNrRULoQXW9fHK6713A3Akbzja1G",
+    "RWQRwacZnT5azR+G+tqgVxkdhQWN59kW1BCg2xaOLuzXxFxt2U41e8Hb",
+];
 
 /// The web page of the newest (non-draft, non-pre-release) release. GitHub
 /// answers it with a redirect to `<RELEASE_TAG_PREFIX><tag>`, or to

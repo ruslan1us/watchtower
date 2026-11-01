@@ -1936,7 +1936,7 @@ fn pinned_keys_keep_the_form_the_release_workflow_reads() {
 /// The release gate: the release workflow runs this by name, so no release
 /// ships without both keys.
 #[test]
-#[ignore = "fails until the owner pins the keys; the release workflow runs it"]
+#[ignore = "the release workflow runs it by name"]
 fn pinned_keys_are_ready_for_release() {
     assert_eq!(
         PINNED_KEYS.len(),
