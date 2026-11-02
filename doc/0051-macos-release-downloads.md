@@ -75,6 +75,20 @@ stops a release. The ARM job stays as it is ([0050](0050-signed-releases-and-arm
 **Rollout.** A dry run with `v0.7.1-rc.1`, a try on the owner's Mac, then `v0.7.1`. The steps are in
 [Development](guide/development.md).
 
+*Noted 2026-11-01:* the `v0.7.1-rc.1` release run showed:
+
+- On `macos-26` and `macos-26-intel` the full test suite passed with no failures, including the
+  release gate and the test that installs the real binary through its own format check.
+- `file` printed exactly `Mach-O 64-bit executable arm64` and `Mach-O 64-bit executable x86_64`,
+  so the checks matched.
+- `otool -L` listed only `/usr/lib/libSystem.B.dylib` and `/usr/lib/libiconv.2.dylib`.
+- The arm64 binary was signed ad hoc and passed `codesign --verify`. The Intel binary came out
+  unsigned, as expected, and passed.
+- The publish job made all ten assets, and the signature verified with the primary key and the
+  trusted comment `watchtower v0.7.1-rc.1`.
+- A `v0.7.0` tower on Linux updated to rc.1, so older towers read the longer `SHA256SUMS`.
+- `releases/latest` stayed on `v0.7.0` while rc.1 was a pre-release.
+
 ## Consequences
 
 - A Mac user no longer needs Rust or Apple's command line tools, and can update like anyone else.
@@ -82,8 +96,9 @@ stops a release. The ARM job stays as it is ([0050](0050-signed-releases-and-arm
 - Older towers on Linux keep working: they look up their own line in `SHA256SUMS`, by name.
 - The `releases/latest/download/` URLs for macOS return 404 until `v0.7.1` is published, because a
   pre-release does not become latest. During the dry run, use the versioned URL.
-- The Intel build is the least tried. CI has no Intel job, so its tests first run in a release, and
-  Rust has `x86_64-apple-darwin` at Tier 2, so upstream does not guarantee its tests pass.
+- The Intel build is the least tried. CI has no Intel job, so its tests run only in a release
+  (they passed in rc.1), and Rust has `x86_64-apple-darwin` at Tier 2, so upstream does not
+  guarantee its tests pass.
 - Unsigned by Apple means browser downloads need the extra step above.
 
 ## Alternatives considered
@@ -96,13 +111,12 @@ stops a release. The ARM job stays as it is ([0050](0050-signed-releases-and-arm
 
 ## Open items
 
-Only a real run can show these:
+Still unproven:
 
-- That `macos-26-intel` builds and passes the tests. No Intel Mac has run tower.
-- The exact output of `file` and `otool` on the images, which the checks match, and whether the
-  Intel binary comes out unsigned as expected.
-- Whether a real binary runs on the owner's Mac from a download, and the quarantine and overwrite
-  behaviour above, which come from public reports and Apple's forums, not from a test here.
+- Whether a downloaded binary runs on a real Mac. So far it has run only on the release runners.
+- Whether tower runs on a real Intel Mac. None has run it.
+- The quarantine and overwrite behaviour above, which come from public reports and Apple's forums,
+  not from a test here.
 
 To watch: [GitHub said in 2025](https://github.com/actions/runner-images/issues/13045) that
 `macos-15-intel`, available until August 2027, would be its last Intel image. Its reference now also lists `macos-26-intel`, with no end date that we found. When
