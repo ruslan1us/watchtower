@@ -300,7 +300,8 @@ jobs:
 
           \`\`\`sh
           mkdir -p ~/.local/bin
-          curl -fLo ~/.local/bin/tower $url/tower-\$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
+          asset=tower-\$(uname -m)-linux-musl
+          curl -fLo ~/.local/bin/tower "$url/\$asset" && chmod +x ~/.local/bin/tower
           \`\`\`
 
           On macOS 11 or newer, Apple silicon or Intel. This renames a new file over the old one, because
@@ -308,7 +309,8 @@ jobs:
 
           \`\`\`sh
           mkdir -p ~/.local/bin
-          curl -fLo ~/.local/bin/tower.new $url/tower-\$(uname -m)-macos && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
+          asset=tower-\$(uname -m)-macos
+          curl -fLo ~/.local/bin/tower.new "$url/\$asset" && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
           \`\`\`
 
           The macOS binaries are not signed by Apple. A browser download may be quarantined; a \`curl\` one is not.
@@ -319,9 +321,9 @@ jobs:
           \`\`\`sh
           cd "\$(mktemp -d)"
           asset=tower-\$(uname -m)-linux-musl
-          curl -fL -O $url/\$asset -O $url/SHA256SUMS -O $url/SHA256SUMS.minisig
+          curl -fL -O "$url/\$asset" -O "$url/SHA256SUMS" -O "$url/SHA256SUMS.minisig"
           minisign -Vm SHA256SUMS -P $PRIMARY_KEY
-          grep " \$asset\\\$" SHA256SUMS | sha256sum -c - && install -m 755 \$asset ~/.local/bin/tower
+          grep " \$asset\\\$" SHA256SUMS | sha256sum -c - && install -m 755 "\$asset" ~/.local/bin/tower
           \`\`\`
 
           On macOS, the same with the macOS asset and \`shasum\`:
@@ -329,9 +331,9 @@ jobs:
           \`\`\`sh
           cd "\$(mktemp -d)"
           asset=tower-\$(uname -m)-macos
-          curl -fL -O $url/\$asset -O $url/SHA256SUMS -O $url/SHA256SUMS.minisig
+          curl -fL -O "$url/\$asset" -O "$url/SHA256SUMS" -O "$url/SHA256SUMS.minisig"
           minisign -Vm SHA256SUMS -P $PRIMARY_KEY
-          grep " \$asset\\\$" SHA256SUMS | shasum -a 256 -c - && rm -f ~/.local/bin/tower && install -m 755 \$asset ~/.local/bin/tower
+          grep " \$asset\\\$" SHA256SUMS | shasum -a 256 -c - && rm -f ~/.local/bin/tower && install -m 755 "\$asset" ~/.local/bin/tower
           \`\`\`
 
           The trusted comment minisign prints must say \`watchtower $GITHUB_REF_NAME\`.

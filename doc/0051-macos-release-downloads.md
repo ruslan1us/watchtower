@@ -22,7 +22,7 @@ They are thin Mach-O binaries, not universal. Signing does not change: the same 
 signature and pinned keys ([0050](0050-signed-releases-and-arm.md)).
 
 **The names use `arm64`,** not `aarch64`, because that is what `uname -m` prints on Apple silicon,
-so `tower-$(uname -m)-macos` works in a one-line install.
+so `tower-$(uname -m)-macos` works in the install command.
 
 **Native runners.** `release.yml` builds on `macos-26` (arm64) and `macos-26-intel` (Intel), so the
 tests and `--version` really run on each CPU. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)

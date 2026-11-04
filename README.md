@@ -39,13 +39,15 @@ Tower is a list on top of Claude Code's own background sessions. It starts, open
 ## Install
 
 ```sh
-mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
+asset=tower-$(uname -m)-linux-musl
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower "https://github.com/ruslan1us/watchtower/releases/latest/download/$asset" && chmod +x ~/.local/bin/tower
 ```
 
 On macOS:
 
 ```sh
-mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower.new https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-macos && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
+asset=tower-$(uname -m)-macos
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/tower.new "https://github.com/ruslan1us/watchtower/releases/latest/download/$asset" && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
 ```
 
 `~/.local/bin` isn't on `PATH` by default there: see [Getting started](doc/guide/getting-started.md#macos).

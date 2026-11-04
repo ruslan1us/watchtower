@@ -21,7 +21,8 @@ see [macOS](#macos).
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fLo ~/.local/bin/tower https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-linux-musl && chmod +x ~/.local/bin/tower
+asset=tower-$(uname -m)-linux-musl
+curl -fLo ~/.local/bin/tower "https://github.com/ruslan1us/watchtower/releases/latest/download/$asset" && chmod +x ~/.local/bin/tower
 ```
 
 When installing as root you may prefer `/usr/local/bin/tower`.
@@ -129,7 +130,8 @@ itself asks for macOS 13 or newer. `uname -m` picks yours:
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fLo ~/.local/bin/tower.new https://github.com/ruslan1us/watchtower/releases/latest/download/tower-$(uname -m)-macos && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
+asset=tower-$(uname -m)-macos
+curl -fLo ~/.local/bin/tower.new "https://github.com/ruslan1us/watchtower/releases/latest/download/$asset" && chmod +x ~/.local/bin/tower.new && mv -f ~/.local/bin/tower.new ~/.local/bin/tower
 ```
 
 `~/.local/bin` isn't on `PATH` by default on macOS. For zsh, the default shell, add it and open a
